@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from huds.speed import render_speed
 
 # ---------------------------------------------------------------------------
 # Global HUD colors (RGBA) – shared by all HUDs
@@ -1793,55 +1794,26 @@ def _render_hud_scroll_frames_png(
                     y2 = int(y0 + 26)
 
                     def _hud_table_speed() -> None:
-                        if hud_key == "Speed":
-                            if slow_speed_u and i < len(slow_speed_u) and fast_speed_u and fi < len(fast_speed_u):
-                                sv = int(round(float(slow_speed_u[i])))
-                                fv = int(round(float(fast_speed_u[fi])))
-
-                                smin = sv
-                                fmin = fv
-                                if slow_min_u and i < len(slow_min_u):
-                                    smin = int(round(float(slow_min_u[i])))
-                                if fast_min_u and fi < len(fast_min_u):
-                                    fmin = int(round(float(fast_min_u[fi])))
-
-                                # Fonts (ähnlich wie Throttle / Brake)
-                                try:
-                                    try:
-                                        from PIL import ImageFont
-                                    except Exception:
-                                        ImageFont = None  # type: ignore
-
-                                    def _load_font(sz: int):
-                                        if ImageFont is None:
-                                            return None
-                                        try:
-                                            return ImageFont.truetype("arial.ttf", sz)
-                                        except Exception:
-                                            try:
-                                                return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                            except Exception:
-                                                return None
-
-                                    font_title = _load_font(18)
-                                    font_val = _load_font(22)
-
-                                    # Titel
-                                    y_title = int(y0 + 6)
-                                    dr.text((xL, y_title), f"Speed / Min ({unit_label})", fill=COL_SLOW_DARKRED, font=font_title)
-                                    dr.text((xR, y_title), f"Speed / Min ({unit_label})", fill=COL_FAST_DARKBLUE, font=font_title)
-
-                                    # Werte
-                                    y_val = int(y0 + 30)
-                                    dr.text((xL, y_val), f"{sv} / {smin}", fill=COL_SLOW_DARKRED, font=font_val)
-                                    dr.text((xR, y_val), f"{fv} / {fmin}", fill=COL_FAST_DARKBLUE, font=font_val)
-
-                                except Exception:
-                                    # Fallback ohne Fonts
-                                    dr.text((xL, y1), f"Speed / Min ({unit_label})", fill=COL_SLOW_DARKRED)
-                                    dr.text((xR, y1), f"Speed / Min ({unit_label})", fill=COL_FAST_DARKBLUE)
-                                    dr.text((xL, y2), f"{sv} / {smin}", fill=COL_SLOW_DARKRED)
-                                    dr.text((xR, y2), f"{fv} / {fmin}", fill=COL_FAST_DARKBLUE)
+                        speed_ctx = {
+                            "fps": fps,
+                            "i": i,
+                            "fi": fi,
+                            "slow_speed_frames": slow_speed_frames,
+                            "fast_speed_frames": fast_speed_frames,
+                            "slow_min_speed_frames": slow_min_speed_frames,
+                            "fast_min_speed_frames": fast_min_speed_frames,
+                            "hud_speed_units": hud_speed_units,
+                            "hud_speed_update_hz": hud_speed_update_hz,
+                            "slow_speed_u": slow_speed_u,
+                            "fast_speed_u": fast_speed_u,
+                            "slow_min_u": slow_min_u,
+                            "fast_min_u": fast_min_u,
+                            "unit_label": unit_label,
+                            "hud_key": hud_key,
+                            "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        }
+                        render_speed(speed_ctx, (x0, y0, w, h), dr)
 
                     def _hud_table_gear_rpm() -> None:
                         if hud_key == "Gear & RPM":
