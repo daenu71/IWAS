@@ -10,8 +10,7 @@ output/
 # OS
 .DS_Store
 Thumbs.db
-input/video/Garage 61 - Daniel Aebischer - McLaren 720S GT3 EVO - Sachsenring - 01.19.262 - 01KET03284F6WM1PRHPBPHVEA2.mp4
-input/video/Garage 61 - Daniel Aebischer - McLaren 720S GT3 EVO - Sachsenring - 01.18.209 - 01KET03284F6WM1PRHPYRSSFCM.mp4
+.idea/
 config/endframes.json
 config/hud_layout.json
 config/output_format.json
