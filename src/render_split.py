@@ -8,7 +8,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from huds.gear_rpm import render_gear_rpm
+from huds.delta import render_delta
 from huds.speed import render_speed
+from huds.steering import render_steering
+from huds.throttle_brake import render_throttle_brake
+from huds.line_delta import render_line_delta
+from huds.under_oversteer import render_under_oversteer
 
 # ---------------------------------------------------------------------------
 # Global HUD colors (RGBA) – shared by all HUDs
@@ -1816,55 +1822,18 @@ def _render_hud_scroll_frames_png(
                         render_speed(speed_ctx, (x0, y0, w, h), dr)
 
                     def _hud_table_gear_rpm() -> None:
-                        if hud_key == "Gear & RPM":
-                            if slow_gear_h and i < len(slow_gear_h) and fast_gear_h and fi < len(fast_gear_h):
-                                sg = int(slow_gear_h[i])
-                                fg = int(fast_gear_h[fi])
-
-                                sr = 0
-                                fr = 0
-                                if slow_rpm_h and i < len(slow_rpm_h):
-                                    sr = int(slow_rpm_h[i])
-                                if fast_rpm_h and fi < len(fast_rpm_h):
-                                    fr = int(fast_rpm_h[fi])
-
-                                # Fonts (ähnlich wie Throttle / Brake)
-                                try:
-                                    try:
-                                        from PIL import ImageFont
-                                    except Exception:
-                                        ImageFont = None  # type: ignore
-
-                                    def _load_font(sz: int):
-                                        if ImageFont is None:
-                                            return None
-                                        try:
-                                            return ImageFont.truetype("arial.ttf", sz)
-                                        except Exception:
-                                            try:
-                                                return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                            except Exception:
-                                                return None
-
-                                    font_title = _load_font(18)
-                                    font_val = _load_font(22)
-
-                                    # Titel
-                                    y_title = int(y0 + 6)
-                                    dr.text((xL, y_title), "Gear / RPM", fill=COL_SLOW_DARKRED, font=font_title)
-                                    dr.text((xR, y_title), "Gear / RPM", fill=COL_FAST_DARKBLUE, font=font_title)
-
-                                    # Werte
-                                    y_val = int(y0 + 30)
-                                    dr.text((xL, y_val), f"{sg} / {sr} rpm", fill=COL_SLOW_DARKRED, font=font_val)
-                                    dr.text((xR, y_val), f"{fg} / {fr} rpm", fill=COL_FAST_DARKBLUE, font=font_val)
-
-                                except Exception:
-                                    # Fallback ohne Fonts
-                                    dr.text((xL, y1), "Gear / RPM", fill=COL_SLOW_DARKRED)
-                                    dr.text((xR, y1), "Gear / RPM", fill=COL_FAST_DARKBLUE)
-                                    dr.text((xL, y2), f"{sg} / {sr} rpm", fill=COL_SLOW_DARKRED)
-                                    dr.text((xR, y2), f"{fg} / {fr} rpm", fill=COL_FAST_DARKBLUE)
+                        gear_rpm_ctx = {
+                            "hud_key": hud_key,
+                            "i": i,
+                            "fi": fi,
+                            "slow_gear_h": slow_gear_h,
+                            "fast_gear_h": fast_gear_h,
+                            "slow_rpm_h": slow_rpm_h,
+                            "fast_rpm_h": fast_rpm_h,
+                            "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        }
+                        render_gear_rpm(gear_rpm_ctx, (x0, y0, w, h), dr)
 
                     table_renderers = {
                         "Speed": _hud_table_speed,
@@ -1951,1111 +1920,86 @@ def _render_hud_scroll_frames_png(
                 pass
 
                 def _hud_throttle_brake() -> None:
-                    # Story 4: Throttle / Brake + ABS (scrollend)
-                    if hud_key == "Throttle / Brake":
-                        try:
-                            try:
-                                from PIL import ImageFont
-                            except Exception:
-                                ImageFont = None  # type: ignore
-    
-                            def _load_font(sz: int):
-                                if ImageFont is None:
-                                    return None
-                                try:
-                                    return ImageFont.truetype("arial.ttf", sz)
-                                except Exception:
-                                    pass
-                                try:
-                                    return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                except Exception:
-                                    pass
-                                try:
-                                    return ImageFont.load_default()
-                                except Exception:
-                                    return None
-    
-                            def _text_w(text: str, font_obj):
-                                try:
-                                    bb = dr.textbbox((0, 0), text, font=font_obj)
-                                    return int(bb[2] - bb[0])
-                                except Exception:
-                                    try:
-                                        return int(dr.textlength(text, font=font_obj))
-                                    except Exception:
-                                        return int(len(text) * 8)
-    
-                            # Farben global definiert (oben im File)
-                            COL_SLOW_BRAKE = COL_SLOW_DARKRED
-                            COL_SLOW_THROTTLE = COL_SLOW_BRIGHTRED
-                            COL_FAST_BRAKE = COL_FAST_DARKBLUE
-                            COL_FAST_THROTTLE = COL_FAST_BRIGHTBLUE
-    
-                            # Headroom nur oben (analog Steering, aber 0..1)
-                            try:
-                                headroom = float((os.environ.get("IRVC_PEDAL_HEADROOM") or "").strip() or "1.12")
-                            except Exception:
-                                headroom = 1.12
-                            if headroom < 1.00:
-                                headroom = 1.00
-                            if headroom > 2.00:
-                                headroom = 2.00
-    
-                            font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                            font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-                            font_title = _load_font(font_sz)
-                            font_val = _load_font(font_val_sz)
-    
-                            # Titel + Werte auf gleicher Höhe (ruhig, kein Springen)
-                            y_txt = int(y0 + 2)
-                            dr.text((int(x0 + 4), y_txt), "Throttle / Brake", fill=COL_WHITE, font=font_title)
-    
-                            # Skalen (CSV ~60Hz -> Video-Frames)
-                            n_frames = float(max(1, len(slow_frame_to_lapdist) - 1))
-                            t_slow_scale = 1.0
-                            t_fast_scale = 1.0
-                            b_slow_scale = 1.0
-                            b_fast_scale = 1.0
-                            a_slow_scale = 1.0
-                            a_fast_scale = 1.0
-                            try:
-                                if slow_throttle_frames and len(slow_throttle_frames) >= 2:
-                                    t_slow_scale = float(len(slow_throttle_frames) - 1) / n_frames
-                                if fast_throttle_frames and len(fast_throttle_frames) >= 2:
-                                    t_fast_scale = float(len(fast_throttle_frames) - 1) / n_frames
-                                if slow_brake_frames and len(slow_brake_frames) >= 2:
-                                    b_slow_scale = float(len(slow_brake_frames) - 1) / n_frames
-                                if fast_brake_frames and len(fast_brake_frames) >= 2:
-                                    b_fast_scale = float(len(fast_brake_frames) - 1) / n_frames
-                                if slow_abs_frames and len(slow_abs_frames) >= 2:
-                                    a_slow_scale = float(len(slow_abs_frames) - 1) / n_frames
-                                if fast_abs_frames and len(fast_abs_frames) >= 2:
-                                    a_fast_scale = float(len(fast_abs_frames) - 1) / n_frames
-                            except Exception:
-                                pass
-    
-                            # Aktuelle Werte (am Marker)
-                            mx0 = int(x0 + (w // 2))
-                            gap = 12
-    
-                            # Slow Index (am Marker)
-                            ti_cur = int(round(float(i) * float(t_slow_scale)))
-                            bi_cur = int(round(float(i) * float(b_slow_scale)))
-                            if slow_throttle_frames:
-                                ti_cur = max(0, min(ti_cur, len(slow_throttle_frames) - 1))
-                                t_s = float(slow_throttle_frames[ti_cur])
-                            else:
-                                t_s = 0.0
-                            if slow_brake_frames:
-                                bi_cur = max(0, min(bi_cur, len(slow_brake_frames) - 1))
-                                b_s = float(slow_brake_frames[bi_cur])
-                            else:
-                                b_s = 0.0
-    
-                            # Fast Index (am Marker)
-                            fi_cur = int(i)
-                            if slow_to_fast_frame and int(i) < len(slow_to_fast_frame):
-                                fi_cur = int(slow_to_fast_frame[int(i)])
-                                if fi_cur < 0:
-                                    fi_cur = 0
-    
-                            tf_cur = int(round(float(fi_cur) * float(t_fast_scale)))
-                            bf_cur = int(round(float(fi_cur) * float(b_fast_scale)))
-                            if fast_throttle_frames:
-                                tf_cur = max(0, min(tf_cur, len(fast_throttle_frames) - 1))
-                                t_f = float(fast_throttle_frames[tf_cur])
-                            else:
-                                t_f = 0.0
-                            if fast_brake_frames:
-                                bf_cur = max(0, min(bf_cur, len(fast_brake_frames) - 1))
-                                b_f = float(fast_brake_frames[bf_cur])
-                            else:
-                                b_f = 0.0
-    
-                            # Format: immer 3 Stellen, kein Springen
-                            s_txt = f"T{int(round(_clamp(t_s, 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(b_s, 0.0, 1.0) * 100.0)):03d}%"
-                            f_txt = f"T{int(round(_clamp(t_f, 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(b_f, 0.0, 1.0) * 100.0)):03d}%"
-    
-                            f_w = _text_w(f_txt, font_val)
-                            f_x = int(mx0 - gap - f_w)
-                            s_x = int(mx0 + gap)
-    
-                            if f_x < int(x0 + 2):
-                                f_x = int(x0 + 2)
-                            if s_x > int(x0 + w - 2):
-                                s_x = int(x0 + w - 2)
-    
-                            # Fast links, Slow rechts (wie Steering)
-                            dr.text((f_x, y_txt), f_txt, fill=COL_SLOW_BRAKE, font=font_val)
-                            dr.text((s_x, y_txt), s_txt, fill=COL_FAST_BRAKE, font=font_val)
-    
-                            # Layout: ABS-Balken direkt unter Titelzeile, danach Plot
-                            abs_h = int(max(10, min(15, round(float(h) * 0.085))))
-                            abs_gap_y = 2
-                            y_abs0 = int(y0 + font_val_sz + 5)
-                            y_abs_s = y_abs0
-                            y_abs_f = y_abs0 + abs_h + abs_gap_y
-    
-                            plot_top = y_abs_f + abs_h + 4
-                            plot_bottom = int(y0 + h - 2)
-                            if plot_bottom <= plot_top + 5:
-                                plot_top = int(y0 + int(h * 0.30))
-                            plot_h = max(10, plot_bottom - plot_top)
-    
-                            def _y_from_01(v01: float) -> int:
-                                v01 = _clamp(v01, 0.0, 1.0)
-                                v_scaled = v01 / max(1.0, headroom)
-                                yy = float(plot_top) + float(plot_h) - (v_scaled * float(plot_h))
-                                return int(round(yy))
-    
-                            # Stride / Punktdichte (wie Steering)
-                            span_n = max(1, int(iR - iL))
-                            pts_target = int(hud_curve_points_default or 180)
-                            try:
-                                ovs = hud_curve_points_overrides if isinstance(hud_curve_points_overrides, dict) else None
-                                if ovs and hud_key in ovs:
-                                    pts_target = int(float(ovs.get(hud_key) or pts_target))
-                            except Exception:
-                                pass
-                            if pts_target < 40:
-                                pts_target = 40
-                            if pts_target > 600:
-                                pts_target = 600
-                            max_pts = max(40, min(int(w), int(pts_target)))
-                            stride = max(1, int(round(float(span_n) / float(max_pts))))
-    
-                            # Helper: X aus Frame-Index (Zeit-Achse, stabil)
-                            def _x_from_idx(idx0: int) -> int:
-                                return _idx_to_x(int(idx0))
-    
-                            # Marker-zentriertes Sampling (symmetrisch links/rechts) + Endpunkte erzwingen
-                            idxs: list[int] = []
-    
-                            k = int(i)
-                            while k >= int(iL):
-                                idxs.append(k)
-                                k -= int(stride)
-    
-                            k = int(i) + int(stride)
-                            while k <= int(iR):
-                                idxs.append(k)
-                                k += int(stride)
-    
-                            idxs = sorted(set(idxs))
-                            if idxs:
-                                if idxs[0] != int(iL):
-                                    idxs.insert(0, int(iL))
-                                if idxs[-1] != int(iR):
-                                    idxs.append(int(iR))
-                            else:
-                                idxs = [int(iL), int(i), int(iR)]
-    
-                            # Kurven sammeln
-                            pts_s_t: list[tuple[int, int]] = []
-                            pts_s_b: list[tuple[int, int]] = []
-                            pts_f_t: list[tuple[int, int]] = []
-                            pts_f_b: list[tuple[int, int]] = []
-    
-                            for idx in idxs:
-                                if idx < int(iL) or idx > int(iR):
-                                    continue
-    
-                                x = _idx_to_x(int(idx))
-    
-                                # Slow
-                                if slow_throttle_frames:
-                                    si = int(round(float(idx) * float(t_slow_scale)))
-                                    si = max(0, min(si, len(slow_throttle_frames) - 1))
-                                    st = float(slow_throttle_frames[si])
-                                else:
-                                    st = 0.0
-                                if slow_brake_frames:
-                                    si = int(round(float(idx) * float(b_slow_scale)))
-                                    si = max(0, min(si, len(slow_brake_frames) - 1))
-                                    sb = float(slow_brake_frames[si])
-                                else:
-                                    sb = 0.0
-    
-                                pts_s_t.append((x, _y_from_01(st)))
-                                pts_s_b.append((x, _y_from_01(sb)))
-    
-                                # Fast: idx -> frame_map -> fast idx
-                                fi = int(idx)
-                                if slow_to_fast_frame and fi < len(slow_to_fast_frame):
-                                    fi = int(slow_to_fast_frame[fi])
-                                    if fi < 0:
-                                        fi = 0
-    
-                                if fast_throttle_frames:
-                                    fci = int(round(float(fi) * float(t_fast_scale)))
-                                    fci = max(0, min(fci, len(fast_throttle_frames) - 1))
-                                    ft = float(fast_throttle_frames[fci])
-                                else:
-                                    ft = 0.0
-                                if fast_brake_frames:
-                                    fci = int(round(float(fi) * float(b_fast_scale)))
-                                    fci = max(0, min(fci, len(fast_brake_frames) - 1))
-                                    fb = float(fast_brake_frames[fci])
-                                else:
-                                    fb = 0.0
-    
-                                pts_f_t.append((x, _y_from_01(ft)))
-                                pts_f_b.append((x, _y_from_01(fb)))
-    
-                            # Linien zeichnen (Bremse erst, dann Gas)
-                            if len(pts_s_b) >= 2:
-                                dr.line(pts_s_b, fill=COL_SLOW_BRAKE, width=2)
-                            if len(pts_s_t) >= 2:
-                                dr.line(pts_s_t, fill=COL_SLOW_THROTTLE, width=2)
-                            if len(pts_f_b) >= 2:
-                                dr.line(pts_f_b, fill=COL_FAST_BRAKE, width=2)
-                            if len(pts_f_t) >= 2:
-                                dr.line(pts_f_t, fill=COL_FAST_THROTTLE, width=2)
-    
-                            # ABS-Balken: scrollende Segmente (Länge = Dauer von ABS=1 im Fenster)
-                            def _abs_val_s(idx0: int) -> float:
-                                if not slow_abs_frames:
-                                    return 0.0
-                                si = int(round(float(idx0) * float(a_slow_scale)))
-                                si = max(0, min(si, len(slow_abs_frames) - 1))
-                                return float(slow_abs_frames[si])
-    
-                            def _abs_val_f(idx0: int) -> float:
-                                if not fast_abs_frames:
-                                    return 0.0
-                                fi = int(idx0)
-                                if slow_to_fast_frame and fi < len(slow_to_fast_frame):
-                                    fi = int(slow_to_fast_frame[fi])
-                                    if fi < 0:
-                                        fi = 0
-                                fci = int(round(float(fi) * float(a_fast_scale)))
-                                fci = max(0, min(fci, len(fast_abs_frames) - 1))
-                                return float(fast_abs_frames[fci])
-    
-                            def _draw_abs_segments(y_mid: int, col: tuple[int, int, int, int], val_fn):
-                                in_seg = False
-                                x_start = 0
-                                x_prev = 0
-                                for idx2 in idxs:
-                                    if idx2 < int(iL) or idx2 > int(iR):
-                                        continue
-                                    x2 = _x_from_idx(idx2)
-                                    v2 = val_fn(idx2)
-                                    on = (v2 >= 0.5)
-                                    if on and (not in_seg):
-                                        in_seg = True
-                                        x_start = x2
-                                    if in_seg:
-                                        x_prev = x2
-                                    if (not on) and in_seg:
-                                        try:
-                                            dr.line([(int(x_start), int(y_mid)), (int(x_prev), int(y_mid))], fill=col, width=int(abs_h))
-                                        except Exception:
-                                            pass
-                                        in_seg = False
-                                if in_seg:
-                                    try:
-                                        dr.line([(int(x_start), int(y_mid)), (int(x_prev), int(y_mid))], fill=col, width=int(abs_h))
-                                    except Exception:
-                                        pass
-    
-                            _draw_abs_segments(int(y_abs_s + abs_h // 2), COL_SLOW_BRAKE, _abs_val_s)
-                            _draw_abs_segments(int(y_abs_f + abs_h // 2), COL_FAST_BRAKE, _abs_val_f)
-    
-                        except Exception:
-                            pass
-    
+                    throttle_brake_ctx = {
+                        "hud_key": hud_key,
+                        "i": i,
+                        "iL": iL,
+                        "iR": iR,
+                        "_idx_to_x": _idx_to_x,
+                        "_clamp": _clamp,
+                        "slow_frame_to_lapdist": slow_frame_to_lapdist,
+                        "slow_to_fast_frame": slow_to_fast_frame,
+                        "slow_throttle_frames": slow_throttle_frames,
+                        "fast_throttle_frames": fast_throttle_frames,
+                        "slow_brake_frames": slow_brake_frames,
+                        "fast_brake_frames": fast_brake_frames,
+                        "slow_abs_frames": slow_abs_frames,
+                        "fast_abs_frames": fast_abs_frames,
+                        "hud_curve_points_default": hud_curve_points_default,
+                        "hud_curve_points_overrides": hud_curve_points_overrides,
+                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                        "COL_SLOW_BRIGHTRED": COL_SLOW_BRIGHTRED,
+                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        "COL_FAST_BRIGHTBLUE": COL_FAST_BRIGHTBLUE,
+                        "COL_WHITE": COL_WHITE,
+                    }
+                    render_throttle_brake(throttle_brake_ctx, (x0, y0, w, h), dr)
+
                 def _hud_delta() -> None:
-                    # Story 7: Delta (Time delta) HUD
-                    if hud_key == "Delta":
-                        try:
-                            # Fonts
-                            try:
-                                from PIL import ImageFont
-                            except Exception:
-                                ImageFont = None  # type: ignore
-    
-                            font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                            font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-    
-                            def _load_font(sz: int):
-                                if ImageFont is None:
-                                    return None
-                                try:
-                                    return ImageFont.truetype("arial.ttf", sz)
-                                except Exception:
-                                    pass
-                                try:
-                                    return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                except Exception:
-                                    pass
-                                try:
-                                    return ImageFont.load_default()
-                                except Exception:
-                                    return None
-    
-                            font_title = _load_font(font_sz)
-                            font_val = _load_font(font_val_sz)
-    
-                            # Text oben: reservierter Bereich (Headroom)
-                            top_pad = int(round(max(14.0, float(font_sz) + 8.0)))
-                            plot_y0 = int(y0) + top_pad
-                            plot_y1 = int(y0 + h - 2)
-    
-                            if plot_y1 <= plot_y0 + 4:
-                                plot_y0 = int(y0) + 2
-                                plot_y1 = int(y0 + h - 2)
-    
-                            # Titel
-                            try:
-                                dr.text((int(x0 + 4), int(y0 + 2)), "Time delta", fill=COL_WHITE, font=font_title)
-                            except Exception as e:
-                                if hud_dbg:
-                                    try:
-                                        _log_print(f"[hudpy][Delta][EXC][title] {type(e).__name__}: {e}", log_file)
-                                    except Exception:
-                                        pass
-    
-                            # Delta-Funktion (aus Sync-Map)
-                            def _delta_at_slow_frame(idx0: int) -> float:
-                                fps_safe = float(fps) if float(fps) > 0.1 else 30.0
-                                if not slow_frame_to_fast_time_s:
-                                    return 0.0
-                                if idx0 < 0:
-                                    idx0 = 0
-                                if idx0 >= len(slow_frame_to_fast_time_s):
-                                    idx0 = len(slow_frame_to_fast_time_s) - 1
-                                slow_t = float(idx0) / fps_safe
-                                fast_t = float(slow_frame_to_fast_time_s[idx0])
-                                return float(slow_t - fast_t)
-    
-                            # Y-Skalierung wie gewünscht:
-                            # - wenn kein negatives Delta: 0-Linie unten, nur positive Skala
-                            # - wenn negatives Delta vorhanden: 0-Linie zwischen min_neg und max_pos
-                            y_top = float(plot_y0)
-                            y_bot = float(plot_y1)
-                            span = max(10.0, (y_bot - y_top))
-    
-                            if not delta_has_neg:
-                                y_zero = y_bot  # 0s ganz unten
-                                pos_span = max(4.0, (y_zero - y_top))
-    
-                                def _y_from_delta(dsec: float) -> int:
-                                    d = float(dsec)
-                                    if d < 0.0:
-                                        d = 0.0
-                                    if d > float(delta_pos_max):
-                                        d = float(delta_pos_max)
-                                    yy = y_zero - (d / float(delta_pos_max)) * pos_span
-                                    return int(round(yy))
-                            else:
-                                # min_neg ist negativ, range_neg = abs(min_neg)
-                                range_neg = float(abs(delta_neg_min))
-                                range_pos = float(delta_pos_max)
-                                total = max(1e-6, (range_neg + range_pos))
-    
-                                # 0-Linie so, dass oben Platz für +Delta und unten für -Delta bleibt
-                                y_zero = y_top + (range_pos / total) * span
-                                y_zero = max(y_top + 2.0, min(y_bot - 2.0, y_zero))
-    
-                                pos_span = max(4.0, (y_zero - y_top))
-                                neg_span = max(4.0, (y_bot - y_zero))
-    
-                                def _y_from_delta(dsec: float) -> int:
-                                    d = float(dsec)
-                                    if d >= 0.0:
-                                        if d > range_pos:
-                                            d = range_pos
-                                        yy = y_zero - (d / range_pos) * pos_span
-                                    else:
-                                        ad = abs(d)
-                                        if ad > range_neg:
-                                            ad = range_neg
-                                        yy = y_zero + (ad / range_neg) * neg_span
-                                    return int(round(yy))
-    
-                            # 0-Linie (rot)
-                            try:
-                                y_mid = int(round(y_zero))
-                                dr.line(
-                                    [(int(x0), y_mid), (int(x0 + w - 1), y_mid)],
-                                    fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
-                                    width=1,
-                                )
-                            except Exception as e:
-                                if hud_dbg:
-                                    try:
-                                        _log_print(f"[hudpy][Delta][EXC][zero_line] {type(e).__name__}: {e}", log_file)
-                                    except Exception:
-                                        pass
-    
-                            # Aktueller Wert oberhalb Marker (stabile Breite, Vorzeichen immer)
-                            try:
-                                d_cur = float(_delta_at_slow_frame(int(i)))
-                                col_cur = COL_FAST_DARKBLUE if d_cur >= 0.0 else COL_SLOW_DARKRED
-    
-                                placeholder = "+999.999s"
-                                try:
-                                    bb = dr.textbbox((0, 0), placeholder, font=font_val)
-                                    w_fix = int(bb[2] - bb[0])
-                                except Exception:
-                                    w_fix = int(len(placeholder) * max(6, int(font_val_sz * 0.6)))
-    
-                                # 1 Zeichen Abstand zum Marker
-                                x_val = int(mx) - 6 - int(w_fix)
-                                y_val = int(y0 + 2)
-    
-                                txt = f"{d_cur:+.3f}s"
-                                if len(txt) < len(placeholder):
-                                    txt = txt.rjust(len(placeholder), " ")
-    
-                                dr.text((x_val, y_val), txt, fill=col_cur, font=font_val)
-                            except Exception as e:
-                                if hud_dbg:
-                                    try:
-                                        _log_print(f"[hudpy][Delta][EXC][value_text] {type(e).__name__}: {e}", log_file)
-                                    except Exception:
-                                        pass
-    
-                            # Kurve: Anzahl Punkte aus Override, ohne 600-Cap, bis zur HUD-Breite
-                            span_n = max(1, int(iR) - int(iL))
-                            pts_target = int(hud_curve_points_default or 180)
-                            try:
-                                ovs = hud_curve_points_overrides if isinstance(hud_curve_points_overrides, dict) else None
-                                if ovs and hud_key in ovs:
-                                    pts_target = int(float(ovs.get(hud_key) or pts_target))
-                            except Exception as e:
-                                if hud_dbg:
-                                    try:
-                                        _log_print(f"[hudpy][Delta][EXC][curve_points] {type(e).__name__}: {e}", log_file)
-                                    except Exception:
-                                        pass
-    
-                            if pts_target < 10:
-                                pts_target = 10
-    
-                            max_pts = max(10, min(int(w), int(pts_target)))
-                            stride = max(1, int(round(float(span_n) / float(max_pts))))
-    
-                            # Debug: Warum wird ggf. keine Kurve sichtbar?
-                            if hud_dbg:
-                                try:
-                                    _log_print(
-                                        (
-                                            f"[hudpy][Delta] i={int(i)} iL={int(iL)} iR={int(iR)} "
-                                            f"span_n={int(span_n)} w={int(w)} pts_target={int(pts_target)} "
-                                            f"max_pts={int(max_pts)} stride={int(stride)}"
-                                        ),
-                                        log_file,
-                                    )
-                                    _log_print(
-                                        (
-                                            f"[hudpy][Delta] pos_max={float(delta_pos_max):.6f}s "
-                                            f"neg_min={float(delta_neg_min):.6f}s has_neg={bool(delta_has_neg)}"
-                                        ),
-                                        log_file,
-                                    )
-                                    _log_print(
-                                        f"[hudpy][Delta] sync_len={0 if not slow_frame_to_fast_time_s else len(slow_frame_to_fast_time_s)}",
-                                        log_file,
-                                    )
-                                    dL = float(_delta_at_slow_frame(int(iL)))
-                                    dC = float(_delta_at_slow_frame(int(i)))
-                                    dR = float(_delta_at_slow_frame(int(iR)))
-                                    _log_print(
-                                        f"[hudpy][Delta] samples: dL={dL:+.6f}s dC={dC:+.6f}s dR={dR:+.6f}s",
-                                        log_file,
-                                    )
-                                except Exception as e:
-                                    try:
-                                        _log_print(f"[hudpy][Delta][EXC][dbg] {type(e).__name__}: {e}", log_file)
-                                    except Exception:
-                                        pass
-    
-                            idxs = []
-                            k = int(i)
-                            while k >= int(iL):
-                                idxs.append(k)
-                                k -= int(stride)
-                            k = int(i) + int(stride)
-                            while k <= int(iR):
-                                idxs.append(k)
-                                k += int(stride)
-    
-                            idxs = sorted(set(idxs))
-                            if idxs:
-                                if idxs[0] != int(iL):
-                                    idxs.insert(0, int(iL))
-                                if idxs[-1] != int(iR):
-                                    idxs.append(int(iR))
-                            else:
-                                idxs = [int(iL), int(i), int(iR)]
-    
-                            # Segmente nach Vorzeichen einfärben (blau >=0, rot <0)
-                            seg_pts = []
-                            seg_col = COL_FAST_DARKBLUE
-    
-                            def _flush_segment():
-                                nonlocal seg_pts, seg_col
-                                if len(seg_pts) >= 2:
-                                    try:
-                                        dr.line(seg_pts, fill=seg_col, width=2)
-                                    except Exception as e:
-                                        if hud_dbg:
-                                            try:
-                                                _log_print(f"[hudpy][Delta][EXC][segment_line] {type(e).__name__}: {e}", log_file)
-                                            except Exception:
-                                                pass
-                                seg_pts = []
-    
-                            last_sign = None
-    
-                            for idx in idxs:
-                                if idx < int(iL) or idx > int(iR):
-                                    continue
-    
-                                x = int(round(_idx_to_x(int(idx))))
-                                dsec = float(_delta_at_slow_frame(int(idx)))
-                                y = int(round(_y_from_delta(float(dsec))))
-    
-                                sign = 1 if dsec >= 0.0 else -1
-                                col = COL_FAST_DARKBLUE if sign >= 0 else COL_SLOW_DARKRED
-    
-                                if last_sign is None:
-                                    last_sign = sign
-                                    seg_col = col
-    
-                                if sign != last_sign:
-                                    _flush_segment()
-                                    seg_col = col
-                                    last_sign = sign
-    
-                                # Punktaufbereitung wie Steering: pro X nur ein Punkt (letzter gewinnt)
-                                if seg_pts and int(seg_pts[-1][0]) == int(x):
-                                    seg_pts[-1] = (int(x), int(y))
-                                else:
-                                    seg_pts.append((int(x), int(y)))
-    
-                            _flush_segment()
-    
-                        except Exception as e:
-                            try:
-                                _log_print(
-                                    f"[hudpy][Delta][EXC][draw] {type(e).__name__}: {e}",
-                                    log_file,
-                                )
-                            except Exception:
-                                pass
-    
+                    delta_ctx = {
+                        "hud_key": hud_key,
+                        "fps": fps,
+                        "i": i,
+                        "iL": iL,
+                        "iR": iR,
+                        "mx": mx,
+                        "_idx_to_x": _idx_to_x,
+                        "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
+                        "delta_has_neg": delta_has_neg,
+                        "delta_pos_max": delta_pos_max,
+                        "delta_neg_min": delta_neg_min,
+                        "hud_curve_points_default": hud_curve_points_default,
+                        "hud_curve_points_overrides": hud_curve_points_overrides,
+                        "hud_dbg": hud_dbg,
+                        "_log_print": _log_print,
+                        "log_file": log_file,
+                        "COL_WHITE": COL_WHITE,
+                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                    }
+                    render_delta(delta_ctx, (x0, y0, w, h), dr)
+
                 def _hud_steering() -> None:
-                    # Story 3: Steering-Linien zeichnen
-                    if hud_key == "Steering":
-                        try:
-                            # --- Headroom nur oben (positiv) ---
-                            # Default: 1.20 (20% Headroom oben). Unten kein Headroom.
-                            try:
-                                headroom = float((os.environ.get("IRVC_STEER_HEADROOM") or "").strip() or "1.20")
-                            except Exception:
-                                headroom = 1.20
-                            if headroom < 1.00:
-                                headroom = 1.00
-                            if headroom > 2.00:
-                                headroom = 2.00
-    
-                            mid_y = float(y0) + (float(h) / 2.0)
-                            amp_base = max(2.0, (float(h) / 2.0) - 2.0)
-                            amp_neg = amp_base
-                            amp_pos = amp_base / max(1.0, headroom)
-    
-                            def _y_from_norm(sn: float) -> int:
-                                # sn in [-1..+1]
-                                if sn >= 0.0:
-                                    yy = mid_y - (sn * amp_pos)
-                                else:
-                                    yy = mid_y - (sn * amp_neg)
-                                return int(round(yy))
-    
-                            # 0-Lenkung Mittellinie
-                            try:
-                                y_mid = int(round(mid_y))
-                                dr.line([(int(x0), y_mid), (int(x0 + w - 1), y_mid)], fill=(COL_WHITE[0], COL_WHITE[1], COL_WHITE[2], 180), width=1)
-                            except Exception:
-                                pass
-    
-                            # Titel oben links + Werte am Marker (größer, gleiche Höhe, stabil formatiert)
-                            try:
-                                try:
-                                    from PIL import ImageFont
-                                except Exception:
-                                    ImageFont = None  # type: ignore
-    
-                                # Schriftgrößen: bewusst kleiner und ruhiger
-                                # Titel etwas kleiner als Werte
-                                font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                                font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-    
-                                def _load_font(sz: int):
-                                    if ImageFont is None:
-                                        return None
-                                    try:
-                                        return ImageFont.truetype("arial.ttf", sz)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        return ImageFont.load_default()
-                                    except Exception:
-                                        return None
-    
-                                font_title = _load_font(font_sz)
-                                font_val = _load_font(font_val_sz)
-    
-                                def _text_w(text: str, font_obj):
-                                    try:
-                                        # Pillow >= 8: textbbox vorhanden
-                                        bb = dr.textbbox((0, 0), text, font=font_obj)
-                                        return int(bb[2] - bb[0])
-                                    except Exception:
-                                        try:
-                                            return int(dr.textlength(text, font=font_obj))
-                                        except Exception:
-                                            return int(len(text) * 8)
-    
-                                y_txt = int(y0 + 2)  # gleiche Höhe wie Titel
-                                dr.text((int(x0 + 4), y_txt), "Steering wheel angle", fill=COL_WHITE, font=font_title)
-    
-                                # Werte holen (Radiant -> Grad)
-                                sv_cur = 0.0
-                                if slow_steer_frames:
-                                    si_cur = int(round(float(i) * float(steer_slow_scale)))
-                                    if si_cur < 0:
-                                        si_cur = 0
-                                    if si_cur >= len(slow_steer_frames):
-                                        si_cur = len(slow_steer_frames) - 1
-                                    sv_cur = float(slow_steer_frames[si_cur])
-    
-                                fi_cur = int(i)
-                                if slow_to_fast_frame and int(i) < len(slow_to_fast_frame):
-                                    fi_cur = int(slow_to_fast_frame[int(i)])
-                                    if fi_cur < 0:
-                                        fi_cur = 0
-    
-                                fv_cur = 0.0
-                                if fast_steer_frames:
-                                    fi_csv_cur = int(round(float(fi_cur) * float(steer_fast_scale)))
-                                    if fi_csv_cur < 0:
-                                        fi_csv_cur = 0
-                                    if fi_csv_cur >= len(fast_steer_frames):
-                                        fi_csv_cur = len(fast_steer_frames) - 1
-                                    fv_cur = float(fast_steer_frames[fi_csv_cur])
-    
-                                sdeg = int(round(float(sv_cur) * 180.0 / math.pi))
-                                fdeg = int(round(float(fv_cur) * 180.0 / math.pi))
-    
-                                # Stabil: immer Vorzeichen + 3 Ziffern -> kein Springen
-                                # Beispiel: +075°, -147°
-                                s_txt = f"{sdeg:+04d}°"
-                                f_txt = f"{fdeg:+04d}°"
-    
-                                mx = int(x0 + (w // 2))
-                                gap = 12  # ~1 Ziffer Abstand zum Marker
-    
-                                # Rot näher an den Marker (links), Blau rechts
-                                f_w = _text_w(f_txt, font_val)
-                                f_x = int(mx - gap - f_w)
-                                s_x = int(mx + gap)
-    
-                                # Clamp in die Box
-                                if f_x < int(x0 + 2):
-                                    f_x = int(x0 + 2)
-                                if s_x > int(x0 + w - 2):
-                                    s_x = int(x0 + w - 2)
-    
-                                dr.text((f_x, y_txt), f_txt, fill=(255, 0, 0, 255), font=font_val)       # Fast (rot) links am Marker
-                                dr.text((s_x, y_txt), s_txt, fill=(0, 120, 255, 255), font=font_val)     # Slow (blau) rechts am Marker
-                            except Exception:
-                                pass
-    
-                            # Wie dicht wir sampeln (nicht jeden Frame, damit es schnell bleibt)
-                            span_n = max(1, int(iR - iL))
-    
-                            pts_target = int(hud_curve_points_default or 180)
-                            try:
-                                ovs = hud_curve_points_overrides if isinstance(hud_curve_points_overrides, dict) else None
-                                if ovs and hud_key in ovs:
-                                    pts_target = int(float(ovs.get(hud_key) or pts_target))
-                            except Exception:
-                                pass
-    
-                            # Grenzen, damit es stabil bleibt
-                            if pts_target < 40:
-                                pts_target = 40
-                            if pts_target > 600:
-                                pts_target = 600
-    
-                            # nicht mehr Punkte als Pixelbreite
-                            max_pts = max(40, min(int(w), int(pts_target)))
-    
-                            stride = max(1, int(round(float(span_n) / float(max_pts))))
-    
-                            # --- DEBUG: Welche CSV-Punkte werden für einen bestimmten Output-Frame benutzt? ---
-                            # Aktivieren per env:
-                            #   set RVA_HUD_STEER_DEBUG_FRAME=1440
-                            # Optional:
-                            #   set RVA_HUD_STEER_DEBUG_SAMPLES=12
-                            try:
-                                dbg_frame = int(os.environ.get("RVA_HUD_STEER_DEBUG_FRAME", "").strip() or "-1")
-                            except Exception:
-                                dbg_frame = -1
-                            try:
-                                dbg_n = int(os.environ.get("RVA_HUD_STEER_DEBUG_SAMPLES", "").strip() or "12")
-                            except Exception:
-                                dbg_n = 12
-                            if dbg_n < 4:
-                                dbg_n = 4
-                            if dbg_n > 60:
-                                dbg_n = 60
-    
-                            if dbg_frame >= 0 and int(i) == int(dbg_frame):
-                                try:
-                                    ov_b = 0
-                                    ov_a = 0
-                                    try:
-                                        if isinstance(hud_windows, dict) and isinstance(hud_windows.get(hud_key), dict):
-                                            o = hud_windows.get(hud_key) or {}
-                                            if o.get("before_s") is not None:
-                                                ov_b = 1
-                                            if o.get("after_s") is not None:
-                                                ov_a = 1
-                                    except Exception:
-                                        pass
-    
-                                    _log_print(
-                                        f"[hudpy][dbg-steer] i={int(i)} ld_c={ld_c:.6f} "
-                                        f"before_s_h={float(before_s_h):.6f} after_s_h={float(after_s_h):.6f} "
-                                        f"default_before_s={float(default_before_s):.6f} default_after_s={float(default_after_s):.6f} "
-                                        f"ov_b={int(ov_b)} ov_a={int(ov_a)} "
-                                        f"iL={int(iL)} iR={int(iR)} span_n={int(span_n)} "
-                                        f"pts_target={int(pts_target)} max_pts={int(max_pts)} stride={int(stride)} "
-                                        f"steer_slow_scale={float(steer_slow_scale):.6f} steer_fast_scale={float(steer_fast_scale):.6f} "
-                                        f"abs_max={float(steer_abs_max):.6f} headroom={float(headroom):.3f}",
-                                        log_file,
-                                    )
-                                except Exception:
-                                    pass
-    
-                                # Probe: ein paar Samples gleichmäßig über das Fenster
-                                try:
-                                    if int(iR) > int(iL):
-                                        step_dbg = max(1, int(round(float(iR - iL) / float(dbg_n - 1))))
-                                    else:
-                                        step_dbg = 1
-    
-                                    k = int(iL)
-                                    n_print = 0
-                                    while k <= int(iR) and n_print < dbg_n:
-                                        # slow CSV index
-                                        try:
-                                            si_dbg = int(round(float(k) * float(steer_slow_scale)))
-                                        except Exception:
-                                            si_dbg = int(k)
-                                        if si_dbg < 0:
-                                            si_dbg = 0
-                                        if slow_steer_frames:
-                                            if si_dbg >= len(slow_steer_frames):
-                                                si_dbg = len(slow_steer_frames) - 1
-                                            sv_dbg = float(slow_steer_frames[si_dbg])
-                                        else:
-                                            sv_dbg = 0.0
-    
-                                        sn_dbg = _clamp(sv_dbg / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                        ys_dbg = _y_from_norm(float(sn_dbg))
-    
-                                        # fast mapping
-                                        fi2_dbg = int(k)
-                                        if slow_to_fast_frame and int(k) < len(slow_to_fast_frame):
-                                            fi2_dbg = int(slow_to_fast_frame[int(k)])
-                                            if fi2_dbg < 0:
-                                                fi2_dbg = 0
-    
-                                        try:
-                                            fi_csv_dbg = int(round(float(fi2_dbg) * float(steer_fast_scale)))
-                                        except Exception:
-                                            fi_csv_dbg = int(fi2_dbg)
-                                        if fi_csv_dbg < 0:
-                                            fi_csv_dbg = 0
-                                        if fast_steer_frames:
-                                            if fi_csv_dbg >= len(fast_steer_frames):
-                                                fi_csv_dbg = len(fast_steer_frames) - 1
-                                            fv_dbg = float(fast_steer_frames[fi_csv_dbg])
-                                        else:
-                                            fv_dbg = 0.0
-                                        fn_dbg = _clamp(fv_dbg / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                        yf_dbg = _y_from_norm(float(fn_dbg))
-    
-                                        _log_print(
-                                            f"[hudpy][dbg-steer] k={int(k)} si={int(si_dbg)} sv={sv_dbg:.6f} sn={sn_dbg:.6f} ys={int(ys_dbg)} "
-                                            f"| fi2={int(fi2_dbg)} fi_csv={int(fi_csv_dbg)} fv={fv_dbg:.6f} fn={fn_dbg:.6f} yf={int(yf_dbg)}",
-                                            log_file,
-                                        )
-    
-                                        n_print += 1
-                                        k += step_dbg
-                                except Exception:
-                                    pass
-                            # --- /DEBUG ---
-    
-                            pts_s: list[tuple[int, int]] = []
-                            pts_f: list[tuple[int, int]] = []
-    
-                            # Symmetrisches Sampling um den Marker (wie bei Throttle/Brake),
-                            # damit links/rechts gleich „stabil“ wirkt.
-                            idxs: list[int] = []
-    
-                            k = int(i)
-                            while k >= int(iL):
-                                idxs.append(k)
-                                k -= int(stride)
-    
-                            k = int(i) + int(stride)
-                            while k <= int(iR):
-                                idxs.append(k)
-                                k += int(stride)
-    
-                            idxs = sorted(set(idxs))
-                            if idxs:
-                                if idxs[0] != int(iL):
-                                    idxs.insert(0, int(iL))
-                                if idxs[-1] != int(iR):
-                                    idxs.append(int(iR))
-                            else:
-                                idxs = [int(iL), int(i), int(iR)]
-    
-                            for idx in idxs:
-                                if idx < int(iL) or idx > int(iR):
-                                    continue
-    
-                                x = _idx_to_x(int(idx))
-    
-                                # Slow
-                                sv = 0.0
-                                if slow_steer_frames:
-                                    si = int(round(float(idx) * float(steer_slow_scale)))
-                                    if si < 0:
-                                        si = 0
-                                    if si >= len(slow_steer_frames):
-                                        si = len(slow_steer_frames) - 1
-                                    sv = float(slow_steer_frames[si])
-    
-                                sn = _clamp(sv / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                ys = _y_from_norm(float(sn))
-                                pts_s.append((x, int(ys)))
-    
-                                # Fast: idx -> frame_map -> fast idx
-                                fi2 = int(idx)
-                                if slow_to_fast_frame and fi2 < len(slow_to_fast_frame):
-                                    fi2 = int(slow_to_fast_frame[fi2])
-                                    if fi2 < 0:
-                                        fi2 = 0
-    
-                                fv = 0.0
-                                if fast_steer_frames:
-                                    fi_csv = int(round(float(fi2) * float(steer_fast_scale)))
-                                    if fi_csv < 0:
-                                        fi_csv = 0
-                                    if fi_csv >= len(fast_steer_frames):
-                                        fi_csv = len(fast_steer_frames) - 1
-                                    fv = float(fast_steer_frames[fi_csv])
-    
-                                fn = _clamp(fv / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                yf = _y_from_norm(float(fn))
-                                pts_f.append((x, int(yf)))
-    
-                            if len(pts_s) >= 2:
-                                dr.line(pts_s, fill=COL_SLOW_DARKRED, width=2)   # slow = rot
-                            if len(pts_f) >= 2:
-                                dr.line(pts_f, fill=COL_FAST_DARKBLUE, width=2)  # fast = blau
-                        except Exception:
-                            pass
-    
-    
-                            pts_target = int(hud_curve_points_default or 180)
-                            try:
-                                ovs = hud_curve_points_overrides if isinstance(hud_curve_points_overrides, dict) else None
-                                if ovs and hud_key in ovs:
-                                    pts_target = int(float(ovs.get(hud_key) or pts_target))
-                            except Exception:
-                                pass
-    
-                            # Grenzen, damit es stabil bleibt
-                            if pts_target < 40:
-                                pts_target = 40
-                            if pts_target > 600:
-                                pts_target = 600
-    
-                            # nicht mehr Punkte als Pixelbreite
-                            max_pts = max(40, min(int(w), int(pts_target)))
-    
-                            stride = max(1, int(round(float(span_n) / float(max_pts))))
-                            
-                            # --- DEBUG: Welche CSV-Punkte werden für einen bestimmten Output-Frame benutzt? ---
-                            # Aktivieren per env:
-                            #   set RVA_HUD_STEER_DEBUG_FRAME=1440
-                            # Optional:
-                            #   set RVA_HUD_STEER_DEBUG_SAMPLES=12
-                            try:
-                                dbg_frame = int(os.environ.get("RVA_HUD_STEER_DEBUG_FRAME", "").strip() or "-1")
-                            except Exception:
-                                dbg_frame = -1
-                            try:
-                                dbg_n = int(os.environ.get("RVA_HUD_STEER_DEBUG_SAMPLES", "").strip() or "12")
-                            except Exception:
-                                dbg_n = 12
-                            if dbg_n < 4:
-                                dbg_n = 4
-                            if dbg_n > 60:
-                                dbg_n = 60
-    
-                            if dbg_frame >= 0 and int(i) == int(dbg_frame):
-                                try:
-                                    ov_b = 0
-                                    ov_a = 0
-                                    try:
-                                        if isinstance(hud_windows, dict) and isinstance(hud_windows.get(hud_key), dict):
-                                            o = hud_windows.get(hud_key) or {}
-                                            if o.get("before_s") is not None:
-                                                ov_b = 1
-                                            if o.get("after_s") is not None:
-                                                ov_a = 1
-                                    except Exception:
-                                        pass
-    
-                                    _log_print(
-                                        f"[hudpy][dbg-steer] i={int(i)} ld_c={ld_c:.6f} "
-                                        f"before_s_h={float(before_s_h):.6f} after_s_h={float(after_s_h):.6f} "
-                                        f"default_before_s={float(default_before_s):.6f} default_after_s={float(default_after_s):.6f} "
-                                        f"ov_b={int(ov_b)} ov_a={int(ov_a)} "
-                                        f"iL={int(iL)} iR={int(iR)} span_n={int(span_n)} "
-                                        f"pts_target={int(pts_target)} max_pts={int(max_pts)} stride={int(stride)} "
-                                        f"steer_slow_scale={float(steer_slow_scale):.6f} steer_fast_scale={float(steer_fast_scale):.6f} "
-                                        f"abs_max={float(steer_abs_max):.6f}",
-                                        log_file,
-                                    )
-                                except Exception:
-                                    pass
-    
-                                # Probe: ein paar Samples gleichmäßig über das Fenster
-                                try:
-                                    if int(iR) > int(iL):
-                                        step_dbg = max(1, int(round(float(iR - iL) / float(dbg_n - 1))))
-                                    else:
-                                        step_dbg = 1
-    
-                                    k = int(iL)
-                                    n_print = 0
-                                    while k <= int(iR) and n_print < dbg_n:
-                                        # slow CSV index
-                                        try:
-                                            si_dbg = int(round(float(k) * float(steer_slow_scale)))
-                                        except Exception:
-                                            si_dbg = int(k)
-                                        if si_dbg < 0:
-                                            si_dbg = 0
-                                        if slow_steer_frames:
-                                            if si_dbg >= len(slow_steer_frames):
-                                                si_dbg = len(slow_steer_frames) - 1
-                                            sv_dbg = float(slow_steer_frames[si_dbg])
-                                        else:
-                                            sv_dbg = 0.0
-    
-                                        sn_dbg = _clamp(sv_dbg / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                        ys_dbg = int(round(mid_y - (sn_dbg * amp)))
-    
-                                        # fast mapping
-                                        fi2_dbg = int(k)
-                                        if slow_to_fast_frame and int(k) < len(slow_to_fast_frame):
-                                            fi2_dbg = int(slow_to_fast_frame[int(k)])
-                                            if fi2_dbg < 0:
-                                                fi2_dbg = 0
-    
-                                        try:
-                                            fi_csv_dbg = int(round(float(fi2_dbg) * float(steer_fast_scale)))
-                                        except Exception:
-                                            fi_csv_dbg = int(fi2_dbg)
-                                        if fi_csv_dbg < 0:
-                                            fi_csv_dbg = 0
-                                        if fast_steer_frames:
-                                            if fi_csv_dbg >= len(fast_steer_frames):
-                                                fi_csv_dbg = len(fast_steer_frames) - 1
-                                            fv_dbg = float(fast_steer_frames[fi_csv_dbg])
-                                        else:
-                                            fv_dbg = 0.0
-                                        fn_dbg = _clamp(fv_dbg / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                        yf_dbg = int(round(mid_y - (fn_dbg * amp)))
-    
-                                        _log_print(
-                                            f"[hudpy][dbg-steer] k={int(k)} si={int(si_dbg)} sv={sv_dbg:.6f} sn={sn_dbg:.6f} ys={int(ys_dbg)} "
-                                            f"| fi2={int(fi2_dbg)} fi_csv={int(fi_csv_dbg)} fv={fv_dbg:.6f} fn={fn_dbg:.6f} yf={int(yf_dbg)}",
-                                            log_file,
-                                        )
-    
-                                        n_print += 1
-                                        k += step_dbg
-                                except Exception:
-                                    pass
-                            # --- /DEBUG ---
-    
-                            pts_s: list[tuple[int, int]] = []
-                            pts_f: list[tuple[int, int]] = []
-    
-                            idx = iL
-                            while idx <= iR:
-                                ld_k = float(slow_frame_to_lapdist[idx]) % 1.0
-                                d = _wrap_delta_05(ld_k, ld_c)
-                                if (-before_span <= d) and (d <= after_span):
-                                    x = _delta_to_x(float(d))
-    
-                                    if slow_steer_frames:
-                                        si = int(round(float(idx) * float(steer_slow_scale)))
-                                        if si < 0:
-                                            si = 0
-                                        if si >= len(slow_steer_frames):
-                                            si = len(slow_steer_frames) - 1
-                                        sv = float(slow_steer_frames[si])
-                                    sn = _clamp(sv / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                    ys = int(round(mid_y - (sn * amp)))
-                                    pts_s.append((x, ys))
-    
-                                    fi2 = idx
-                                    if slow_to_fast_frame and idx < len(slow_to_fast_frame):
-                                        fi2 = int(slow_to_fast_frame[idx])
-                                        if fi2 < 0:
-                                            fi2 = 0
-    
-                                    fv = 0.0
-                                    if fast_steer_frames:
-                                        fi_csv = int(round(float(fi2) * float(steer_fast_scale)))
-                                        if fi_csv < 0:
-                                            fi_csv = 0
-                                        if fi_csv >= len(fast_steer_frames):
-                                            fi_csv = len(fast_steer_frames) - 1
-                                        fv = float(fast_steer_frames[fi_csv])
-                                    fn = _clamp(fv / max(1e-6, steer_abs_max), -1.0, 1.0)
-                                    yf = int(round(mid_y - (fn * amp)))
-                                    pts_f.append((x, yf))
-    
-                                idx += stride
-    
-                            if len(pts_s) >= 2:
-                                dr.line(pts_s, fill=(255, 0, 0, 255), width=2)
-                            if len(pts_f) >= 2:
-                                dr.line(pts_f, fill=(0, 120, 255, 255), width=2)
-                        except Exception:
-                            pass
-    
+                    steering_ctx = {
+                        "hud_key": hud_key,
+                        "i": i,
+                        "iL": iL,
+                        "iR": iR,
+                        "slow_to_fast_frame": slow_to_fast_frame,
+                        "slow_steer_frames": slow_steer_frames,
+                        "fast_steer_frames": fast_steer_frames,
+                        "steer_slow_scale": steer_slow_scale,
+                        "steer_fast_scale": steer_fast_scale,
+                        "steer_abs_max": steer_abs_max,
+                        "hud_curve_points_default": hud_curve_points_default,
+                        "hud_curve_points_overrides": hud_curve_points_overrides,
+                        "hud_windows": hud_windows,
+                        "before_s_h": before_s_h,
+                        "after_s_h": after_s_h,
+                        "default_before_s": default_before_s,
+                        "default_after_s": default_after_s,
+                        "hud_dbg": hud_dbg,
+                        "_clamp": _clamp,
+                        "_idx_to_x": _idx_to_x,
+                        "_log_print": _log_print,
+                        "_wrap_delta_05": _wrap_delta_05,
+                        "slow_frame_to_lapdist": slow_frame_to_lapdist,
+                        "log_file": log_file,
+                        "COL_WHITE": COL_WHITE,
+                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                    }
+                    render_steering(steering_ctx, (x0, y0, w, h), dr)
 
                 def _hud_speed() -> None:
                     pass
@@ -3064,10 +2008,16 @@ def _render_hud_scroll_frames_png(
                     pass
 
                 def _hud_line_delta() -> None:
-                    pass
+                    line_delta_ctx = {
+                        "hud_key": hud_key,
+                    }
+                    render_line_delta(line_delta_ctx, (x0, y0, w, h), dr)
 
                 def _hud_under_oversteer() -> None:
-                    pass
+                    under_oversteer_ctx = {
+                        "hud_key": hud_key,
+                    }
+                    render_under_oversteer(under_oversteer_ctx, (x0, y0, w, h), dr)
 
                 hud_renderers = {
                     "Speed": _hud_speed,
