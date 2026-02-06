@@ -1078,23 +1078,55 @@ def _build_sync_cache_maps_from_csv(
     for n in range(n_slow):
         ts = n / fps
 
-        # slow sample index (nearest)
+        # slow sample (interp by Time_s) -> stabil bei 30/60/120fps
+        vs_interp = None
+
         if ts <= t_s[0]:
-            idx_s = 0
+            x = float(ld_su[0])
+            if out_speed_diff is not None:
+                try:
+                    vs_interp = float(sp_s[0])
+                except Exception:
+                    vs_interp = 0.0
+
         elif ts >= t_s[-1]:
-            idx_s = n_samp_s - 1
+            x = float(ld_su[n_samp_s - 1])
+            if out_speed_diff is not None:
+                try:
+                    vs_interp = float(sp_s[n_samp_s - 1])
+                except Exception:
+                    vs_interp = 0.0
+
         else:
             while j_s < n_samp_s - 2 and t_s[j_s + 1] < ts:
                 j_s += 1
-            a_t = t_s[j_s]
-            b_t = t_s[j_s + 1]
-            if abs(b_t - ts) < abs(ts - a_t):
-                idx_s = j_s + 1
-            else:
-                idx_s = j_s
 
-        x = float(ld_su[idx_s])
-        out_ld.append(x)
+            a_t = float(t_s[j_s])
+            b_t = float(t_s[j_s + 1])
+            den_t = (b_t - a_t)
+            if abs(den_t) < 1e-12:
+                alpha_t = 0.0
+            else:
+                alpha_t = (float(ts) - a_t) / den_t
+
+            if alpha_t < 0.0:
+                alpha_t = 0.0
+            if alpha_t > 1.0:
+                alpha_t = 1.0
+
+            a_x = float(ld_su[j_s])
+            b_x = float(ld_su[j_s + 1])
+            x = a_x + (b_x - a_x) * alpha_t
+
+            if out_speed_diff is not None:
+                try:
+                    vsa = float(sp_s[j_s])
+                    vsb = float(sp_s[j_s + 1])
+                    vs_interp = vsa + (vsb - vsa) * alpha_t
+                except Exception:
+                    vs_interp = 0.0
+
+        out_ld.append(float(x))
 
         # fast lapdist index (interp)
         tf = 0.0
@@ -1156,7 +1188,7 @@ def _build_sync_cache_maps_from_csv(
 
         if out_speed_diff is not None:
             try:
-                vs = float(sp_s[idx_s])
+                vs = float(vs_interp) if vs_interp is not None else 0.0
                 vf = float(vf_interp) if vf_interp is not None else 0.0
                 out_speed_diff.append(abs(vs - vf))
             except Exception:
@@ -2467,9 +2499,9 @@ def _render_hud_scroll_frames_png(
                             if idx < int(iL) or idx > int(iR):
                                 continue
 
-                            x = _idx_to_x(int(idx))
+                            x = int(round(_idx_to_x(int(idx))))
                             dsec = float(_delta_at_slow_frame(int(idx)))
-                            y = _y_from_delta(float(dsec))
+                            y = int(round(_y_from_delta(float(dsec))))
 
                             sign = 1 if dsec >= 0.0 else -1
                             col = COL_FAST_DARKBLUE if sign >= 0 else COL_SLOW_DARKRED
@@ -2483,7 +2515,11 @@ def _render_hud_scroll_frames_png(
                                 seg_col = col
                                 last_sign = sign
 
-                            seg_pts.append((int(x), int(y)))
+                            # Punktaufbereitung wie Steering: pro X nur ein Punkt (letzter gewinnt)
+                            if seg_pts and int(seg_pts[-1][0]) == int(x):
+                                seg_pts[-1] = (int(x), int(y))
+                            else:
+                                seg_pts.append((int(x), int(y)))
 
                         _flush_segment()
 
