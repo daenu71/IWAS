@@ -21,3 +21,6 @@ config/startframes.json
 config/ui_last_run.json
 /docs
 /input
+/.idea/.gitignore
+/.idea/iracing-vc.iml
+/.idea/vcs.xml
