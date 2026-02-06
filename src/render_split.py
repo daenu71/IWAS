@@ -1728,141 +1728,116 @@ def _render_hud_scroll_frames_png(
                     y1 = int(y0 + 6)
                     y2 = int(y0 + 26)
 
-                    if hud_key == "Speed":
-                        if slow_speed_u and i < len(slow_speed_u) and fast_speed_u and fi < len(fast_speed_u):
-                            sv = int(round(float(slow_speed_u[i])))
-                            fv = int(round(float(fast_speed_u[fi])))
+                    def _hud_table_speed() -> None:
+                        if hud_key == "Speed":
+                            if slow_speed_u and i < len(slow_speed_u) and fast_speed_u and fi < len(fast_speed_u):
+                                sv = int(round(float(slow_speed_u[i])))
+                                fv = int(round(float(fast_speed_u[fi])))
 
-                            smin = sv
-                            fmin = fv
-                            if slow_min_u and i < len(slow_min_u):
-                                smin = int(round(float(slow_min_u[i])))
-                            if fast_min_u and fi < len(fast_min_u):
-                                fmin = int(round(float(fast_min_u[fi])))
+                                smin = sv
+                                fmin = fv
+                                if slow_min_u and i < len(slow_min_u):
+                                    smin = int(round(float(slow_min_u[i])))
+                                if fast_min_u and fi < len(fast_min_u):
+                                    fmin = int(round(float(fast_min_u[fi])))
 
-                            # Fonts (ähnlich wie Throttle / Brake)
-                            try:
+                                # Fonts (ähnlich wie Throttle / Brake)
                                 try:
-                                    from PIL import ImageFont
+                                    try:
+                                        from PIL import ImageFont
+                                    except Exception:
+                                        ImageFont = None  # type: ignore
+
+                                    def _load_font(sz: int):
+                                        if ImageFont is None:
+                                            return None
+                                        try:
+                                            return ImageFont.truetype("arial.ttf", sz)
+                                        except Exception:
+                                            try:
+                                                return ImageFont.truetype("DejaVuSans.ttf", sz)
+                                            except Exception:
+                                                return None
+
+                                    font_title = _load_font(18)
+                                    font_val = _load_font(22)
+
+                                    # Titel
+                                    y_title = int(y0 + 6)
+                                    dr.text((xL, y_title), f"Speed / Min ({unit_label})", fill=COL_SLOW_DARKRED, font=font_title)
+                                    dr.text((xR, y_title), f"Speed / Min ({unit_label})", fill=COL_FAST_DARKBLUE, font=font_title)
+
+                                    # Werte
+                                    y_val = int(y0 + 30)
+                                    dr.text((xL, y_val), f"{sv} / {smin}", fill=COL_SLOW_DARKRED, font=font_val)
+                                    dr.text((xR, y_val), f"{fv} / {fmin}", fill=COL_FAST_DARKBLUE, font=font_val)
+
                                 except Exception:
-                                    ImageFont = None  # type: ignore
+                                    # Fallback ohne Fonts
+                                    dr.text((xL, y1), f"Speed / Min ({unit_label})", fill=COL_SLOW_DARKRED)
+                                    dr.text((xR, y1), f"Speed / Min ({unit_label})", fill=COL_FAST_DARKBLUE)
+                                    dr.text((xL, y2), f"{sv} / {smin}", fill=COL_SLOW_DARKRED)
+                                    dr.text((xR, y2), f"{fv} / {fmin}", fill=COL_FAST_DARKBLUE)
 
-                                def _load_font(sz: int):
-                                    if ImageFont is None:
-                                        return None
-                                    try:
-                                        return ImageFont.truetype("arial.ttf", sz)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        return ImageFont.load_default()
-                                    except Exception:
-                                        return None
+                    def _hud_table_gear_rpm() -> None:
+                        if hud_key == "Gear & RPM":
+                            if slow_gear_h and i < len(slow_gear_h) and fast_gear_h and fi < len(fast_gear_h):
+                                sg = int(slow_gear_h[i])
+                                fg = int(fast_gear_h[fi])
 
-                                # Überschrift: deutlich grösser
-                                # Werte: nutzen Rest der Box
-                                font_title_sz = int(round(max(14.0, min(26.0, float(h) * 0.32))))
-                                font_val_sz = int(round(max(18.0, min(40.0, float(h) * 0.60))))
-                                font_title = _load_font(font_title_sz)
-                                font_val = _load_font(font_val_sz)
+                                sr = 0
+                                fr = 0
+                                if slow_rpm_h and i < len(slow_rpm_h):
+                                    sr = int(slow_rpm_h[i])
+                                if fast_rpm_h and fi < len(fast_rpm_h):
+                                    fr = int(fast_rpm_h[fi])
 
-                                # Y-Positionen: Titel oben, Werte darunter (Rest)
-                                y_title = int(y0 + 2)
-
-                                # Höhe der Titelzeile bestimmen
+                                # Fonts (ähnlich wie Throttle / Brake)
                                 try:
-                                    bb = dr.textbbox((0, 0), "Speed / Min-Speed", font=font_title)
-                                    title_h = int(bb[3] - bb[1])
-                                except Exception:
-                                    title_h = int(font_title_sz)
-
-                                y_val = int(y_title + title_h + 2)
-
-                                # 2 Zeilen:
-                                # 1) Überschrift
-                                dr.text((xL, y_title), "Speed / Min-Speed", fill=COL_SLOW_DARKRED, font=font_title)
-                                dr.text((xR, y_title), "Speed / Min-Speed", fill=COL_FAST_DARKBLUE, font=font_title)
-
-                                # 2) Werte gross (nutzt den Rest)
-                                dr.text((xL, y_val), f"{sv} / {smin} {unit_label}", fill=COL_SLOW_DARKRED, font=font_val)
-                                dr.text((xR, y_val), f"{fv} / {fmin} {unit_label}", fill=COL_FAST_DARKBLUE, font=font_val)
-
-                            except Exception:
-                                # Fallback ohne Fonts
-                                dr.text((xL, y1), f"Speed / Min-Speed", fill=COL_SLOW_DARKRED)
-                                dr.text((xR, y1), f"Speed / Min-Speed", fill=COL_FAST_DARKBLUE)
-                                dr.text((xL, y2), f"{sv} / {smin} {unit_label}", fill=COL_SLOW_DARKRED)
-                                dr.text((xR, y2), f"{fv} / {fmin} {unit_label}", fill=COL_FAST_DARKBLUE)
-                    elif hud_key == "Gear & RPM":
-                        if slow_gear_h and i < len(slow_gear_h) and fast_gear_h and fi < len(fast_gear_h):
-                            sg = int(slow_gear_h[i])
-                            fg = int(fast_gear_h[fi])
-
-                            sr = 0
-                            fr = 0
-                            if slow_rpm_h and i < len(slow_rpm_h):
-                                sr = int(slow_rpm_h[i])
-                            if fast_rpm_h and fi < len(fast_rpm_h):
-                                fr = int(fast_rpm_h[fi])
-
-                            # Fonts (gleiches Prinzip wie Speed)
-                            try:
-                                try:
-                                    from PIL import ImageFont
-                                except Exception:
-                                    ImageFont = None  # type: ignore
-
-                                def _load_font(sz: int):
-                                    if ImageFont is None:
-                                        return None
                                     try:
-                                        return ImageFont.truetype("arial.ttf", sz)
+                                        from PIL import ImageFont
                                     except Exception:
-                                        pass
-                                    try:
-                                        return ImageFont.truetype("DejaVuSans.ttf", sz)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        return ImageFont.load_default()
-                                    except Exception:
-                                        return None
+                                        ImageFont = None  # type: ignore
 
-                                font_title_sz = int(round(max(14.0, min(26.0, float(h) * 0.32))))
-                                font_val_sz = int(round(max(18.0, min(40.0, float(h) * 0.60))))
-                                font_title = _load_font(font_title_sz)
-                                font_val = _load_font(font_val_sz)
+                                    def _load_font(sz: int):
+                                        if ImageFont is None:
+                                            return None
+                                        try:
+                                            return ImageFont.truetype("arial.ttf", sz)
+                                        except Exception:
+                                            try:
+                                                return ImageFont.truetype("DejaVuSans.ttf", sz)
+                                            except Exception:
+                                                return None
 
-                                y_title = int(y0 + 2)
+                                    font_title = _load_font(18)
+                                    font_val = _load_font(22)
 
-                                try:
-                                    bb = dr.textbbox((0, 0), "Gear / RPM", font=font_title)
-                                    title_h = int(bb[3] - bb[1])
+                                    # Titel
+                                    y_title = int(y0 + 6)
+                                    dr.text((xL, y_title), "Gear / RPM", fill=COL_SLOW_DARKRED, font=font_title)
+                                    dr.text((xR, y_title), "Gear / RPM", fill=COL_FAST_DARKBLUE, font=font_title)
+
+                                    # Werte
+                                    y_val = int(y0 + 30)
+                                    dr.text((xL, y_val), f"{sg} / {sr} rpm", fill=COL_SLOW_DARKRED, font=font_val)
+                                    dr.text((xR, y_val), f"{fg} / {fr} rpm", fill=COL_FAST_DARKBLUE, font=font_val)
+
                                 except Exception:
-                                    title_h = int(font_title_sz)
+                                    # Fallback ohne Fonts
+                                    dr.text((xL, y1), "Gear / RPM", fill=COL_SLOW_DARKRED)
+                                    dr.text((xR, y1), "Gear / RPM", fill=COL_FAST_DARKBLUE)
+                                    dr.text((xL, y2), f"{sg} / {sr} rpm", fill=COL_SLOW_DARKRED)
+                                    dr.text((xR, y2), f"{fg} / {fr} rpm", fill=COL_FAST_DARKBLUE)
 
-                                y_val = int(y_title + title_h + 2)
+                    table_renderers = {
+                        "Speed": _hud_table_speed,
+                        "Gear & RPM": _hud_table_gear_rpm,
+                    }
+                    fn_tbl = table_renderers.get(hud_key)
+                    if fn_tbl is not None:
+                        fn_tbl()
 
-                                # Überschrift
-                                dr.text((xL, y_title), "Gear / RPM", fill=COL_SLOW_DARKRED, font=font_title)
-                                dr.text((xR, y_title), "Gear / RPM", fill=COL_FAST_DARKBLUE, font=font_title)
-
-                                # Werte gross
-                                dr.text((xL, y_val), f"{sg} / {sr} rpm", fill=COL_SLOW_DARKRED, font=font_val)
-                                dr.text((xR, y_val), f"{fg} / {fr} rpm", fill=COL_FAST_DARKBLUE, font=font_val)
-
-                            except Exception:
-                                # Fallback ohne Fonts
-                                dr.text((xL, y1), "Gear / RPM", fill=COL_SLOW_DARKRED)
-                                dr.text((xR, y1), "Gear / RPM", fill=COL_FAST_DARKBLUE)
-                                dr.text((xL, y2), f"{sg} / {sr} rpm", fill=COL_SLOW_DARKRED)
-                                dr.text((xR, y2), f"{fg} / {fr} rpm", fill=COL_FAST_DARKBLUE)
-                except Exception:
-                    continue
 
         # Wir zeichnen alle Scroll-HUDs in dieses eine Bild.
         for hud_key, x0, y0, w, h in hud_items:
