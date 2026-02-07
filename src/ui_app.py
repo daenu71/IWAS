@@ -23,6 +23,7 @@ from core.models import (
 from core import persistence, filesvc
 from core.render_service import start_render
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
+from preview.png_preview import PngPreviewController
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -1237,111 +1238,6 @@ def main() -> None:
     png_canvas = tk.Canvas(preview_area, highlightthickness=0)
     png_canvas.grid(row=0, column=0, sticky="nsew")
     png_canvas.grid_remove()
-    
-    
-    # --- PNG Debug Logging ---
-    PNG_DEBUG = False
-
-    def _png_dbg(msg: str) -> None:
-        if not PNG_DEBUG:
-            return
-        try:
-            ts = time.strftime("%H:%M:%S")
-        except Exception:
-            ts = "??:??:??"
-        try:
-            print(f"[PNGDBG {ts}] {msg}")
-        except Exception:
-            pass
-    
-
-    # PNG State (pro Seite)
-    png_state = {
-        "L": {"zoom": 1.0, "off_x": 0, "off_y": 0, "fit_to_height": False},
-        "R": {"zoom": 1.0, "off_x": 0, "off_y": 0, "fit_to_height": False},
-        "drag": False,
-        "drag_side": "",
-        "drag_x": 0,
-        "drag_y": 0,
-    }
-
-    # Letzte Frame-Geometrie (für Hit-Tests)
-    png_frame_last = {
-        "x0": 0, "y0": 0, "x1": 0, "y1": 0,
-        "lx0": 0, "lx1": 0,
-        "mx0": 0, "mx1": 0,
-        "rx0": 0, "rx1": 0,
-        "valid": False,
-        "scale": 1.0,
-    }
-
-    png_img_left = None
-    png_img_right = None
-    png_left_name = ""
-    png_right_name = ""
-    png_left_start = -1
-    png_right_start = -1
-
-    def png_load_state_for_current() -> None:
-        key = png_view_key()
-        d = png_view_data.get(key)
-        if not isinstance(d, dict):
-            return
-
-        def _get_float(name: str, default: float) -> float:
-            try:
-                return float(d.get(name, default))
-            except Exception:
-                return float(default)
-
-        def _get_int(name: str, default: int) -> int:
-            try:
-                return int(d.get(name, default))
-            except Exception:
-                return int(default)
-
-        def _get_bool(name: str, default: bool) -> bool:
-            try:
-                v = d.get(name, default)
-                return bool(v)
-            except Exception:
-                return bool(default)
-
-        zl = _get_float("zoom_l", 1.0)
-        zr = _get_float("zoom_r", 1.0)
-
-        if zl < 0.1:
-            zl = 0.1
-        if zl > 20.0:
-            zl = 20.0
-        if zr < 0.1:
-            zr = 0.1
-        if zr > 20.0:
-            zr = 20.0
-
-        png_state["L"]["zoom"] = float(zl)
-        png_state["L"]["off_x"] = _get_int("off_lx", 0)
-        png_state["L"]["off_y"] = _get_int("off_ly", 0)
-        png_state["L"]["fit_to_height"] = _get_bool("fit_l", False)
-
-        png_state["R"]["zoom"] = float(zr)
-        png_state["R"]["off_x"] = _get_int("off_rx", 0)
-        png_state["R"]["off_y"] = _get_int("off_ry", 0)
-        png_state["R"]["fit_to_height"] = _get_bool("fit_r", False)
-
-    def png_save_state_for_current() -> None:
-        key = png_view_key()
-        png_view_data[key] = {
-            "zoom_l": float(png_state["L"]["zoom"]),
-            "off_lx": int(png_state["L"]["off_x"]),
-            "off_ly": int(png_state["L"]["off_y"]),
-            "fit_l": bool(png_state["L"].get("fit_to_height", False)),
-            "zoom_r": float(png_state["R"]["zoom"]),
-            "off_rx": int(png_state["R"]["off_x"]),
-            "off_ry": int(png_state["R"]["off_y"]),
-            "fit_r": bool(png_state["R"].get("fit_to_height", False)),
-        }
-        persistence.save_png_view(png_view_data)
 
     def choose_slow_fast_paths() -> tuple[Path | None, Path | None]:
         if len(videos) != 2:
@@ -1449,617 +1345,64 @@ def main() -> None:
             except Exception:
                 pass
 
-    def compute_frame_rect_for_preview() -> tuple[int, int, int, int, float, int, int, int]:
-        # Returns: x0,y0,x1,y1,scale,out_w,out_h,hud_w
-        area_w = max(200, preview_area.winfo_width())
-        area_h = max(200, preview_area.winfo_height())
-
+    def current_png_output_format() -> LayoutPreviewOutputFormat:
         out_w, out_h = parse_preset(out_preset_var.get())
         if out_w <= 0 or out_h <= 0:
             out_w, out_h = 1280, 720
+        return LayoutPreviewOutputFormat(
+            out_w=int(out_w),
+            out_h=int(out_h),
+            hud_w=int(get_hud_width_px()),
+        )
 
-        hud_w = get_hud_width_px()
-        hud_w = max(0, min(int(hud_w), max(0, out_w - 2)))
+    def load_png_view_data() -> dict:
+        if isinstance(png_view_data, dict):
+            return png_view_data
+        return {}
 
-        pad = 10
-        avail_w = max(50, area_w - 2 * pad)
-        avail_h = max(50, area_h - 2 * pad)
+    def save_png_view_data(data: dict) -> None:
+        nonlocal png_view_data
+        png_view_data = data
+        persistence.save_png_view(png_view_data)
 
-        scale = min(avail_w / max(1, out_w), avail_h / max(1, out_h))
-        draw_w = int(out_w * scale)
-        draw_h = int(out_h * scale)
+    png_preview_ctrl = PngPreviewController(
+        canvas=png_canvas,
+        get_preview_area_size=lambda: (preview_area.winfo_width(), preview_area.winfo_height()),
+        get_output_format=current_png_output_format,
+        is_png_mode=lambda: preview_mode_var.get() == "png",
+        get_png_view_key=png_view_key,
+        load_png_view_data=load_png_view_data,
+        save_png_view_data=save_png_view_data,
+        choose_slow_fast_paths=choose_slow_fast_paths,
+        get_start_for_video=get_start_for_video,
+        read_frame_as_pil=read_frame_as_pil,
+    )
 
-        x0 = int((area_w - draw_w) / 2)
-        y0 = int((area_h - draw_h) / 2)
-        x1 = x0 + draw_w
-        y1 = y0 + draw_h
-        return x0, y0, x1, y1, float(scale), int(out_w), int(out_h), int(hud_w)
+    def png_load_state_for_current() -> None:
+        png_preview_ctrl.png_load_state_for_current()
 
-    def pil_paste_clipped(dst: Image.Image, src: Image.Image, region_box: tuple[int, int, int, int], pos_xy: tuple[int, int]) -> None:
-        # region_box is the allowed region in dst coords.
-        rx0, ry0, rx1, ry1 = region_box
-        px, py = pos_xy
-
-        sx0 = px
-        sy0 = py
-        sx1 = px + src.size[0]
-        sy1 = py + src.size[1]
-
-        ix0 = max(rx0, sx0)
-        iy0 = max(ry0, sy0)
-        ix1 = min(rx1, sx1)
-        iy1 = min(ry1, sy1)
-
-        if ix1 <= ix0 or iy1 <= iy0:
-            return
-
-        crop_x0 = ix0 - sx0
-        crop_y0 = iy0 - sy0
-        crop_x1 = crop_x0 + (ix1 - ix0)
-        crop_y1 = crop_y0 + (iy1 - iy0)
-
-        src_c = src.crop((int(crop_x0), int(crop_y0), int(crop_x1), int(crop_y1)))
-        dst.paste(src_c, (int(ix0), int(iy0)))
-        
-    def _png_region_out(side: str, out_w: int, out_h: int, hud_w: int) -> tuple[int, int, int, int]:
-        """
-        Region im Output-Koordinatensystem (nicht Preview-Pixel!):
-        Links:  [0 .. side_w)
-        HUD:    [side_w .. side_w+hud_w)
-        Rechts: [side_w+hud_w .. out_w)
-        """
-        side_w = int((out_w - hud_w) / 2)
-        if side_w < 1:
-            side_w = int(out_w / 2)
-
-        if side == "L":
-            return 0, 0, side_w, out_h
-        # "R"
-        return side_w + hud_w, 0, out_w, out_h
-
-    def _clamp_png_cover(
-        side: str,
-        src_img: Image.Image,
-        out_w: int,
-        out_h: int,
-        hud_w: int,
-        enforce_cover: bool = True,
-        enforce_cover_zoom: bool = True,
-    ) -> None:
-        try:
-            _png_dbg(
-                f"CLAMP ENTER side={side} "
-                f"fit={bool(png_state[side].get('fit_to_height', False))} "
-                f"zoom={float(png_state[side].get('zoom', 0.0)):.6f} "
-                f"off=({int(png_state[side].get('off_x', 0))},{int(png_state[side].get('off_y', 0))}) "
-                f"src=({src_img.size[0]}x{src_img.size[1]}) out=({out_w}x{out_h}) hud_w={hud_w} "
-                f"enforce_cover={bool(enforce_cover)} enforce_cover_zoom={bool(enforce_cover_zoom)}"
-            )
-        except Exception:
-            pass
-
-        """
-        enforce_cover=True:
-          - Offsets werden so geclamped, dass (wenn möglich) keine Lücken sichtbar sind.
-        enforce_cover_zoom=True zusätzlich:
-          - Zoom wird mindestens auf min_zoom (Cover) angehoben.
-        Wenn das Bild kleiner als die Region ist (ow<rw oder oh<rh):
-          - Offsets werden auf 0 gesetzt (zentriert), weil "Cover" nicht möglich ist.
-        Offsets bleiben in Output-Pixeln.
-        """
-        if src_img is None:
-            return
-
-        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w)
-        rw = max(1, rx1 - rx0)
-        rh = max(1, ry1 - ry0)
-
-        sw = max(1.0, float(src_img.size[0]))
-        sh = max(1.0, float(src_img.size[1]))
-
-        # Minimaler Zoom, damit Region komplett abgedeckt wird (Cover)
-        min_zoom = max(float(rw) / sw, float(rh) / sh)
-
-        fit = bool(png_state[side].get("fit_to_height", False))
-
-        # Grund-Zoom aus State
-        try:
-            z_out = float(png_state[side].get("zoom", 1.0))
-        except Exception:
-            z_out = 1.0
-
-        # Fit-Modus: exakt Cover-Zoom
-        if fit:
-            z_out = float(min_zoom)
-
-        # Zoom clamp (immer)
-        if z_out < 0.1:
-            z_out = 0.1
-        if z_out > 20.0:
-            z_out = 20.0
-
-        # Cover-Zoom nur wenn gewünscht
-        if enforce_cover and enforce_cover_zoom and z_out < min_zoom:
-            z_out = float(min_zoom)
-
-        png_state[side]["zoom"] = float(z_out)
-
-        # Skaliertes Bild in Output-Pixeln
-        ow = max(1, int(round(sw * z_out)))
-        oh = max(1, int(round(sh * z_out)))
-
-        # Center-Base (wie im Render)
-        base_cx = float(rx0) + (float(rw) - float(ow)) / 2.0
-        base_cy = float(ry0) + (float(rh) - float(oh)) / 2.0
-
-        if enforce_cover:
-            try:
-                ox = float(png_state[side].get("off_x", 0))
-            except Exception:
-                ox = 0.0
-            try:
-                oy = float(png_state[side].get("off_y", 0))
-            except Exception:
-                oy = 0.0
-
-            # Wenn Cover in einer Achse nicht möglich ist: Offset neutralisieren
-            if ow < rw:
-                ox = 0.0
-            else:
-                min_off_x = float(rx1 - ow) - base_cx
-                max_off_x = float(rx0) - base_cx
-                if min_off_x > max_off_x:
-                    min_off_x, max_off_x = max_off_x, min_off_x
-                if ox < min_off_x:
-                    ox = min_off_x
-                if ox > max_off_x:
-                    ox = max_off_x
-
-            if oh < rh:
-                oy = 0.0
-            else:
-                min_off_y = float(ry1 - oh) - base_cy
-                max_off_y = float(ry0) - base_cy
-                if min_off_y > max_off_y:
-                    min_off_y, max_off_y = max_off_y, min_off_y
-                if oy < min_off_y:
-                    oy = min_off_y
-                if oy > max_off_y:
-                    oy = max_off_y
-
-            png_state[side]["off_x"] = int(round(ox))
-            png_state[side]["off_y"] = int(round(oy))
-
-        try:
-            _png_dbg(
-                f"CLAMP EXIT  side={side} "
-                f"fit={bool(png_state[side].get('fit_to_height', False))} "
-                f"zoom={float(png_state[side].get('zoom', 0.0)):.6f} "
-                f"off=({int(png_state[side].get('off_x', 0))},{int(png_state[side].get('off_y', 0))}) "
-                f"min_zoom={float(min_zoom):.6f} rw={rw} rh={rh} ow={ow} oh={oh} "
-                f"enforce_cover={bool(enforce_cover)} enforce_cover_zoom={bool(enforce_cover_zoom)}"
-            )
-        except Exception:
-            pass
-
+    def png_save_state_for_current() -> None:
+        png_preview_ctrl.png_save_state_for_current()
 
     def render_png_preview(force_reload: bool = False) -> None:
-        nonlocal png_img_left, png_img_right
-        nonlocal png_left_name, png_right_name, png_left_start, png_right_start
-
-        if preview_mode_var.get() != "png":
-            return
-
-        slow_p, fast_p = choose_slow_fast_paths()
-        if slow_p is None or fast_p is None:
-            png_canvas.delete("all")
-            png_canvas.create_text(20, 20, anchor="nw", text="PNG-Vorschau: Bitte 2 Videos mit Zeit im Namen wählen.")
-            png_frame_last["valid"] = False
-            return
-
-        s_start = get_start_for_video(slow_p)
-        f_start = get_start_for_video(fast_p)
-
-        need_reload = force_reload
-        if slow_p.name != png_left_name or fast_p.name != png_right_name:
-            need_reload = True
-        if s_start != png_left_start or f_start != png_right_start:
-            need_reload = True
-
-        if need_reload:
-            png_left_name = slow_p.name
-            png_right_name = fast_p.name
-            png_left_start = s_start
-            png_right_start = f_start
-
-            img_l = read_frame_as_pil(slow_p, s_start)
-            img_r = read_frame_as_pil(fast_p, f_start)
-
-            if img_l is None or img_r is None:
-                png_canvas.delete("all")
-                png_canvas.create_text(20, 20, anchor="nw", text="PNG-Vorschau: Kann Frames nicht lesen (Codec?).")
-                png_frame_last["valid"] = False
-                return
-
-            png_img_left = img_l
-            png_img_right = img_r
-
-        if png_img_left is None or png_img_right is None:
-            png_frame_last["valid"] = False
-            return
-
-        x0, y0, x1, y1, scale, out_w, out_h, hud_w = compute_frame_rect_for_preview()
-
-        draw_w = max(1, x1 - x0)
-        draw_h = max(1, y1 - y0)
-
-        side_w = int((out_w - hud_w) / 2)
-        if side_w < 1:
-            side_w = int(out_w / 2)
-
-        side_w_px = int(round(side_w * scale))
-        hud_w_px = int(round(hud_w * scale))
-
-        # Regionen im Frame (in Frame-Koordinaten, 0..draw_w)
-        lx0 = 0
-        lx1 = max(0, side_w_px)
-        mx0 = lx1
-        mx1 = min(draw_w, mx0 + max(0, hud_w_px))
-        rx0 = mx1
-        rx1 = draw_w
-
-        # Merker für Hit-Test (Canvas-Koords)
-        png_frame_last["x0"] = int(x0)
-        png_frame_last["y0"] = int(y0)
-        png_frame_last["x1"] = int(x1)
-        png_frame_last["y1"] = int(y1)
-        png_frame_last["lx0"] = int(x0 + lx0)
-        png_frame_last["lx1"] = int(x0 + lx1)
-        png_frame_last["mx0"] = int(x0 + mx0)
-        png_frame_last["mx1"] = int(x0 + mx1)
-        png_frame_last["rx0"] = int(x0 + rx0)
-        png_frame_last["rx1"] = int(x0 + rx1)
-        png_frame_last["valid"] = True
-        png_frame_last["scale"] = float(scale)
-
-        # Composite (Frame als 1 Bild)
-        bg = Image.new("RGB", (draw_w, draw_h), (245, 245, 245))
-
-        def render_side(side: str, src_img: Image.Image, region: tuple[int, int, int, int]) -> None:
-            # Zoom/Offset sind in Output-Pixeln gespeichert (stabil, egal wie groß das App-Fenster ist)
-            rx0, ry0, rx1, ry1 = region
-            rw = max(1, rx1 - rx0)
-            rh = max(1, ry1 - ry0)
-
-            fit = bool(png_state[side].get("fit_to_height", False))
-
-            if fit:
-                # "Fit" bedeutet hier: Cover (keine Lücken)
-                sw = max(1.0, float(src_img.size[0]))
-                sh = max(1.0, float(src_img.size[1]))
-                # region ist in Preview-Pixeln -> wir wollen Output-Zoom:
-                # Preview-Zoom = Output-Zoom * scale  => Output-Zoom = (CoverZoomPx / scale)
-                min_zoom_px = max(float(rw) / sw, float(rh) / sh)
-                z_out = float(min_zoom_px) / max(0.0001, float(scale))
-            else:
-                z_out = float(png_state[side].get("zoom", 1.0))
-
-            if z_out < 0.1:
-                z_out = 0.1
-            if z_out > 20.0:
-                z_out = 20.0
-
-            # Zoom in Preview-Pixel umrechnen
-            z_px = float(z_out) * float(scale)
-
-            ow = max(1, int(round(src_img.size[0] * z_px)))
-            oh = max(1, int(round(src_img.size[1] * z_px)))
-
-            img2 = src_img.resize((ow, oh), Image.LANCZOS)
-
-            # Offsets sind in Output-Pixeln (stabil bei Resize)
-            off_x_out = int(png_state[side].get("off_x", 0))
-            off_y_out = int(png_state[side].get("off_y", 0))
-            off_x_px = int(round(off_x_out * scale))
-            off_y_px = int(round(off_y_out * scale))
-
-            rx0, ry0, rx1, ry1 = region
-            rw = max(1, rx1 - rx0)
-            rh = max(1, ry1 - ry0)
-
-            base_x = int(rx0 + (rw - ow) / 2) + off_x_px
-            base_y = int(ry0 + (rh - oh) / 2) + off_y_px
-
-            pil_paste_clipped(bg, img2, region, (base_x, base_y))
-
-        render_side("L", png_img_left, (lx0, 0, lx1, draw_h))
-        render_side("R", png_img_right, (rx0, 0, rx1, draw_h))
-
-        # Rahmen / Trenner zeichnen wir im Canvas (nicht im Bild)
-        tk_img = ImageTk.PhotoImage(bg)
-
-        png_canvas.delete("all")
-        png_canvas.create_image(x0, y0, anchor="nw", image=tk_img)
-
-        # Rahmen + Bereiche
-        png_canvas.create_rectangle(x0, y0, x1, y1)
-        png_canvas.create_rectangle(x0 + lx0, y0, x0 + lx1, y1)
-        png_canvas.create_rectangle(x0 + mx0, y0, x0 + mx1, y1)
-        png_canvas.create_rectangle(x0 + rx0, y0, x0 + rx1, y1)
-
-        png_canvas.create_text(x0 + 10, y0 + 10, anchor="nw", text="Slow")
-        png_canvas.create_text(x0 + rx0 + 10, y0 + 10, anchor="nw", text="Fast")
-        if hud_w_px > 0:
-            png_canvas.create_text(int(x0 + (mx0 + mx1) / 2), y0 + 20, anchor="n", text=f"HUD\n{hud_w}px")
-
-        # Wichtig: Referenz halten
-        png_canvas._tk_img = tk_img
-
-    def png_hit_side(x: int, y: int) -> str:
-        if not bool(png_frame_last.get("valid")):
-            return ""
-        if x < int(png_frame_last["x0"]) or x > int(png_frame_last["x1"]):
-            return ""
-        if y < int(png_frame_last["y0"]) or y > int(png_frame_last["y1"]):
-            return ""
-        if x >= int(png_frame_last["lx0"]) and x <= int(png_frame_last["lx1"]):
-            return "L"
-        if x >= int(png_frame_last["rx0"]) and x <= int(png_frame_last["rx1"]):
-            return "R"
-        return ""
-
-    def png_on_wheel(e) -> None:
-        if preview_mode_var.get() != "png":
-            return
-            
-        try:
-            _png_dbg(
-                f"WHEEL ENTER side=? x={int(e.x)} y={int(e.y)} "
-                f"delta={getattr(e, 'delta', None)}"
-            )
-        except Exception:
-            pass
-            
-
-        side = png_hit_side(int(e.x), int(e.y))
-        if side not in ("L", "R"):
-            return
-            
-        try:
-            _png_dbg(
-                f"WHEEL SIDE side={side} "
-                f"fit={bool(png_state[side].get('fit_to_height', False))} "
-                f"zoom={float(png_state[side].get('zoom', 0.0)):.6f} "
-                f"off=({int(png_state[side].get('off_x', 0))},{int(png_state[side].get('off_y', 0))}) "
-                f"e.xy=({int(e.x)},{int(e.y)}) delta={getattr(e, 'delta', None)}"
-            )
-        except Exception:
-            pass            
-
-        try:
-            d = int(e.delta)
-        except Exception:
-            d = 0
-
-        # Bild holen
-        if png_img_left is None or png_img_right is None:
-            render_png_preview(force_reload=True)
-
-        src_img = png_img_left if side == "L" else png_img_right
-        if src_img is None:
-            return
-
-        # Output-Region bestimmen (für Cover-Minimum)
-        out_w, out_h = parse_preset(out_preset_var.get())
-        if out_w <= 0 or out_h <= 0:
-            out_w, out_h = 1280, 720
-        hud_w = int(get_hud_width_px())
-        hud_w = max(0, min(hud_w, max(0, out_w - 2)))
-
-        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w)
-        rw = max(1, rx1 - rx0)
-        rh = max(1, ry1 - ry0)
-
-        sw = max(1.0, float(src_img.size[0]))
-        sh = max(1.0, float(src_img.size[1]))
-
-        # Minimaler Zoom, damit die Region vollständig abgedeckt ist (Cover)
-        min_zoom = max(float(rw) / sw, float(rh) / sh)
-
-        # Wenn wir im Fit-Modus waren, starte sauber bei min_zoom (kein Sprung)
-        fit_now = bool(png_state[side].get("fit_to_height", False))
-        try:
-            cur_z = float(png_state[side].get("zoom", 1.0))
-        except Exception:
-            cur_z = 1.0
-
-        z = float(cur_z)
-
-        if d > 0:
-            z *= 1.10
-        elif d < 0:
-            z /= 1.10
-
-        # Manuell darf kleiner werden (kein Cover-Zwang)
-        if z < 0.1:
-            z = 0.1
-        if z > 20.0:
-            z = 20.0
-
-        # Wheel-Zoom bedeutet: ab jetzt manuell
-        png_state[side]["fit_to_height"] = False
-        png_state[side]["zoom"] = float(z)
-
-        # Nur clampen ohne "Snap"/Cover
-        try:
-            _clamp_png_cover(side, src_img, out_w, out_h, hud_w, enforce_cover=False)
-        except Exception:
-            pass
-            
-        try:
-            _png_dbg(
-                f"WHEEL EXIT side={side} "
-                f"fit={bool(png_state[side].get('fit_to_height', False))} "
-                f"zoom={float(png_state[side].get('zoom', 0.0)):.6f} "
-                f"off=({int(png_state[side].get('off_x', 0))},{int(png_state[side].get('off_y', 0))}) "
-                f"min_zoom={float(min_zoom):.6f}"
-            )
-        except Exception:
-            pass            
-
-        png_save_state_for_current()
-        render_png_preview(force_reload=False)
-        
-        
-    def png_on_down(e) -> None:
-        if preview_mode_var.get() != "png":
-            return
-        side = png_hit_side(int(e.x), int(e.y))
-        if side not in ("L", "R"):
-            return
-        png_state["drag"] = True
-        png_state["drag_side"] = side
-        png_state["drag_x"] = int(e.x)
-        png_state["drag_y"] = int(e.y)
-
-    def png_on_move(e) -> None:
-        if preview_mode_var.get() != "png":
-            return
-        if not png_state.get("drag"):
-            return
-        side = str(png_state.get("drag_side") or "")
-        if side not in ("L", "R"):
-            return
-            
-        try:
-            _png_dbg(
-                f"MOVE ENTER side={side} "
-                f"fit={bool(png_state[side].get('fit_to_height', False))} "
-                f"zoom={float(png_state[side].get('zoom', 0.0)):.6f} "
-                f"off=({int(png_state[side].get('off_x', 0))},{int(png_state[side].get('off_y', 0))}) "
-                f"e.xy=({int(e.x)},{int(e.y)})"
-            )
-        except Exception:
-            pass            
-
-        dx_px = int(e.x) - int(png_state["drag_x"])
-        dy_px = int(e.y) - int(png_state["drag_y"])
-        png_state["drag_x"] = int(e.x)
-        png_state["drag_y"] = int(e.y)
-
-        scale = float(png_frame_last.get("scale") or 1.0)
-        if scale <= 0.0001:
-            scale = 1.0
-
-        dx_out = int(round(dx_px / scale))
-        dy_out = int(round(dy_px / scale))
-
-        png_state[side]["off_x"] = int(png_state[side]["off_x"]) + dx_out
-        png_state[side]["off_y"] = int(png_state[side]["off_y"]) + dy_out
-
-        render_png_preview(force_reload=False)
-
-    def png_on_up(_e=None) -> None:
-        
-        try:
-            _png_dbg("UP ENTER")
-        except Exception:
-            pass        
-        if preview_mode_var.get() != "png":
-            return
-
-        side = str(png_state.get("drag_side") or "")
-        png_state["drag"] = False
-        png_state["drag_side"] = ""
-
-        # Beim Loslassen: automatisch "snappen" (keine Lücken)
-        try:
-            out_w, out_h = parse_preset(out_preset_var.get())
-            if out_w <= 0 or out_h <= 0:
-                out_w, out_h = 1280, 720
-            hud_w = int(get_hud_width_px())
-            hud_w = max(0, min(hud_w, max(0, out_w - 2)))
-
-            if side in ("L", "R"):
-                src_img = png_img_left if side == "L" else png_img_right
-                if src_img is not None:
-                    _clamp_png_cover(
-                        side,
-                        src_img,
-                        out_w,
-                        out_h,
-                        hud_w,
-                        enforce_cover=True,
-                        enforce_cover_zoom=False,
-                    )
-        except Exception:
-            pass
-            
-        try:
-            if side in ("L", "R"):
-                _png_dbg(
-                    f"UP EXIT side={side} "
-                    f"fit={bool(png_state[side].get('fit_to_height', False))} "
-                    f"zoom={float(png_state[side].get('zoom', 0.0)):.6f} "
-                    f"off=({int(png_state[side].get('off_x', 0))},{int(png_state[side].get('off_y', 0))})"
-                )
-        except Exception:
-            pass            
-
-        png_save_state_for_current()
-        render_png_preview(force_reload=False)
+        png_preview_ctrl.render_png_preview(force_reload=force_reload)
 
     def png_fit_to_height_both() -> None:
-        nonlocal png_img_left, png_img_right
-        if preview_mode_var.get() != "png":
-            return
-        if png_img_left is None or png_img_right is None:
-            render_png_preview(force_reload=True)
-        if png_img_left is None or png_img_right is None:
-            return
+        png_preview_ctrl.png_fit_to_height_both()
 
-        out_w, out_h = parse_preset(out_preset_var.get())
-        if out_w <= 0 or out_h <= 0:
-            out_w, out_h = 1280, 720
+    def png_on_wheel(e) -> None:
+        png_preview_ctrl.png_on_wheel(e)
 
-        hud_w = int(get_hud_width_px())
-        hud_w = max(0, min(hud_w, max(0, out_w - 2)))
+    def png_on_down(e) -> None:
+        png_preview_ctrl.png_on_down(e)
 
-        def cover_zoom_for(side: str, img: Image.Image) -> float:
-            rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w)
-            rw = max(1, rx1 - rx0)
-            rh = max(1, ry1 - ry0)
-            sw = max(1.0, float(img.size[0]))
-            sh = max(1.0, float(img.size[1]))
-            z = max(float(rw) / sw, float(rh) / sh)
-            if z < 0.1:
-                z = 0.1
-            if z > 20.0:
-                z = 20.0
-            return float(z)
+    def png_on_move(e) -> None:
+        png_preview_ctrl.png_on_move(e)
 
-        zl = cover_zoom_for("L", png_img_left)
-        zr = cover_zoom_for("R", png_img_right)
+    def png_on_up(_e=None) -> None:
+        png_preview_ctrl.png_on_up(_e)
 
-        # Fit-Mode aktiv, Zoom auf "Cover" setzen, Offsets neutral
-        png_state["L"]["fit_to_height"] = True
-        png_state["R"]["fit_to_height"] = True
-        png_state["L"]["zoom"] = float(zl)
-        png_state["R"]["zoom"] = float(zr)
-        png_state["L"]["off_x"] = 0
-        png_state["L"]["off_y"] = 0
-        png_state["R"]["off_x"] = 0
-        png_state["R"]["off_y"] = 0
-
-        # Final clamp (eigentlich redundant, aber safe)
-        try:
-            _clamp_png_cover("L", png_img_left, out_w, out_h, hud_w)
-            _clamp_png_cover("R", png_img_right, out_w, out_h, hud_w)
-        except Exception:
-            pass
-
-        png_save_state_for_current()
-        render_png_preview(force_reload=False)
+    png_state = png_preview_ctrl.png_state
 
     btn_png_fit.config(command=png_fit_to_height_both)
 
