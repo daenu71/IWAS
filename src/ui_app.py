@@ -22,6 +22,7 @@ from core.models import (
 )
 from core import persistence, filesvc
 from core.render_service import start_render
+from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -409,7 +410,7 @@ def main() -> None:
                 png_load_state_for_current()
                 render_png_preview(force_reload=False)
             else:
-                draw_layout_preview()
+                refresh_layout_preview()
         except Exception:
             pass
 
@@ -440,7 +441,7 @@ def main() -> None:
                     if preview_mode_var.get() == "png":
                         render_png_preview(force_reload=False)
                     else:
-                        draw_layout_preview()
+                        refresh_layout_preview()
                 except Exception:
                     pass
             return _h
@@ -454,7 +455,7 @@ def main() -> None:
         boxes = default_hud_boxes()
         set_hud_boxes_for_current(boxes)
         try:
-            draw_layout_preview()
+            refresh_layout_preview()
         except Exception:
             pass
 
@@ -524,7 +525,7 @@ def main() -> None:
             if preview_mode_var.get() == "png":
                 render_png_preview(force_reload=False)
             else:
-                draw_layout_preview()
+                refresh_layout_preview()
         except Exception:
             pass
 
@@ -704,7 +705,7 @@ def main() -> None:
                 png_load_state_for_current()
                 render_png_preview(force_reload=False)
             else:
-                draw_layout_preview()
+                refresh_layout_preview()
         except Exception:
             pass
 
@@ -952,7 +953,7 @@ def main() -> None:
                 png_load_state_for_current()
                 render_png_preview(force_reload=True)
             else:
-                draw_layout_preview()
+                refresh_layout_preview()
         except Exception:
             pass
 
@@ -1075,7 +1076,7 @@ def main() -> None:
                         png_load_state_for_current()
                         render_png_preview(force_reload=False)
                     else:
-                        draw_layout_preview()
+                        refresh_layout_preview()
         except Exception:
             pass
 
@@ -2068,21 +2069,7 @@ def main() -> None:
     png_canvas.bind("<ButtonRelease-1>", png_on_up)
 
     # Transform-Merker (für Layout Maus-Events)
-    layout_last: dict[str, int | float] = {
-        "out_w": 0,
-        "out_h": 0,
-        "hud_w": 0,
-        "side_w": 0,
-        "x0": 0,
-        "y0": 0,
-        "scale": 1.0,
-    }
-
     hud_boxes: list[dict] = get_hud_boxes_for_current()
-    hud_active_id: str | None = None
-    hud_mode: str = ""  # "drag" oder "resize"
-    hud_drag_dx: int = 0
-    hud_drag_dy: int = 0
 
     def clamp(v: int, lo: int, hi: int) -> int:
         if v < lo:
@@ -2090,37 +2077,6 @@ def main() -> None:
         if v > hi:
             return hi
         return v
-
-    def ensure_boxes_in_hud_area() -> None:
-        out_w = int(layout_last.get("out_w") or 0)
-        out_h = int(layout_last.get("out_h") or 0)
-        hud_w = int(layout_last.get("hud_w") or 0)
-        side_w = int(layout_last.get("side_w") or 0)
-        if out_w <= 0 or out_h <= 0:
-            return
-
-        hud_x0 = side_w
-        hud_x1 = side_w + hud_w
-
-        for b in hud_boxes:
-            try:
-                w = max(40, int(b.get("w", 200)))
-                h = max(30, int(b.get("h", 100)))
-                x = int(b.get("x", 0))
-                y = int(b.get("y", 0))
-            except Exception:
-                continue
-
-            if x == 0:
-                x = hud_x0 + 10
-
-            x = clamp(x, hud_x0, max(hud_x0, hud_x1 - w))
-            y = clamp(y, 0, max(0, out_h - h))
-
-            b["x"] = int(x)
-            b["y"] = int(y)
-            b["w"] = int(w)
-            b["h"] = int(h)
 
     def set_hud_boxes_for_current_local(boxes: list[dict]) -> None:
         set_hud_boxes_for_current(boxes)
@@ -2139,8 +2095,22 @@ def main() -> None:
             pass
         return out
 
-    def draw_layout_preview() -> None:
-        nonlocal hud_boxes
+    def current_layout_output_format() -> LayoutPreviewOutputFormat:
+        out_w, out_h = parse_preset(out_preset_var.get())
+        if out_w <= 0 or out_h <= 0:
+            out_w, out_h = 1280, 720
+        return LayoutPreviewOutputFormat(
+            out_w=int(out_w),
+            out_h=int(out_h),
+            hud_w=int(get_hud_width_px()),
+        )
+
+    layout_preview_ctrl: LayoutPreviewController | None = None
+
+    def refresh_layout_preview() -> None:
+        nonlocal hud_boxes, layout_preview_ctrl
+        if layout_preview_ctrl is None:
+            return
 
         try:
             area_w = max(200, preview_area.winfo_width())
@@ -2148,346 +2118,27 @@ def main() -> None:
         except Exception:
             return
 
-        out_w, out_h = parse_preset(out_preset_var.get())
-        if out_w <= 0 or out_h <= 0:
-            out_w, out_h = 1280, 720
-
-        hud_w = get_hud_width_px()
-        hud_w = max(0, min(int(hud_w), max(0, out_w - 2)))
-
-        side_w = int((out_w - hud_w) / 2)
-
-        pad = 10
-        avail_w = max(50, area_w - 2 * pad)
-        avail_h = max(50, area_h - 2 * pad)
-
-        scale = min(avail_w / max(1, out_w), avail_h / max(1, out_h))
-        draw_w = int(out_w * scale)
-        draw_h = int(out_h * scale)
-
-        x0 = int((area_w - draw_w) / 2)
-        y0 = int((area_h - draw_h) / 2)
-        x1 = x0 + draw_w
-        y1 = y0 + draw_h
-
-        layout_last["out_w"] = int(out_w)
-        layout_last["out_h"] = int(out_h)
-        layout_last["hud_w"] = int(hud_w)
-        layout_last["side_w"] = int(side_w)
-        layout_last["x0"] = int(x0)
-        layout_last["y0"] = int(y0)
-        layout_last["scale"] = float(scale)
-
-        side_w_px = int(side_w * scale)
-        hud_w_px = int(hud_w * scale)
-
-        layout_canvas.delete("all")
-
-        layout_canvas.create_rectangle(x0, y0, x1, y1)
-
-        lx0 = x0
-        lx1 = x0 + side_w_px
-        mx0 = lx1
-        mx1 = mx0 + hud_w_px
-        rx0 = mx1
-        rx1 = x1
-
-        layout_canvas.create_rectangle(lx0, y0, lx1, y1)
-        layout_canvas.create_rectangle(mx0, y0, mx1, y1)
-        layout_canvas.create_rectangle(rx0, y0, rx1, y1)
-
-        layout_canvas.create_text(int((lx0 + lx1) / 2), int((y0 + y1) / 2), text="Slow")
-        layout_canvas.create_text(int((mx0 + mx1) / 2), int((y0 + y1) / 2) - 40, text=f"HUD\n{hud_w}px")
-        layout_canvas.create_text(int((rx0 + rx1) / 2), int((y0 + y1) / 2), text="Fast")
-
-        if (hud_active_id is None) and (hud_mode == ""):
-            hud_boxes = get_hud_boxes_for_current()
-            ensure_boxes_in_hud_area()
-        else:
-            ensure_boxes_in_hud_area()
-
-        en = enabled_types()
-
-        def out_to_canvas(x: int, y: int) -> tuple[int, int]:
-            cx = int(x0 + (x * scale))
-            cy = int(y0 + (y * scale))
-            return cx, cy
-
-        layout_canvas.create_rectangle(mx0, y0, mx1, y1)
-
-        for b in hud_boxes:
-            t = str(b.get("type") or "")
-            if t not in en:
-                continue
-
-            try:
-                bx = int(b.get("x", 0))
-                by = int(b.get("y", 0))
-                bw = int(b.get("w", 200))
-                bh = int(b.get("h", 100))
-            except Exception:
-                continue
-
-            c0x, c0y = out_to_canvas(bx, by)
-            c1x, c1y = out_to_canvas(bx + bw, by + bh)
-
-            tag = f"hud_{t.replace(' ', '_').replace('/', '_')}"
-            layout_canvas.create_rectangle(c0x, c0y, c1x, c1y, tags=("hud_box", tag))
-            layout_canvas.create_text(int((c0x + c1x) / 2), int((c0y + c1y) / 2), text=t, tags=("hud_box", tag))
-
-            hx0 = max(c0x, c1x - 12)
-            hy0 = max(c0y, c1y - 12)
-            layout_canvas.create_rectangle(hx0, hy0, c1x, c1y, tags=("hud_handle", tag))
-
-    def get_active_box_by_type(t: str) -> dict | None:
-        for b in hud_boxes:
-            if str(b.get("type") or "") == t:
-                return b
-        return None
-
-    def canvas_to_out_xy(cx: float, cy: float) -> tuple[float, float]:
-        x0 = float(layout_last.get("x0") or 0)
-        y0 = float(layout_last.get("y0") or 0)
-        scale = float(layout_last.get("scale") or 1.0)
-        if scale <= 0.0001:
-            scale = 1.0
-        return ((cx - x0) / scale, (cy - y0) / scale)
-
-    def hud_bounds_out() -> tuple[int, int, int, int]:
-        out_h = int(layout_last.get("out_h") or 0)
-        hud_w = int(layout_last.get("hud_w") or 0)
-        side_w = int(layout_last.get("side_w") or 0)
-        hud_x0 = side_w
-        hud_x1 = side_w + hud_w
-        return hud_x0, hud_x1, 0, out_h
-
-    def clamp_box_in_hud(b: dict) -> None:
-        hud_x0, hud_x1, y0, out_h = hud_bounds_out()
-        try:
-            x = float(b.get("x", 0))
-            y = float(b.get("y", 0))
-            w = float(b.get("w", 200))
-            h = float(b.get("h", 100))
-        except Exception:
-            return
-
-        w = max(40.0, w)
-        h = max(30.0, h)
-
-        max_x = max(float(hud_x0), float(hud_x1) - w)
-        max_y = max(float(y0), float(out_h) - h)
-
-        if x < hud_x0:
-            x = float(hud_x0)
-        if x > max_x:
-            x = float(max_x)
-        if y < y0:
-            y = float(y0)
-        if y > max_y:
-            y = float(max_y)
-
-        b["x"] = int(round(x))
-        b["y"] = int(round(y))
-        b["w"] = int(round(w))
-        b["h"] = int(round(h))
-
-    def hit_test_box(event_x: int, event_y: int) -> tuple[str | None, str]:
-        if int(layout_last.get("out_w") or 0) <= 0:
-            return None, ""
-
-        ox, oy = canvas_to_out_xy(float(event_x), float(event_y))
-        en = enabled_types()
-
-        scale = float(layout_last.get("scale") or 1.0)
-        edge_tol_out = 8.0 / max(0.0001, scale)
-
-        hit_t: str | None = None
-        hit_mode: str = ""
-
-        for b in hud_boxes:
-            t = str(b.get("type") or "")
-            if t not in en:
-                continue
-
-            bx = float(b.get("x", 0))
-            by = float(b.get("y", 0))
-            bw = float(b.get("w", 200))
-            bh = float(b.get("h", 100))
-
-            if ox < bx or oy < by or ox > (bx + bw) or oy > (by + bh):
-                continue
-
-            left = abs(ox - bx) <= edge_tol_out
-            right = abs(ox - (bx + bw)) <= edge_tol_out
-            top = abs(oy - by) <= edge_tol_out
-            bottom = abs(oy - (by + bh)) <= edge_tol_out
-
-            mode = "move"
-            if top and left:
-                mode = "nw"
-            elif top and right:
-                mode = "ne"
-            elif bottom and left:
-                mode = "sw"
-            elif bottom and right:
-                mode = "se"
-            elif top:
-                mode = "n"
-            elif bottom:
-                mode = "s"
-            elif left:
-                mode = "w"
-            elif right:
-                mode = "e"
-
-            hit_t = t
-            hit_mode = mode
-
-        return hit_t, hit_mode
-
-    def cursor_for_mode(mode: str) -> str:
-        if mode == "move":
-            return "fleur"
-        if mode in ("n", "s"):
-            return "sb_v_double_arrow"
-        if mode in ("e", "w"):
-            return "sb_h_double_arrow"
-        if mode in ("ne", "sw"):
-            return "top_right_corner"
-        if mode in ("nw", "se"):
-            return "top_left_corner"
-        return ""
-
-    hud_active_id = None
-    hud_mode = ""
-    hud_start_mouse_ox: float = 0.0
-    hud_start_mouse_oy: float = 0.0
-    hud_start_x: float = 0.0
-    hud_start_y: float = 0.0
-    hud_start_w: float = 0.0
-    hud_start_h: float = 0.0
-
-    def on_layout_hover(e) -> None:
-        if cap is not None:
-            try:
-                layout_canvas.configure(cursor="")
-            except Exception:
-                pass
-            return
-
-        t, mode = hit_test_box(int(e.x), int(e.y))
-        cur = cursor_for_mode(mode) if t is not None else ""
-        try:
-            layout_canvas.configure(cursor=cur)
-        except Exception:
-            pass
-
-    def on_layout_leave(_e=None) -> None:
-        try:
-            layout_canvas.configure(cursor="")
-        except Exception:
-            pass
-
-    def on_layout_mouse_down(e) -> None:
-        nonlocal hud_active_id, hud_mode
-        nonlocal hud_start_mouse_ox, hud_start_mouse_oy
-        nonlocal hud_start_x, hud_start_y, hud_start_w, hud_start_h
-
-        if cap is not None:
-            return
-
-        t, mode = hit_test_box(int(e.x), int(e.y))
-        if t is None:
-            hud_active_id = None
-            hud_mode = ""
-            return
-
-        hud_active_id = t
-        hud_mode = mode
-
-        ox, oy = canvas_to_out_xy(float(e.x), float(e.y))
-        hud_start_mouse_ox = ox
-        hud_start_mouse_oy = oy
-
-        b = get_active_box_by_type(t)
-        if b is None:
-            hud_active_id = None
-            hud_mode = ""
-            return
-
-        hud_start_x = float(b.get("x", 0))
-        hud_start_y = float(b.get("y", 0))
-        hud_start_w = float(b.get("w", 200))
-        hud_start_h = float(b.get("h", 100))
-
-    def on_layout_mouse_move(e) -> None:
-        if cap is not None:
-            return
-        if hud_active_id is None or hud_mode == "":
-            return
-
-        b = get_active_box_by_type(hud_active_id)
-        if b is None:
-            return
-
-        ox, oy = canvas_to_out_xy(float(e.x), float(e.y))
-        dx = ox - hud_start_mouse_ox
-        dy = oy - hud_start_mouse_oy
-
-        min_w = 40.0
-        min_h = 30.0
-
-        x = hud_start_x
-        y = hud_start_y
-        w = hud_start_w
-        h = hud_start_h
-
-        if hud_mode == "move":
-            x = hud_start_x + dx
-            y = hud_start_y + dy
-        else:
-            if "e" in hud_mode:
-                w = max(min_w, hud_start_w + dx)
-            if "s" in hud_mode:
-                h = max(min_h, hud_start_h + dy)
-
-            if "w" in hud_mode:
-                x = hud_start_x + dx
-                w = max(min_w, hud_start_w - dx)
-
-            if "n" in hud_mode:
-                y = hud_start_y + dy
-                h = max(min_h, hud_start_h - dy)
-
-        b["x"] = int(round(x))
-        b["y"] = int(round(y))
-        b["w"] = int(round(w))
-        b["h"] = int(round(h))
-
-        clamp_box_in_hud(b)
-        draw_layout_preview()
-
-    def on_layout_mouse_up(_e=None) -> None:
-        nonlocal hud_active_id, hud_mode
-        if cap is not None:
-            return
-        if hud_active_id is None:
-            return
-
-        try:
-            layout_canvas.configure(cursor="")
-        except Exception:
-            pass
-
-        hud_active_id = None
-        hud_mode = ""
-        save_current_boxes()
-
-    layout_canvas.bind("<Motion>", on_layout_hover)
-    layout_canvas.bind("<Leave>", on_layout_leave)
-    layout_canvas.bind("<ButtonPress-1>", on_layout_mouse_down)
-    layout_canvas.bind("<B1-Motion>", on_layout_mouse_move)
-    layout_canvas.bind("<ButtonRelease-1>", on_layout_mouse_up)
+        hud_boxes = layout_preview_ctrl.draw_layout_preview(
+            output_format=current_layout_output_format(),
+            hud_boxes=hud_boxes,
+            enabled_types=enabled_types(),
+            area_w=area_w,
+            area_h=area_h,
+            load_current_boxes=get_hud_boxes_for_current,
+        )
+
+    layout_preview_ctrl = LayoutPreviewController(
+        canvas=layout_canvas,
+        save_current_boxes=save_current_boxes,
+        redraw_preview=refresh_layout_preview,
+        is_locked=lambda: cap is not None,
+    )
+
+    layout_canvas.bind("<Motion>", lambda e: layout_preview_ctrl.on_layout_hover(e, hud_boxes, enabled_types()))
+    layout_canvas.bind("<Leave>", lambda e: layout_preview_ctrl.on_layout_leave(e))
+    layout_canvas.bind("<ButtonPress-1>", lambda e: layout_preview_ctrl.on_layout_mouse_down(e, hud_boxes, enabled_types()))
+    layout_canvas.bind("<B1-Motion>", lambda e: layout_preview_ctrl.on_layout_mouse_move(e, hud_boxes))
+    layout_canvas.bind("<ButtonRelease-1>", lambda e: layout_preview_ctrl.on_layout_mouse_up(e))
 
     # Default: Layout sichtbar
     try:
@@ -2499,7 +2150,7 @@ def main() -> None:
     except Exception:
         pass
     try:
-        draw_layout_preview()
+        refresh_layout_preview()
     except Exception:
         pass
 
@@ -2970,7 +2621,7 @@ def main() -> None:
                 except Exception:
                     pass
                 try:
-                    draw_layout_preview()
+                    refresh_layout_preview()
                 except Exception:
                     pass
 
@@ -3232,7 +2883,7 @@ def main() -> None:
             if preview_mode_var.get() == "png":
                 render_png_preview(force_reload=False)
             else:
-                draw_layout_preview()
+                refresh_layout_preview()
         except Exception:
             pass
 
