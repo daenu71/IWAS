@@ -8,9 +8,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from encoders import (
+    build_encode_specs,
+    detect_available_encoders,
+    run_encode_with_fallback,
+)
 from ffmpeg_plan import (
     DecodeSpec,
-    EncodeSpec,
     FilterSpec,
     build_plan,
     build_split_filter_from_geometry,
@@ -140,19 +144,6 @@ def probe_has_audio(video_path: Path) -> bool:
         return False
 
 
-def _ffmpeg_has_encoder(encoder_name: str) -> bool:
-    try:
-        p = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-        )
-        if p.returncode != 0:
-            return False
-        return encoder_name in (p.stdout or "")
-    except Exception:
-        return False
-
 @dataclass(frozen=True)
 class OutputGeometry:
     W: int
@@ -274,139 +265,6 @@ def build_output_geometry(preset: str, hud_width_px: int) -> OutputGeometry:
         fast_out_x=fast_out_x,
         fast_out_y=fast_out_y,
     )
-
-
-def _choose_encoder(W: int, fps: float) -> list[EncodeSpec]:
-    # Reihenfolge ist verbindlich:
-    # 1) NVIDIA GPU (NVENC), 2) Intel GPU (QSV), 3) AMD GPU (AMF), 4) CPU (libx264)
-
-    has_hevc_nvenc = _ffmpeg_has_encoder("hevc_nvenc")
-    has_h264_nvenc = _ffmpeg_has_encoder("h264_nvenc")
-
-    has_hevc_qsv = _ffmpeg_has_encoder("hevc_qsv")
-    has_h264_qsv = _ffmpeg_has_encoder("h264_qsv")
-
-    has_hevc_amf = _ffmpeg_has_encoder("hevc_amf")
-    has_h264_amf = _ffmpeg_has_encoder("h264_amf")
-
-    specs: list[EncodeSpec] = []
-
-    # --- NVIDIA (NVENC) ---
-    if has_h264_nvenc and (W <= 4096):
-        specs.append(
-            EncodeSpec(
-                vcodec="h264_nvenc",
-                extra=[
-                    "-preset",
-                    "p5",
-                    "-cq:v",
-                    "19",
-                ],
-                fps=fps,
-            )
-        )
-
-    if has_hevc_nvenc:
-        specs.append(
-            EncodeSpec(
-                vcodec="hevc_nvenc",
-                extra=[
-                    "-preset",
-                    "p5",
-                    "-cq:v",
-                    "23",
-                    "-tag:v",
-                    "hvc1",
-                ],
-                fps=fps,
-            )
-        )
-
-    # --- Intel (QSV) ---
-    if has_h264_qsv and (W <= 4096):
-        specs.append(
-            EncodeSpec(
-                vcodec="h264_qsv",
-                extra=[
-                    "-global_quality",
-                    "23",
-                ],
-                fps=fps,
-            )
-        )
-
-    if has_hevc_qsv:
-        specs.append(
-            EncodeSpec(
-                vcodec="hevc_qsv",
-                extra=[
-                    "-global_quality",
-                    "26",
-                    "-tag:v",
-                    "hvc1",
-                ],
-                fps=fps,
-            )
-        )
-
-    # --- AMD (AMF) ---
-    if has_h264_amf and (W <= 4096):
-        specs.append(
-            EncodeSpec(
-                vcodec="h264_amf",
-                extra=[
-                    "-quality",
-                    "balanced",
-                    "-rc",
-                    "cqp",
-                    "-qp_i",
-                    "20",
-                    "-qp_p",
-                    "20",
-                    "-qp_b",
-                    "22",
-                ],
-                fps=fps,
-            )
-        )
-
-    if has_hevc_amf:
-        specs.append(
-            EncodeSpec(
-                vcodec="hevc_amf",
-                extra=[
-                    "-quality",
-                    "balanced",
-                    "-rc",
-                    "cqp",
-                    "-qp_i",
-                    "24",
-                    "-qp_p",
-                    "24",
-                    "-qp_b",
-                    "26",
-                    "-tag:v",
-                    "hvc1",
-                ],
-                fps=fps,
-            )
-        )
-
-    # --- CPU (Fallback) ---
-    specs.append(
-        EncodeSpec(
-            vcodec="libx264",
-            extra=[
-                "-preset",
-                "veryfast",
-                "-crf",
-                "18",
-            ],
-            fps=fps,
-        )
-    )
-
-    return specs
 
 
 def _log_print(msg: str, log_file: Path | None) -> None:
@@ -1776,18 +1634,23 @@ def render_split_screen(
         hud_boxes=hud_boxes,
     )
 
-    encode_candidates = _choose_encoder(W=geom.W, fps=float(fps_int))
+    available_encoders = detect_available_encoders("ffmpeg")
+    encode_candidates = build_encode_specs(
+        W=geom.W,
+        fps=float(fps_int),
+        available=available_encoders,
+    )
 
-    has_nvenc = _ffmpeg_has_encoder("h264_nvenc") or _ffmpeg_has_encoder("hevc_nvenc")
-    has_qsv = _ffmpeg_has_encoder("h264_qsv") or _ffmpeg_has_encoder("hevc_qsv")
-    has_amf = _ffmpeg_has_encoder("h264_amf") or _ffmpeg_has_encoder("hevc_amf")
+    has_nvenc = ("h264_nvenc" in available_encoders) or ("hevc_nvenc" in available_encoders)
+    has_qsv = ("h264_qsv" in available_encoders) or ("hevc_qsv" in available_encoders)
+    has_amf = ("h264_amf" in available_encoders) or ("hevc_amf" in available_encoders)
     print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
 
     # 5) FFmpeg Run
-    last_rc = 1
-    for enc in encode_candidates:
-        print(f"[encode] try vcodec={enc.vcodec}")
+    specs_by_vcodec = {enc.vcodec: enc for enc in encode_candidates}
 
+    def _run_one_encoder(vcodec: str) -> tuple[int, bool]:
+        enc = specs_by_vcodec[vcodec]
         # Debug: nur die ersten N Sekunden rendern
         try:
             dbg_max_s = float((os.environ.get("IRVC_DEBUG_MAX_S") or "").strip() or "0")
@@ -1807,13 +1670,15 @@ def render_split_screen(
 
         live = (os.environ.get("IRVC_FFMPEG_LIVE") or "").strip() == "1"
         rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
-        last_rc = rc
+        return rc, (rc == 0 and outp.exists())
 
-        if rc == 0 and outp.exists():
-            print(f"[encode] OK vcodec={enc.vcodec}")
-            return
-        else:
-            print(f"[encode] FAIL vcodec={enc.vcodec} rc={rc}")
+    selected_vcodec, last_rc = run_encode_with_fallback(
+        build_cmd_fn=_run_one_encoder,
+        encoder_order=[enc.vcodec for enc in encode_candidates],
+        log_fn=print,
+    )
+    if selected_vcodec != "":
+        return
 
     raise RuntimeError(f"ffmpeg failed (rc={last_rc})")
 
@@ -2151,18 +2016,23 @@ def render_split_screen_sync(
         hud_input_label=hud_label,
     )
 
-    encode_candidates = _choose_encoder(W=geom.W, fps=float(fps_int))
+    available_encoders = detect_available_encoders("ffmpeg")
+    encode_candidates = build_encode_specs(
+        W=geom.W,
+        fps=float(fps_int),
+        available=available_encoders,
+    )
 
-    has_nvenc = _ffmpeg_has_encoder("h264_nvenc") or _ffmpeg_has_encoder("hevc_nvenc")
-    has_qsv = _ffmpeg_has_encoder("h264_qsv") or _ffmpeg_has_encoder("hevc_qsv")
-    has_amf = _ffmpeg_has_encoder("h264_amf") or _ffmpeg_has_encoder("hevc_amf")
+    has_nvenc = ("h264_nvenc" in available_encoders) or ("hevc_nvenc" in available_encoders)
+    has_qsv = ("h264_qsv" in available_encoders) or ("hevc_qsv" in available_encoders)
+    has_amf = ("h264_amf" in available_encoders) or ("hevc_amf" in available_encoders)
     print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
 
     # 5) FFmpeg Run
-    last_rc = 1
-    for enc in encode_candidates:
-        print(f"[encode] try vcodec={enc.vcodec}")
+    specs_by_vcodec = {enc.vcodec: enc for enc in encode_candidates}
 
+    def _run_one_encoder(vcodec: str) -> tuple[int, bool]:
+        enc = specs_by_vcodec[vcodec]
         # Debug: nur die ersten N Sekunden rendern (spart Zeit)
         try:
             dbg_max_s = float((os.environ.get("IRVC_DEBUG_MAX_S") or "").strip() or "0")
@@ -2187,13 +2057,15 @@ def render_split_screen_sync(
 
         live = (os.environ.get("IRVC_FFMPEG_LIVE") or "").strip() == "1"
         rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
-        last_rc = rc
+        return rc, (rc == 0 and outp.exists())
 
-        if rc == 0 and outp.exists():
-            print(f"[encode] OK vcodec={enc.vcodec}")
-            print(f"[sync6] sync_cache_json={sync_cache_path}")
-            return
-        else:
-            print(f"[encode] FAIL vcodec={enc.vcodec} rc={rc}")
+    selected_vcodec, last_rc = run_encode_with_fallback(
+        build_cmd_fn=_run_one_encoder,
+        encoder_order=[enc.vcodec for enc in encode_candidates],
+        log_fn=print,
+    )
+    if selected_vcodec != "":
+        print(f"[sync6] sync_cache_json={sync_cache_path}")
+        return
 
     raise RuntimeError(f"ffmpeg failed (rc={last_rc})")
