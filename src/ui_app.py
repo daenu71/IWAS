@@ -2,16 +2,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import re
 from pathlib import Path
-import shutil
-import os
 import json
-import time
 import subprocess
-import threading
-import sys
-
-import cv2
-from PIL import Image, ImageTk
 
 from core.models import (
     AppModel,
@@ -20,11 +12,11 @@ from core.models import (
     PngViewState,
     Profile,
 )
-from core import persistence, filesvc, profile_service
-from core.render_service import start_render
+from core import persistence, filesvc, profile_service, render_service
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from preview.png_preview import PngPreviewController
 from preview.video_preview import VideoPreviewController
+from ui.controller import Controller, UIContext
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -378,6 +370,10 @@ def main() -> None:
         if isinstance(model.png_view.png_view_data, dict):
             png_view_data = model.png_view.png_view_data
 
+    def set_app_model(model: AppModel) -> None:
+        nonlocal app_model
+        app_model = model
+
     def profile_model_from_ui_state(
         videos_names: list[str],
         csv_names: list[str],
@@ -405,16 +401,12 @@ def main() -> None:
     lbl_out_fps = ttk.Label(frame_settings, text="FPS (vom Video): –")
     lbl_out_fps.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(6, 6))
 
+    controller: Controller | None = None
+
     def on_hud_width_change(_event=None) -> None:
-        persistence.save_output_format({"hud_width_px": str(get_hud_width_px())})
-        try:
-            if preview_mode_var.get() == "png":
-                png_load_state_for_current()
-                render_png_preview(force_reload=False)
-            else:
-                refresh_layout_preview()
-        except Exception:
-            pass
+        if controller is None:
+            return
+        controller.on_hud_width_change(_event)
 
     try:
         hud_width_var.trace_add("write", lambda *_: on_hud_width_change())
@@ -686,30 +678,9 @@ def main() -> None:
         return f"{max(1, target_w)}x{max(1, target_h)}"
 
     def on_output_change(_event=None) -> None:
-        # Presets je Seitenverhältnis aktualisieren
-        try:
-            presets = get_presets_for_aspect(out_aspect_var.get())
-            cmb_preset.config(values=presets)
-            if out_preset_var.get() not in presets:
-                out_preset_var.set(presets[0])
-        except Exception:
-            pass
-
-        persistence.save_output_format(
-            {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get()}
-        )
-
-        if video_preview_ctrl is not None and video_preview_ctrl.cap is not None:
+        if controller is None:
             return
-
-        try:
-            if preview_mode_var.get() == "png":
-                png_load_state_for_current()
-                render_png_preview(force_reload=False)
-            else:
-                refresh_layout_preview()
-        except Exception:
-            pass
+        controller.on_output_change(_event)
 
     cmb_aspect.bind("<<ComboboxSelected>>", on_output_change)
     cmb_preset.bind("<<ComboboxSelected>>", on_output_change)
@@ -739,6 +710,13 @@ def main() -> None:
 
     videos: list[Path] = []
     csvs: list[Path] = []
+
+    def get_selected_files() -> tuple[list[Path], list[Path]]:
+        return list(videos), list(csvs)
+
+    def set_selected_files(new_videos: list[Path], new_csvs: list[Path]) -> None:
+        videos[:] = list(new_videos[:2])
+        csvs[:] = list(new_csvs[:2])
 
     lbl_v1 = ttk.Label(frame_files, text="Video 1: –")
     btn_v1 = ttk.Button(frame_files, text="...", width=3)
@@ -864,54 +842,22 @@ def main() -> None:
         )
 
     def profile_save_dialog() -> None:
-        try:
-            initial = profiles_dir / "profile.json"
-        except Exception:
-            initial = None
-
-        fn = filedialog.asksaveasfilename(
-            title="Profil speichern",
-            defaultextension=".json",
-            filetypes=[("Profil (*.json)", "*.json"), ("Alle Dateien", "*.*")],
-            initialdir=str(profiles_dir),
-            initialfile="profile.json",
-        )
-        if not fn:
+        if controller is None:
             return
-
-        try:
-            try:
-                png_save_state_for_current()
-            except Exception:
-                pass
-
-            data = build_profile_dict()
-            Path(fn).write_text(json.dumps(data, indent=2), encoding="utf-8")
-            lbl_loaded.config(text="Video: Profil gespeichert")
-        except Exception:
-            lbl_loaded.config(text="Video: Profil speichern fehlgeschlagen")
+        controller.on_profile_save()
 
     def profile_load_dialog() -> None:
-        fn = filedialog.askopenfilename(
-            title="Profil laden",
-            defaultextension=".json",
-            filetypes=[("Profil (*.json)", "*.json"), ("Alle Dateien", "*.*")],
-            initialdir=str(profiles_dir),
-        )
-        if not fn:
+        if controller is None:
             return
+        controller.on_profile_load()
 
-        try:
-            d = json.loads(Path(fn).read_text(encoding="utf-8"))
-        except Exception:
-            lbl_loaded.config(text="Video: Profil laden fehlgeschlagen")
-            return
+    def open_file_dialog(*, multiple: bool = False, **kwargs):
+        if multiple:
+            return filedialog.askopenfilenames(**kwargs)
+        return filedialog.askopenfilename(**kwargs)
 
-        try:
-            apply_profile_dict(d)
-            lbl_loaded.config(text="Video: Profil geladen")
-        except Exception:
-            lbl_loaded.config(text="Video: Profil laden fehlgeschlagen")
+    def save_file_dialog(**kwargs):
+        return filedialog.asksaveasfilename(**kwargs)
             
 
     def refresh_display() -> None:
@@ -1032,39 +978,9 @@ def main() -> None:
     run_periodic_folder_watch()
 
     def on_select_files() -> None:
-        paths = filedialog.askopenfilenames(
-            title="Dateien auswählen (2 Videos + optional CSV)",
-            filetypes=[
-                ("Videos und CSV", "*.mp4 *.csv"),
-                ("Video", "*.mp4"),
-                ("CSV", "*.csv"),
-            ],
-        )
-        status, selected_videos, selected_csvs = filesvc.select_files(
-            paths=paths,
-            input_video_dir=input_video_dir,
-            input_csv_dir=input_csv_dir,
-        )
-        if status == "empty":
+        if controller is None:
             return
-
-        if status == "csv_only":
-            csvs[:] = selected_csvs[:2]
-            refresh_display()
-            return
-
-        if status == "need_two_videos":
-            videos.clear()
-            csvs.clear()
-            refresh_display()
-            lbl_fast.config(text="Fast: Bitte genau 2 Videos wählen")
-            lbl_slow.config(text="Slow: –")
-            close_preview_video()
-            return
-
-        videos[:] = selected_videos[:2]
-        csvs[:] = selected_csvs[:2]
-        refresh_display()
+        controller.on_select_files()
 
     btn_select.config(command=on_select_files)
     btn_profile_save.config(command=profile_save_dialog)
@@ -1264,6 +1180,15 @@ def main() -> None:
                 v = hud_enabled_vars.get(t)
                 if v is not None and bool(v.get()):
                     out.add(t)
+        except Exception:
+            pass
+        return out
+
+    def get_hud_enabled() -> dict[str, bool]:
+        out: dict[str, bool] = {}
+        try:
+            for t, var in hud_enabled_vars.items():
+                out[str(t)] = bool(var.get())
         except Exception:
             pass
         return out
@@ -1478,125 +1403,9 @@ def main() -> None:
             return 0.0
 
     def generate_compare_video() -> None:
-        nonlocal app_model
-        if len(videos) != 2:
-            lbl_loaded.config(text="Video: Bitte genau 2 Videos wählen")
+        if controller is None:
             return
-
-        slow_p, fast_p = choose_slow_fast_paths()
-        if slow_p is None or fast_p is None:
-            lbl_loaded.config(text="Video: Zeit im Dateinamen fehlt (Fast/Slow)")
-            return
-
-        out_w, out_h = parse_preset(out_preset_var.get())
-        if out_w <= 0 or out_h <= 0:
-            out_w, out_h = 1280, 720
-
-        hud_w = int(get_hud_width_px())
-        hud_w = max(0, min(hud_w, max(0, out_w - 2)))
-
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        out_name = f"compare_{ts}_{out_w}x{out_h}_hud{hud_w}.mp4"
-        out_path = output_video_dir / out_name
-
-        hud_enabled = {}
-        try:
-            for t, var in hud_enabled_vars.items():
-                hud_enabled[str(t)] = bool(var.get())
-        except Exception:
-            pass
-
-        project_root_local = find_project_root(Path(__file__))
-        main_py = project_root_local / "src" / "main.py"
-        if not main_py.exists():
-            lbl_loaded.config(text="Video: main.py nicht gefunden")
-            return
-
-        app_model = model_from_ui_state()
-
-        win, close, set_text, set_progress, is_cancelled = show_progress_with_cancel(
-            "Video erzeugen",
-            "Starte main.py…"
-        )
-        root.update()
-
-        def on_progress(pct: float, text: str) -> None:
-            try:
-                set_progress(float(pct))
-            except Exception:
-                pass
-            if str(text):
-                try:
-                    set_text(str(text))
-                except Exception:
-                    pass
-
-        def worker() -> None:
-            try:
-                result = start_render(
-                    project_root=project_root_local,
-                    videos=list(videos),
-                    csvs=list(csvs),
-                    slow_p=slow_p,
-                    fast_p=fast_p,
-                    out_path=out_path,
-                    out_aspect=str(out_aspect_var.get()),
-                    out_preset=str(out_preset_var.get()),
-                    out_quality=str(out_quality_var.get()),
-                    hud_w=int(hud_w),
-                    hud_enabled=hud_enabled,
-                    app_model=app_model,
-                    get_hud_boxes_for_current=get_hud_boxes_for_current,
-                    png_save_state_for_current=png_save_state_for_current,
-                    png_view_key=png_view_key,
-                    png_state=png_state,
-                    is_cancelled=is_cancelled,
-                    on_progress=on_progress,
-                )
-
-                def finish_ok() -> None:
-                    close()
-                    if out_path.exists() and out_path.stat().st_size > 0:
-                        lbl_loaded.config(text=f"Video: Fertig ({out_path.name})")
-                    else:
-                        lbl_loaded.config(text="Video: Render fehlgeschlagen (0 KB)")
-
-                def finish_cancel() -> None:
-                    close()
-                    try:
-                        if out_path.exists():
-                            out_path.unlink()
-                    except Exception:
-                        pass
-                    lbl_loaded.config(text="Video: Abgebrochen")
-
-                def finish_error() -> None:
-                    close()
-                    err = str(result.get("error") or "")
-                    if err == "ui_json_write_failed":
-                        lbl_loaded.config(text="Video: Konnte UI-JSON nicht schreiben")
-                    elif err == "main_py_not_found":
-                        lbl_loaded.config(text="Video: main.py nicht gefunden")
-                    else:
-                        lbl_loaded.config(text="Video: Render fehlgeschlagen")
-
-                if str(result.get("status") or "") == "cancelled":
-                    root.after(0, finish_cancel)
-                elif str(result.get("status") or "") == "ok":
-                    root.after(0, finish_ok)
-                else:
-                    root.after(0, finish_error)
-
-            except Exception:
-                try:
-                    root.after(0, lambda: lbl_loaded.config(text="Video: Render fehlgeschlagen"))
-                    root.after(0, close)
-                except Exception:
-                    pass
-
-
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
+        controller.on_generate()
 
 
 
@@ -1672,12 +1481,9 @@ def main() -> None:
                     pass
 
     def on_preview_mode_change(*_args) -> None:
-        if video_preview_ctrl is not None and video_preview_ctrl.cap is not None:
+        if controller is None:
             return
-        try:
-            show_preview_controls(False)
-        except Exception:
-            pass
+        controller.on_preview_mode_change(*_args)
 
     try:
         preview_mode_var.trace_add("write", on_preview_mode_change)
@@ -1705,6 +1511,67 @@ def main() -> None:
         show_preview_controls=show_preview_controls,
         sync_from_folders_if_needed_ui=sync_from_folders_if_needed_ui,
         show_progress=lambda title, text: show_progress(title, text),
+    )
+
+    ui_ctx = UIContext(
+        get_input_video_dir=lambda: input_video_dir,
+        get_input_csv_dir=lambda: input_csv_dir,
+        get_current_output_preset=lambda: out_preset_var.get(),
+        get_hud_width_px=get_hud_width_px,
+        get_output_format=lambda: {
+            "aspect": out_aspect_var.get(),
+            "preset": out_preset_var.get(),
+            "quality": out_quality_var.get(),
+        },
+        get_hud_layout_data=lambda: hud_layout_data,
+        get_png_view_data=lambda: png_view_data,
+        get_startframes=lambda: startframes_by_name,
+        get_endframes=lambda: endframes_by_name,
+        get_selected_files=get_selected_files,
+        set_selected_files=set_selected_files,
+        set_status=lambda text: lbl_loaded.config(text=text),
+        set_app_model=set_app_model,
+        set_output_preset=out_preset_var.set,
+        set_hud_width_px=hud_width_var.set,
+        open_file_dialog=open_file_dialog,
+        save_file_dialog=save_file_dialog,
+        schedule_after=lambda ms, fn: root.after(ms, fn),
+        save_output_format=persistence.save_output_format,
+        get_presets_for_aspect=get_presets_for_aspect,
+        set_output_preset_values=lambda presets: cmb_preset.config(values=presets),
+        get_preview_mode=preview_mode_var.get,
+        refresh_layout_preview=refresh_layout_preview,
+        render_png_preview=render_png_preview,
+        png_load_state_for_current=png_load_state_for_current,
+        png_save_state_for_current=png_save_state_for_current,
+        close_preview_video=close_preview_video,
+        refresh_display=refresh_display,
+        set_fast_text=lambda text: lbl_fast.config(text=text),
+        set_slow_text=lambda text: lbl_slow.config(text=text),
+        get_profiles_dir=lambda: profiles_dir,
+        build_profile_dict=build_profile_dict,
+        apply_profile_dict=apply_profile_dict,
+        choose_slow_fast_paths=choose_slow_fast_paths,
+        parse_preset=parse_preset,
+        get_output_video_dir=lambda: output_video_dir,
+        get_project_root=lambda: find_project_root(Path(__file__)),
+        get_hud_enabled=get_hud_enabled,
+        model_from_ui_state=model_from_ui_state,
+        get_hud_boxes_for_current=get_hud_boxes_for_current,
+        png_view_key=png_view_key,
+        get_png_state=lambda: png_state,
+        show_progress_with_cancel=show_progress_with_cancel,
+        update_ui=root.update,
+        show_preview_controls=show_preview_controls,
+    )
+    controller = Controller(
+        ui=ui_ctx,
+        render_service=render_service,
+        profile_service=profile_service,
+        files_service=filesvc,
+        get_layout_preview_ctrl=lambda: layout_preview_ctrl,
+        get_png_preview_ctrl=lambda: png_preview_ctrl,
+        get_video_preview_ctrl=lambda: video_preview_ctrl,
     )
 
     def make_proxy_h264(src: Path):
@@ -1791,17 +1658,9 @@ def main() -> None:
         video_preview_ctrl.start_crop_for_video(video_path)
 
     def on_preview_resize(_event=None) -> None:
-        if video_preview_ctrl is not None and video_preview_ctrl.cap is not None:
-            render_frame(video_preview_ctrl.current_frame_idx, force=True)
+        if controller is None:
             return
-
-        try:
-            if preview_mode_var.get() == "png":
-                render_png_preview(force_reload=False)
-            else:
-                refresh_layout_preview()
-        except Exception:
-            pass
+        controller.on_preview_resize(_event)
 
     preview_area.bind("<Configure>", on_preview_resize)
 
