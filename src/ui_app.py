@@ -24,6 +24,7 @@ from core import persistence, filesvc
 from core.render_service import start_render
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from preview.png_preview import PngPreviewController
+from preview.video_preview import VideoPreviewController
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -698,7 +699,7 @@ def main() -> None:
             {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get()}
         )
 
-        if cap is not None:
+        if video_preview_ctrl is not None and video_preview_ctrl.cap is not None:
             return
 
         try:
@@ -1072,7 +1073,7 @@ def main() -> None:
                 persistence.save_output_format(
                     {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get()}
                 )
-                if cap is None:
+                if video_preview_ctrl is None or video_preview_ctrl.cap is None:
                     if preview_mode_var.get() == "png":
                         png_load_state_for_current()
                         render_png_preview(force_reload=False)
@@ -1263,87 +1264,12 @@ def main() -> None:
         except Exception:
             return 0
 
-    def ffmpeg_exists() -> bool:
-        try:
-            from shutil import which
-            return which("ffmpeg") is not None
-        except Exception:
-            return False
+    video_preview_ctrl: VideoPreviewController | None = None
 
-    def make_proxy_h264(src: Path) -> Path | None:
-        if not ffmpeg_exists():
+    def read_frame_as_pil(p: Path, frame_idx: int):
+        if video_preview_ctrl is None:
             return None
-
-        safe_name = src.stem + "__proxy_h264.mp4"
-        dst = proxy_dir / safe_name
-
-        if dst.exists() and dst.stat().st_size > 0:
-            return dst
-
-        try:
-            lbl_loaded.config(text=f"Video: Proxy wird erstellt… ({src.name})")
-            root.update_idletasks()
-
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i", str(src),
-                "-an",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-preset", "veryfast",
-                "-crf", "20",
-                str(dst),
-            ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-
-            if dst.exists() and dst.stat().st_size > 0:
-                return dst
-        except Exception:
-            pass
-        return None
-
-    def try_open_for_png(p: Path) -> cv2.VideoCapture | None:
-        c = cv2.VideoCapture(str(p))
-        if c is not None and c.isOpened():
-            return c
-        try:
-            if c is not None:
-                c.release()
-        except Exception:
-            pass
-
-        proxy = make_proxy_h264(p)
-        if proxy is not None:
-            c2 = cv2.VideoCapture(str(proxy))
-            if c2 is not None and c2.isOpened():
-                return c2
-            try:
-                if c2 is not None:
-                    c2.release()
-            except Exception:
-                pass
-        return None
-
-    def read_frame_as_pil(p: Path, frame_idx: int) -> Image.Image | None:
-        c = try_open_for_png(p)
-        if c is None:
-            return None
-        try:
-            total = int(c.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            if total > 0:
-                frame_idx = max(0, min(int(frame_idx), total - 1))
-            c.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
-            ok, frame = c.read()
-            if not ok or frame is None:
-                return None
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            return Image.fromarray(rgb)
-        finally:
-            try:
-                c.release()
-            except Exception:
-                pass
+        return video_preview_ctrl.read_frame_as_pil(p, frame_idx)
 
     def current_png_output_format() -> LayoutPreviewOutputFormat:
         out_w, out_h = parse_preset(out_preset_var.get())
@@ -1474,7 +1400,7 @@ def main() -> None:
         canvas=layout_canvas,
         save_current_boxes=save_current_boxes,
         redraw_preview=refresh_layout_preview,
-        is_locked=lambda: cap is not None,
+        is_locked=lambda: video_preview_ctrl is not None and video_preview_ctrl.cap is not None,
     )
 
     layout_canvas.bind("<Motion>", lambda e: layout_preview_ctrl.on_layout_hover(e, hud_boxes, enabled_types()))
@@ -1501,66 +1427,25 @@ def main() -> None:
     scrub.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
     scrub.grid_remove()
 
-    current_video_original: Path | None = None
-    current_video_opened: Path | None = None
-    cap: cv2.VideoCapture | None = None
-
-    current_frame_idx: int = 0
-    total_frames: int = 0
-    fps: float = 30.0
-
-    end_frame_idx: int = 0
-
     def clamp_frame(idx: int) -> int:
-        if total_frames <= 0:
-            return max(0, idx)
-        if idx < 0:
-            return 0
-        if idx > total_frames - 1:
-            return total_frames - 1
-        return idx
+        if video_preview_ctrl is None:
+            return max(0, int(idx))
+        return video_preview_ctrl.clamp_frame(int(idx))
 
     def set_endframe(idx: int, save: bool = True) -> None:
-        nonlocal end_frame_idx, endframes_by_name
-        idx = clamp_frame(int(idx))
-        end_frame_idx = idx
-
-        try:
-            spn_end.configure(from_=0, to=max(0, total_frames - 1))
-        except Exception:
-            pass
-
-        try:
-            end_var.set(int(end_frame_idx))
-        except Exception:
-            pass
-
-        lbl_end.config(text=f"Ende: {end_frame_idx}")
-
-        if save and current_video_original is not None:
-            endframes_by_name[current_video_original.name] = int(end_frame_idx)
-            persistence.save_endframes(endframes_by_name)
+        if video_preview_ctrl is None:
+            return
+        video_preview_ctrl.set_endframe(int(idx), save=save)
 
     def auto_end_from_start(start_idx: int) -> None:
-        lap_ms = extract_time_ms(current_video_original) if current_video_original is not None else None
-        if lap_ms is None:
-            set_endframe(total_frames - 1, save=True)
+        if video_preview_ctrl is None:
             return
-        dur_frames = int(round((lap_ms / 1000.0) * max(1.0, fps)))
-        set_endframe(int(start_idx) + int(dur_frames), save=True)
+        video_preview_ctrl.auto_end_from_start(int(start_idx))
 
     def save_endframe_from_ui() -> None:
-        try:
-            set_endframe(int(end_var.get()), save=True)
-        except Exception:
-            pass
-
-    def safe_unlink(p: Path) -> None:
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
+        if video_preview_ctrl is None:
+            return
+        video_preview_ctrl.save_endframe_from_ui()
 
     def show_progress_with_cancel(title: str, text: str):
         win = tk.Toplevel(root)
@@ -1812,92 +1697,6 @@ def main() -> None:
 
 
     btn_generate.config(command=generate_compare_video)
-    
-    def cut_current_video() -> None:
-        nonlocal is_playing
-
-        if current_video_original is None:
-            return
-        if not ffmpeg_exists():
-            lbl_loaded.config(text="Video: ffmpeg fehlt (Schneiden nicht möglich)")
-            return
-
-        s = clamp_frame(int(startframes_by_name.get(current_video_original.name, 0)))
-        e = clamp_frame(int(end_frame_idx))
-
-        if e <= s:
-            lbl_loaded.config(text="Video: Endframe muss > Startframe sein")
-            return
-
-        is_playing = False
-        btn_play.config(text="▶")
-
-        start_sec = s / max(1.0, fps)
-        dur_sec = (max(0, (e - s) + 1)) / max(1.0, fps)
-
-        src = current_video_original
-        dst_final = input_video_dir / src.name
-        tmp = input_video_dir / (src.stem + "__cut_tmp.mp4")
-
-        close_preview_video()
-
-        if src is not None:
-            proxy_path = proxy_dir / (src.stem + "__proxy_h264.mp4")
-            safe_unlink(proxy_path)
-
-        progress_win, progress_close = show_progress("Schneiden", "Video wird geschnitten… Bitte warten.")
-        root.update()
-
-        try:
-            lbl_loaded.config(text="Video: Schneiden läuft…")
-            root.update_idletasks()
-
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-ss", f"{start_sec:.6f}",
-                "-i", str(dst_final),
-                "-t", f"{dur_sec:.6f}",
-                "-an",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-preset", "veryfast",
-                "-crf", "20",
-                str(tmp),
-            ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-
-            if not (tmp.exists() and tmp.stat().st_size > 0):
-                lbl_loaded.config(text="Video: Schneiden fehlgeschlagen")
-                safe_unlink(tmp)
-                sync_from_folders_if_needed_ui(force=True)
-                return
-
-            safe_unlink(dst_final)
-            tmp.replace(dst_final)
-
-            startframes_by_name[dst_final.name] = 0
-            persistence.save_startframes(startframes_by_name)
-
-            endframes_by_name[dst_final.name] = clamp_frame(int(dur_sec * max(1.0, fps)))
-            persistence.save_endframes(endframes_by_name)
-
-            lbl_loaded.config(text="Video: Geschnitten & ersetzt")
-        except Exception:
-            lbl_loaded.config(text="Video: Schneiden fehlgeschlagen")
-            safe_unlink(tmp)
-        finally:
-            progress_close()
-
-        sync_from_folders_if_needed_ui(force=True)
-        start_crop_for_video(dst_final)
-
-    is_playing: bool = False
-    speed_factor: float = 1.0
-    tk_img = None
-
-    scrub_is_dragging: bool = False
-    last_render_ts: float = 0.0
 
     def show_preview_controls(show: bool) -> None:
         if show:
@@ -1969,7 +1768,7 @@ def main() -> None:
                     pass
 
     def on_preview_mode_change(*_args) -> None:
-        if cap is not None:
+        if video_preview_ctrl is not None and video_preview_ctrl.cap is not None:
             return
         try:
             show_preview_controls(False)
@@ -1981,245 +1780,115 @@ def main() -> None:
     except Exception:
         pass
 
-    def close_preview_video() -> None:
-        nonlocal cap, current_video_original, current_video_opened, current_frame_idx, is_playing, tk_img, total_frames, speed_factor
-        is_playing = False
-        current_frame_idx = 0
-        current_video_original = None
-        current_video_opened = None
-        tk_img = None
-        total_frames = 0
-        speed_factor = 1.0
-        btn_play.config(text="▶")
+    video_preview_ctrl = VideoPreviewController(
+        root=root,
+        preview_area=preview_area,
+        preview_label=preview_label,
+        lbl_frame=lbl_frame,
+        lbl_end=lbl_end,
+        lbl_loaded=lbl_loaded,
+        btn_play=btn_play,
+        scrub=scrub,
+        spn_end=spn_end,
+        end_var=end_var,
+        input_video_dir=input_video_dir,
+        proxy_dir=proxy_dir,
+        startframes_by_name=startframes_by_name,
+        endframes_by_name=endframes_by_name,
+        save_startframes=persistence.save_startframes,
+        save_endframes=persistence.save_endframes,
+        extract_time_ms=extract_time_ms,
+        show_preview_controls=show_preview_controls,
+        sync_from_folders_if_needed_ui=sync_from_folders_if_needed_ui,
+        show_progress=lambda title, text: show_progress(title, text),
+    )
 
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
-        cap = None
+    def make_proxy_h264(src: Path):
+        if video_preview_ctrl is None:
+            return None
+        return video_preview_ctrl.make_proxy_h264(src)
 
-        preview_label.config(image="", text="")
-        lbl_frame.config(text="Frame: –")
-        lbl_loaded.config(text="Video: –")
-        scrub.configure(from_=0, to=0)
-        scrub.set(0)
-        show_preview_controls(False)
+    def try_open_for_png(p: Path):
+        if video_preview_ctrl is None:
+            return None
+        return video_preview_ctrl.try_open_for_png(p)
 
-    def try_open_video(path: Path) -> tuple[cv2.VideoCapture | None, str]:
-        c = cv2.VideoCapture(str(path))
-        if c is None or not c.isOpened():
-            return None, "open_failed"
-        ok, frame = c.read()
-        if not ok or frame is None:
-            try:
-                c.release()
-            except Exception:
-                pass
-            return None, "read_failed"
-        c.set(cv2.CAP_PROP_POS_FRAMES, 0.0)
-        return c, "ok"
-
-    def render_image_from_frame(frame) -> None:
-        nonlocal tk_img
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(rgb)
-
-        area_w = max(200, preview_area.winfo_width())
-        area_h = max(200, preview_area.winfo_height())
-        img.thumbnail((area_w, area_h), Image.LANCZOS)
-
-        tk_img = ImageTk.PhotoImage(img)
-        preview_label.config(image=tk_img, text="")
+    def try_open_video(path: Path):
+        return VideoPreviewController.try_open_video(path)
 
     def seek_and_read(idx: int) -> bool:
-        nonlocal cap, current_frame_idx, total_frames, fps
-
-        if cap is None:
+        if video_preview_ctrl is None:
             return False
-
-        if total_frames > 0:
-            if idx < 0:
-                idx = 0
-            if idx > total_frames - 1:
-                idx = total_frames - 1
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, float(idx))
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            return False
-
-        current_frame_idx = idx
-
-        fps_val = cap.get(cv2.CAP_PROP_FPS)
-        if fps_val and fps_val > 0.1:
-            fps = float(fps_val)
-
-        render_image_from_frame(frame)
-        lbl_frame.config(text=f"Frame: {current_frame_idx}")
-
-        if (not scrub_is_dragging) and total_frames > 0:
-            scrub.set(current_frame_idx)
-
-        return True
+        return video_preview_ctrl.seek_and_read(idx)
 
     def read_next_frame() -> bool:
-        nonlocal cap, current_frame_idx, total_frames, fps
-
-        if cap is None:
+        if video_preview_ctrl is None:
             return False
-
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            return False
-
-        pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
-        current_frame_idx = max(0, pos - 1)
-
-        fps_val = cap.get(cv2.CAP_PROP_FPS)
-        if fps_val and fps_val > 0.1:
-            fps = float(fps_val)
-
-        render_image_from_frame(frame)
-        lbl_frame.config(text=f"Frame: {current_frame_idx}")
-
-        if (not scrub_is_dragging) and total_frames > 0:
-            scrub.set(current_frame_idx)
-
-        return True
+        return video_preview_ctrl.read_next_frame()
 
     def render_frame(idx: int, force: bool = False) -> None:
-        nonlocal last_render_ts
-        now = time.time()
-        if (not force) and (now - last_render_ts) < 0.02:
+        if video_preview_ctrl is None:
             return
-        last_render_ts = now
-        seek_and_read(idx)
+        video_preview_ctrl.render_frame(idx, force=force)
 
     def play_tick() -> None:
-        nonlocal is_playing
-        if not is_playing:
+        if video_preview_ctrl is None:
             return
-
-        ok = read_next_frame()
-        if not ok:
-            is_playing = False
-            btn_play.config(text="▶")
-            return
-
-        base = 1000.0 / max(1.0, fps)
-        delay = int(base / max(0.25, speed_factor))
-        delay = max(1, delay)
-        root.after(delay, play_tick)
+        video_preview_ctrl.play_tick()
 
     def on_play_pause() -> None:
-        nonlocal is_playing
-        if cap is None:
+        if video_preview_ctrl is None:
             return
-        is_playing = not is_playing
-        btn_play.config(text="⏸" if is_playing else "▶")
-        if is_playing:
-            play_tick()
+        video_preview_ctrl.on_play_pause()
 
     def on_prev_frame() -> None:
-        nonlocal is_playing
-        if cap is None:
+        if video_preview_ctrl is None:
             return
-        is_playing = False
-        btn_play.config(text="▶")
-        render_frame(current_frame_idx - 1, force=True)
+        video_preview_ctrl.on_prev_frame()
 
     def on_next_frame() -> None:
-        nonlocal is_playing
-        if cap is None:
+        if video_preview_ctrl is None:
             return
-        is_playing = False
-        btn_play.config(text="▶")
-        render_frame(current_frame_idx + 1, force=True)
+        video_preview_ctrl.on_next_frame()
 
     def on_scrub_press(_event=None) -> None:
-        nonlocal scrub_is_dragging
-        scrub_is_dragging = True
+        if video_preview_ctrl is None:
+            return
+        video_preview_ctrl.on_scrub_press(_event)
 
     def on_scrub_release(_event=None) -> None:
-        nonlocal scrub_is_dragging, is_playing
-        scrub_is_dragging = False
-        if cap is None:
+        if video_preview_ctrl is None:
             return
-        is_playing = False
-        btn_play.config(text="▶")
-        render_frame(int(scrub.get()), force=True)
+        video_preview_ctrl.on_scrub_release(_event)
 
     def on_scrub_move(_event=None) -> None:
-        if cap is None:
+        if video_preview_ctrl is None:
             return
-        if scrub_is_dragging:
-            render_frame(int(scrub.get()), force=False)
+        video_preview_ctrl.on_scrub_move(_event)
 
     def set_start_here() -> None:
-        nonlocal startframes_by_name
-        if current_video_original is None:
+        if video_preview_ctrl is None:
             return
-        startframes_by_name[current_video_original.name] = int(current_frame_idx)
-        persistence.save_startframes(startframes_by_name)
-        auto_end_from_start(int(current_frame_idx))
+        video_preview_ctrl.set_start_here()
+
+    def cut_current_video() -> None:
+        if video_preview_ctrl is None:
+            return
+        video_preview_ctrl.cut_current_video()
+
+    def close_preview_video() -> None:
+        if video_preview_ctrl is None:
+            return
+        video_preview_ctrl.close_preview_video()
 
     def start_crop_for_video(video_path: Path) -> None:
-        nonlocal cap, current_video_original, current_video_opened, current_frame_idx, is_playing, fps, speed_factor, total_frames
-
-        close_preview_video()
-
-        current_video_original = video_path
-        current_video_opened = video_path
-
-        c, status = try_open_video(video_path)
-        if c is None and status in ("open_failed", "read_failed"):
-            proxy = make_proxy_h264(video_path)
-            if proxy is not None:
-                current_video_opened = proxy
-                c, status = try_open_video(proxy)
-
-        if c is None:
-            lbl_loaded.config(text="Video: Kann nicht gelesen werden (Codec?)")
-            preview_label.config(text="Dieses Video kann hier nicht gelesen werden.\nBitte erst in H.264 umwandeln.\nOder ffmpeg installieren.")
-            show_preview_controls(False)
+        if video_preview_ctrl is None:
             return
-
-        cap = c
-
-        fps_val = cap.get(cv2.CAP_PROP_FPS)
-        fps = float(fps_val) if (fps_val and fps_val > 0.1) else 30.0
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        if total_frames < 1:
-            total_frames = 1
-
-        scrub.configure(from_=0, to=max(0, total_frames - 1))
-        scrub.set(0)
-
-        speed_factor = 1.0
-
-        start_idx = int(startframes_by_name.get(video_path.name, 0))
-        current_frame_idx = start_idx
-
-        saved_end = endframes_by_name.get(video_path.name)
-        if saved_end is not None:
-            set_endframe(int(saved_end), save=False)
-        else:
-            auto_end_from_start(int(start_idx))
-
-        lbl_loaded.config(text=f"Video: {video_path.name}")
-
-        show_preview_controls(True)
-
-        def _late_render() -> None:
-            render_frame(current_frame_idx, force=True)
-
-        root.after(60, _late_render)
+        video_preview_ctrl.start_crop_for_video(video_path)
 
     def on_preview_resize(_event=None) -> None:
-        if cap is not None:
-            render_frame(current_frame_idx, force=True)
+        if video_preview_ctrl is not None and video_preview_ctrl.cap is not None:
+            render_frame(video_preview_ctrl.current_frame_idx, force=True)
             return
 
         try:
@@ -2266,7 +1935,11 @@ def main() -> None:
             nonlocal videos, csvs
 
             if kind == "video":
-                if current_video_original is not None and item.name == current_video_original.name:
+                if (
+                    video_preview_ctrl is not None
+                    and video_preview_ctrl.current_video_original is not None
+                    and item.name == video_preview_ctrl.current_video_original.name
+                ):
                     close_preview_video()
 
             ok = filesvc.delete_file(item)
