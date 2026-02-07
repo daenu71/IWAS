@@ -1020,6 +1020,10 @@ def _build_under_oversteer_proxy_frames_from_csv(
         t_f_xy, x_f, y_f = _prepare_xy_time_series(t_f_raw, lat_f_raw, lon_f_raw, lat0_rad, lon0_rad, cos_lat0)
         t_s_yaw, yaw_s = _prepare_scalar_time_series(t_s_raw, yaw_s_raw)
         t_f_yaw, yaw_f = _prepare_scalar_time_series(t_f_raw, yaw_f_raw)
+        yaw_s_cos = [float(math.cos(float(v))) for v in yaw_s]
+        yaw_s_sin = [float(math.sin(float(v))) for v in yaw_s]
+        yaw_f_cos = [float(math.cos(float(v))) for v in yaw_f]
+        yaw_f_sin = [float(math.sin(float(v))) for v in yaw_f]
 
         if len(t_s_xy) < 2 or len(t_f_xy) < 2:
             _uo_log(
@@ -1224,7 +1228,9 @@ def _build_under_oversteer_proxy_frames_from_csv(
                 t_fast = float(last_t_fast)
             last_t_fast = float(t_fast)
 
-            yaw_sv, j_s_yaw = _interp_linear_clamped_time(t_s_yaw, yaw_s, t_slow, j_s_yaw)
+            yaw_sv_cos, j_s_yaw = _interp_linear_clamped_time(t_s_yaw, yaw_s_cos, t_slow, j_s_yaw)
+            yaw_sv_sin, j_s_yaw = _interp_linear_clamped_time(t_s_yaw, yaw_s_sin, t_slow, j_s_yaw)
+            yaw_sv = float(math.atan2(float(yaw_sv_sin), float(yaw_sv_cos)))
             hdg_s, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s, nrm_s, held_s = _heading_xy_at(
                 t_slow, t_s_xy, x_s, y_s, t_s_min, t_s_max, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s
             )
@@ -1250,7 +1256,9 @@ def _build_under_oversteer_proxy_frames_from_csv(
                     if first_valid_s is None:
                         first_valid_s = int(frame_idx)
 
-            yaw_fv, j_f_yaw = _interp_linear_clamped_time(t_f_yaw, yaw_f, t_fast, j_f_yaw)
+            yaw_fv_cos, j_f_yaw = _interp_linear_clamped_time(t_f_yaw, yaw_f_cos, t_fast, j_f_yaw)
+            yaw_fv_sin, j_f_yaw = _interp_linear_clamped_time(t_f_yaw, yaw_f_sin, t_fast, j_f_yaw)
+            yaw_fv = float(math.atan2(float(yaw_fv_sin), float(yaw_fv_cos)))
             hdg_f, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f, nrm_f, held_f = _heading_xy_at(
                 t_fast, t_f_xy, x_f, y_f, t_f_min, t_f_max, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f
             )
