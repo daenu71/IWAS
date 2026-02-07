@@ -273,9 +273,22 @@ def build_output_geometry(preset: str, hud_width_px: int) -> OutputGeometry:
 
 
 def _log_print(msg: str, log_file: Path | None) -> None:
-    # Immer in die Konsole UND wenn mÃ¶glich ins Log schreiben.
+    # [hudpy]-Logs separat schaltbar halten, um Konsole/Log-Rauschen zu reduzieren.
     try:
-        print(msg, flush=True)
+        msg_s = str(msg)
+    except Exception:
+        msg_s = ""
+    try:
+        if msg_s.lstrip().startswith("[hudpy]"):
+            hudpy_dbg = str(os.environ.get("IRVC_DEBUG_HUDPY") or "").strip().lower()
+            if hudpy_dbg not in ("1", "true", "yes", "on"):
+                return
+    except Exception:
+        pass
+
+    # Immer in die Konsole UND wenn möglich ins Log schreiben.
+    try:
+        print(msg_s, flush=True)
     except Exception:
         pass
     if log_file is None:
@@ -283,7 +296,7 @@ def _log_print(msg: str, log_file: Path | None) -> None:
     try:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         with open(log_file, "a", encoding="utf-8") as f:
-            f.write(str(msg).rstrip("\n") + "\n")
+            f.write(msg_s.rstrip("\n") + "\n")
     except Exception:
         pass
 
@@ -740,6 +753,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
     fps: float,
     slow_frame_to_fast_time_s: list[float] | None,
     frame_count_hint: int,
+    log_file: Path | None = None,
 ) -> tuple[list[float], list[float], float]:
     from csv_g61 import get_float_col, has_col, load_g61_csv
 
@@ -827,7 +841,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
 
     def _uo_log(msg: str) -> None:
         if dbg_enabled:
-            print(f"[uo] {msg}", flush=True)
+            _log_print(f"[uo] {msg}", log_file)
 
     def _uo_finite_minmax(vals: list[float]) -> tuple[int, float | None, float | None]:
         cnt = 0
@@ -2984,6 +2998,7 @@ def render_split_screen_sync(
                 fps=float(fps_int),
                 slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
                 frame_count_hint=len(slow_frame_to_lapdist),
+                log_file=log_file,
             )
 
         # Overrides normalisieren
