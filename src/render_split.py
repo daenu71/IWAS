@@ -186,6 +186,9 @@ class HudSignals:
     fast_abs_frames: list[int] | None = None
     line_delta_m_frames: list[float] | None = None
     line_delta_y_abs_m: float | None = None
+    under_oversteer_slow_frames: list[float] | None = None
+    under_oversteer_fast_frames: list[float] | None = None
+    under_oversteer_y_abs: float | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,108 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     if x > hi:
         return hi
     return x
+
+
+def _is_finite_float(v: Any) -> bool:
+    try:
+        x = float(v)
+        return (x == x) and math.isfinite(x)
+    except Exception:
+        return False
+
+
+def _prepare_xy_time_series(
+    t_raw: list[float],
+    lat_raw: list[float],
+    lon_raw: list[float],
+    lat0_rad: float,
+    lon0_rad: float,
+    cos_lat0: float,
+) -> tuple[list[float], list[float], list[float]]:
+    n = min(len(t_raw), len(lat_raw), len(lon_raw))
+    ts: list[float] = []
+    xs: list[float] = []
+    ys: list[float] = []
+    r = 6378137.0
+    for k in range(n):
+        tv = t_raw[k]
+        lav = lat_raw[k]
+        lov = lon_raw[k]
+        if (not _is_finite_float(tv)) or (not _is_finite_float(lav)) or (not _is_finite_float(lov)):
+            continue
+        tr = float(tv)
+        lat_rad = math.radians(float(lav))
+        lon_rad = math.radians(float(lov))
+        # Lokale equirectangular-Projektion in Meter mit gemeinsamem Ursprung.
+        x_m = (lon_rad - lon0_rad) * cos_lat0 * r
+        y_m = (lat_rad - lat0_rad) * r
+        ts.append(tr)
+        xs.append(float(x_m))
+        ys.append(float(y_m))
+    if len(ts) < 2:
+        return [], [], []
+    ts = _force_strictly_increasing(ts)
+    return ts, xs, ys
+
+
+def _prepare_scalar_time_series(t_raw: list[float], v_raw: list[float]) -> tuple[list[float], list[float]]:
+    n = min(len(t_raw), len(v_raw))
+    ts: list[float] = []
+    vs: list[float] = []
+    for k in range(n):
+        tv = t_raw[k]
+        vv = v_raw[k]
+        if (not _is_finite_float(tv)) or (not _is_finite_float(vv)):
+            continue
+        ts.append(float(tv))
+        vs.append(float(vv))
+    if len(ts) < 2:
+        return [], []
+    ts = _force_strictly_increasing(ts)
+    return ts, vs
+
+
+def _interp_linear_clamped_time(
+    ts: list[float],
+    vs: list[float],
+    t_query: float,
+    j_hint: int,
+) -> tuple[float, int]:
+    n = len(ts)
+    if n <= 0 or len(vs) <= 0:
+        return 0.0, 0
+    if n == 1 or len(vs) == 1:
+        return float(vs[0]), 0
+    if t_query <= ts[0]:
+        return float(vs[0]), 0
+    if t_query >= ts[n - 1]:
+        return float(vs[n - 1]), max(0, n - 2)
+
+    j = int(j_hint)
+    if j < 0:
+        j = 0
+    if j > n - 2:
+        j = n - 2
+
+    while j < (n - 2) and ts[j + 1] < t_query:
+        j += 1
+    while j > 0 and ts[j] > t_query:
+        j -= 1
+
+    t0 = float(ts[j])
+    t1 = float(ts[j + 1])
+    v0 = float(vs[j])
+    v1 = float(vs[j + 1])
+
+    if t1 <= t0:
+        return v0, j
+
+    a = (float(t_query) - t0) / (t1 - t0)
+    if a < 0.0:
+        a = 0.0
+    if a > 1.0:
+        a = 1.0
+    return (v0 + (v1 - v0) * a), j
     
 def _csv_time_axis_or_fallback(run, duration_s: float) -> list[float]:
     from csv_g61 import get_float_col, has_col
@@ -624,6 +729,216 @@ def _build_line_delta_frames_from_csv(
         return out
     except Exception:
         return []
+
+
+def _build_under_oversteer_proxy_frames_from_csv(
+    *,
+    slow_csv: Path,
+    fast_csv: Path,
+    slow_duration_s: float,
+    fast_duration_s: float,
+    fps: float,
+    slow_frame_to_fast_time_s: list[float] | None,
+    frame_count_hint: int,
+) -> tuple[list[float], list[float], float]:
+    from csv_g61 import get_float_col, has_col, load_g61_csv
+
+    def _wrap_angle_pi(rad: float) -> float:
+        two_pi = 2.0 * math.pi
+        x = (float(rad) + math.pi) % two_pi - math.pi
+        if x <= -math.pi:
+            x += two_pi
+        elif x > math.pi:
+            x -= two_pi
+        return float(x)
+
+    def _median(vals: list[float]) -> float:
+        if not vals:
+            return 0.0
+        xs = sorted(float(v) for v in vals if _is_finite_float(v))
+        n = len(xs)
+        if n <= 0:
+            return 0.0
+        m = n // 2
+        if (n % 2) == 1:
+            return float(xs[m])
+        return float(0.5 * (xs[m - 1] + xs[m]))
+
+    try:
+        if not slow_frame_to_fast_time_s:
+            return [], [], 1.0
+
+        fps_safe = float(fps) if float(fps) > 0.1 else 30.0
+        n_out = int(frame_count_hint)
+        if n_out <= 0:
+            n_out = int(len(slow_frame_to_fast_time_s))
+        if n_out <= 0:
+            return [], [], 1.0
+
+        run_s = load_g61_csv(slow_csv)
+        run_f = load_g61_csv(fast_csv)
+
+        for req in ("Lat", "Lon", "Yaw"):
+            if not has_col(run_s, req):
+                return [], [], 1.0
+            if not has_col(run_f, req):
+                return [], [], 1.0
+
+        t_s_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_s, slow_duration_s))
+        t_f_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_f, fast_duration_s))
+        lat_s_raw = get_float_col(run_s, "Lat")
+        lon_s_raw = get_float_col(run_s, "Lon")
+        lat_f_raw = get_float_col(run_f, "Lat")
+        lon_f_raw = get_float_col(run_f, "Lon")
+        yaw_s_raw = get_float_col(run_s, "Yaw")
+        yaw_f_raw = get_float_col(run_f, "Yaw")
+
+        lat0 = None
+        lon0 = None
+        n0 = min(len(lat_s_raw), len(lon_s_raw))
+        for k in range(n0):
+            if _is_finite_float(lat_s_raw[k]) and _is_finite_float(lon_s_raw[k]):
+                lat0 = float(lat_s_raw[k])
+                lon0 = float(lon_s_raw[k])
+                break
+        if lat0 is None or lon0 is None:
+            return [], [], 1.0
+
+        lat0_rad = math.radians(float(lat0))
+        lon0_rad = math.radians(float(lon0))
+        cos_lat0 = math.cos(lat0_rad)
+        if abs(cos_lat0) < 1e-6:
+            cos_lat0 = 1e-6 if cos_lat0 >= 0.0 else -1e-6
+
+        t_s_xy, x_s, y_s = _prepare_xy_time_series(t_s_raw, lat_s_raw, lon_s_raw, lat0_rad, lon0_rad, cos_lat0)
+        t_f_xy, x_f, y_f = _prepare_xy_time_series(t_f_raw, lat_f_raw, lon_f_raw, lat0_rad, lon0_rad, cos_lat0)
+        t_s_yaw, yaw_s = _prepare_scalar_time_series(t_s_raw, yaw_s_raw)
+        t_f_yaw, yaw_f = _prepare_scalar_time_series(t_f_raw, yaw_f_raw)
+
+        if len(t_s_xy) < 2 or len(t_f_xy) < 2:
+            return [], [], 1.0
+        if len(t_s_yaw) < 2 or len(t_f_yaw) < 2:
+            return [], [], 1.0
+
+        t_s_min = float(t_s_xy[0])
+        t_s_max = float(t_s_xy[len(t_s_xy) - 1])
+        t_f_min = float(t_f_xy[0])
+        t_f_max = float(t_f_xy[len(t_f_xy) - 1])
+
+        dt = max(0.01, (0.5 / max(1.0, fps_safe)))
+
+        def _heading_xy_at(
+            t_query: float,
+            ts_xy: list[float],
+            xs: list[float],
+            ys: list[float],
+            t_min: float,
+            t_max: float,
+            j_t0x: int,
+            j_t0y: int,
+            j_t1x: int,
+            j_t1y: int,
+            last_heading: float,
+        ) -> tuple[float, int, int, int, int, float]:
+            t0 = _clamp(float(t_query) - dt, t_min, t_max)
+            t1 = _clamp(float(t_query) + dt, t_min, t_max)
+            if t1 <= t0:
+                t0 = _clamp(float(t_query) - (2.0 * dt), t_min, t_max)
+                t1 = _clamp(float(t_query) + (2.0 * dt), t_min, t_max)
+
+            x0, j_t0x_out = _interp_linear_clamped_time(ts_xy, xs, t0, j_t0x)
+            y0, j_t0y_out = _interp_linear_clamped_time(ts_xy, ys, t0, j_t0y)
+            x1, j_t1x_out = _interp_linear_clamped_time(ts_xy, xs, t1, j_t1x)
+            y1, j_t1y_out = _interp_linear_clamped_time(ts_xy, ys, t1, j_t1y)
+
+            dx = float(x1 - x0)
+            dy = float(y1 - y0)
+            nrm = math.hypot(dx, dy)
+            if nrm > 1e-6:
+                hdg = float(math.atan2(dy, dx))
+                return hdg, j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, hdg
+            return float(last_heading), j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, float(last_heading)
+
+        slow_err: list[float] = []
+        fast_err: list[float] = []
+
+        j_s_yaw = 0
+        j_f_yaw = 0
+        j_s_t0x = 0
+        j_s_t0y = 0
+        j_s_t1x = 0
+        j_s_t1y = 0
+        j_f_t0x = 0
+        j_f_t0y = 0
+        j_f_t1x = 0
+        j_f_t1y = 0
+
+        last_hdg_s = 0.0
+        last_hdg_f = 0.0
+        last_t_fast = 0.0
+
+        n_map = len(slow_frame_to_fast_time_s)
+        for frame_idx in range(n_out):
+            t_slow = float(frame_idx) / fps_safe
+
+            map_idx = frame_idx
+            if map_idx < 0:
+                map_idx = 0
+            if map_idx >= n_map:
+                map_idx = n_map - 1
+
+            try:
+                t_fast = float(slow_frame_to_fast_time_s[map_idx])
+            except Exception:
+                t_fast = float(last_t_fast)
+            if not _is_finite_float(t_fast):
+                t_fast = float(last_t_fast)
+            last_t_fast = float(t_fast)
+
+            yaw_sv, j_s_yaw = _interp_linear_clamped_time(t_s_yaw, yaw_s, t_slow, j_s_yaw)
+            hdg_s, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s = _heading_xy_at(
+                t_slow, t_s_xy, x_s, y_s, t_s_min, t_s_max, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s
+            )
+            err_s = _wrap_angle_pi(float(yaw_sv) - float(hdg_s))
+            if not _is_finite_float(err_s):
+                err_s = 0.0
+            slow_err.append(float(err_s))
+
+            yaw_fv, j_f_yaw = _interp_linear_clamped_time(t_f_yaw, yaw_f, t_fast, j_f_yaw)
+            hdg_f, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f = _heading_xy_at(
+                t_fast, t_f_xy, x_f, y_f, t_f_min, t_f_max, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f
+            )
+            err_f = _wrap_angle_pi(float(yaw_fv) - float(hdg_f))
+            if not _is_finite_float(err_f):
+                err_f = 0.0
+            fast_err.append(float(err_f))
+
+        # Global bias removal (full precomputed series, stable over playback).
+        slow_bias = _median(slow_err)
+        fast_bias = _median(fast_err)
+
+        if slow_err:
+            slow_err = [float(v) - float(slow_bias) for v in slow_err]
+        if fast_err:
+            fast_err = [float(v) - float(fast_bias) for v in fast_err]
+
+        base_abs = 0.0
+        for v in slow_err:
+            av = abs(float(v))
+            if math.isfinite(av) and av > base_abs:
+                base_abs = av
+        for v in fast_err:
+            av = abs(float(v))
+            if math.isfinite(av) and av > base_abs:
+                base_abs = av
+        if base_abs < 1e-6:
+            base_abs = 1e-6
+
+        headroom_ratio = 0.15
+        y_abs = float(base_abs) * (1.0 + headroom_ratio)
+        return slow_err, fast_err, y_abs
+    except Exception:
+        return [], [], 1.0
 
 
 def _compute_min_speed_display(speed_frames: list[float], fps: float, units: str) -> list[float]:
@@ -951,6 +1266,9 @@ def _render_hud_scroll_frames_png(
     fast_abs_frames = ctx.signals.fast_abs_frames
     line_delta_m_frames = ctx.signals.line_delta_m_frames
     line_delta_y_abs_m = ctx.signals.line_delta_y_abs_m
+    under_oversteer_slow_frames = ctx.signals.under_oversteer_slow_frames
+    under_oversteer_fast_frames = ctx.signals.under_oversteer_fast_frames
+    under_oversteer_y_abs = ctx.signals.under_oversteer_y_abs
 
     before_s = float(ctx.window.before_s)
     after_s = float(ctx.window.after_s)
@@ -1699,6 +2017,15 @@ def _render_hud_scroll_frames_png(
                 def _hud_under_oversteer() -> None:
                     under_oversteer_ctx = {
                         "hud_key": hud_key,
+                        "i": i,
+                        "before_f": before_f,
+                        "after_f": after_f,
+                        "under_oversteer_slow_frames": under_oversteer_slow_frames,
+                        "under_oversteer_fast_frames": under_oversteer_fast_frames,
+                        "under_oversteer_y_abs": under_oversteer_y_abs,
+                        "COL_WHITE": COL_WHITE,
+                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
                     }
                     render_under_oversteer(under_oversteer_ctx, (x0, y0, w, h), dr)
 
@@ -2053,6 +2380,9 @@ def render_split_screen_sync(
     fast_abs_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "ABSActive")
     line_delta_m_frames: list[float] = []
     line_delta_y_abs_m = 0.0
+    under_oversteer_slow_frames: list[float] = []
+    under_oversteer_fast_frames: list[float] = []
+    under_oversteer_y_abs = 1.0
 
 
     slow_min_speed_frames = _compute_min_speed_display(slow_speed_frames, float(fps_int), str(hud_speed_units)) if slow_speed_frames else []
@@ -2154,6 +2484,20 @@ def render_split_screen_sync(
                 except Exception:
                     pass
             line_delta_y_abs_m = float(abs_global_max) * 2.0
+        if "Under-/Oversteer" in active_names:
+            (
+                under_oversteer_slow_frames,
+                under_oversteer_fast_frames,
+                under_oversteer_y_abs,
+            ) = _build_under_oversteer_proxy_frames_from_csv(
+                slow_csv=scsv,
+                fast_csv=fcsv,
+                slow_duration_s=ms.duration_s,
+                fast_duration_s=mf.duration_s,
+                fps=float(fps_int),
+                slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
+                frame_count_hint=len(slow_frame_to_lapdist),
+            )
 
         # Overrides normalisieren
         ovs = hud_window_overrides if isinstance(hud_window_overrides, dict) else None
@@ -2240,6 +2584,9 @@ def render_split_screen_sync(
                 fast_abs_frames=fast_abs_frames,
                 line_delta_m_frames=line_delta_m_frames,
                 line_delta_y_abs_m=line_delta_y_abs_m,
+                under_oversteer_slow_frames=under_oversteer_slow_frames,
+                under_oversteer_fast_frames=under_oversteer_fast_frames,
+                under_oversteer_y_abs=under_oversteer_y_abs,
             ),
             window=HudWindowParams(
                 before_s=float(before_default_s),
