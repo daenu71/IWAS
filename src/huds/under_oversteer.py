@@ -82,6 +82,18 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     except Exception:
         pass
 
+    label_x = int(x0 + 4)
+    label_top_y = int(plot_y0 + 2)
+    label_bottom_y = int(y0 + h - font_sz - 2)
+    try:
+        dr.text((label_x, label_top_y), "Oversteer", fill=COL_WHITE, font=font_title)
+    except Exception:
+        pass
+    try:
+        dr.text((label_x, label_bottom_y), "Understeer", fill=COL_WHITE, font=font_title)
+    except Exception:
+        pass
+
     # Neutral baseline.
     y_zero = _y_from_val(0.0)
     try:
