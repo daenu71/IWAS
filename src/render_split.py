@@ -808,8 +808,115 @@ def _build_under_oversteer_proxy_frames_from_csv(
         w = float(pos - float(i0))
         return float((1.0 - w) * float(vals_sorted[i0]) + w * float(vals_sorted[i1]))
 
+    dbg_raw = str(os.getenv("IRVC_DEBUG_UO") or "").strip()
+    dbg_level = 0
+    if dbg_raw:
+        try:
+            dbg_level = int(float(dbg_raw))
+        except Exception:
+            dbg_level = 1
+    if dbg_level < 0:
+        dbg_level = 0
+    dbg_enabled = dbg_level >= 1
+    dbg_spam = dbg_level >= 2
+    dbg_k = 732
     try:
+        dbg_k = int(float((os.getenv("IRVC_DEBUG_UO_K") or "").strip() or "732"))
+    except Exception:
+        dbg_k = 732
+
+    def _uo_log(msg: str) -> None:
+        if dbg_enabled:
+            print(f"[uo] {msg}", flush=True)
+
+    def _uo_finite_minmax(vals: list[float]) -> tuple[int, float | None, float | None]:
+        cnt = 0
+        mn = math.inf
+        mx = -math.inf
+        for v in vals:
+            if _is_finite_float(v):
+                fv = float(v)
+                cnt += 1
+                if fv < mn:
+                    mn = fv
+                if fv > mx:
+                    mx = fv
+        if cnt <= 0:
+            return 0, None, None
+        return cnt, float(mn), float(mx)
+
+    def _uo_head_tail(vals: list[float], n: int = 3) -> str:
+        finite = [float(v) for v in vals if _is_finite_float(v)]
+        if not finite:
+            return "[]"
+        head = finite[: max(0, int(n))]
+        tail = finite[-max(0, int(n)) :]
+        hs = ",".join(f"{v:+.6f}" for v in head)
+        ts = ",".join(f"{v:+.6f}" for v in tail)
+        if len(finite) <= int(n):
+            return f"[{hs}]"
+        return f"[{hs}]...[{ts}]"
+
+    def _uo_inferred_dt(ts: list[float]) -> float | None:
+        if len(ts) < 2:
+            return None
+        dts: list[float] = []
+        prev = float(ts[0])
+        for i in range(1, len(ts)):
+            cur = float(ts[i])
+            d = float(cur - prev)
+            prev = cur
+            if _is_finite_float(d) and d > 0.0:
+                dts.append(float(d))
+                if len(dts) >= 64:
+                    break
+        if not dts:
+            return None
+        return float(sum(dts) / float(len(dts)))
+
+    def _uo_count_wrap_jumps(vals: list[float], threshold_abs: float) -> int:
+        if len(vals) < 2:
+            return 0
+        n = 0
+        prev = float(vals[0])
+        for i in range(1, len(vals)):
+            cur = float(vals[i])
+            if _is_finite_float(prev) and _is_finite_float(cur):
+                dd = _wrap_angle_pi(float(cur - prev))
+                if abs(float(dd)) > float(threshold_abs):
+                    n += 1
+            prev = cur
+        return int(n)
+
+    def _uo_top_steps(vals: list[float], *, wrapped_delta: bool, top_n: int = 10) -> list[tuple[int, float, float, float, float]]:
+        if len(vals) < 2:
+            return []
+        rows: list[tuple[float, int, float, float, float]] = []
+        prev = float(vals[0])
+        for i in range(1, len(vals)):
+            cur = float(vals[i])
+            if not (_is_finite_float(prev) and _is_finite_float(cur)):
+                prev = cur
+                continue
+            dd = _wrap_angle_pi(float(cur - prev)) if wrapped_delta else float(cur - prev)
+            rows.append((abs(float(dd)), int(i), float(prev), float(cur), float(dd)))
+            prev = cur
+        rows.sort(key=lambda x: x[0], reverse=True)
+        out: list[tuple[int, float, float, float, float]] = []
+        for rec in rows[: max(0, int(top_n))]:
+            out.append((int(rec[1]), float(rec[2]), float(rec[3]), float(rec[4]), float(rec[0])))
+        return out
+
+    try:
+        map_len_in = int(len(slow_frame_to_fast_time_s)) if slow_frame_to_fast_time_s else 0
+        _uo_log(
+            "entry "
+            + f"fps_in={float(fps):.6f} slow_duration_s={float(slow_duration_s):.6f} fast_duration_s={float(fast_duration_s):.6f} "
+            + f"frame_count_hint={int(frame_count_hint)} before_s=n/a after_s=n/a before_frames=n/a after_frames=n/a "
+            + f"sync_map_present={bool(slow_frame_to_fast_time_s)} sync_map_len={map_len_in} dbg_level={dbg_level} dbg_k={dbg_k}"
+        )
         if not slow_frame_to_fast_time_s:
+            _uo_log("early_return reason=no_sync_map")
             return [], [], 1.0
 
         fps_safe = float(fps) if float(fps) > 0.1 else 30.0
@@ -817,15 +924,21 @@ def _build_under_oversteer_proxy_frames_from_csv(
         if n_out <= 0:
             n_out = int(len(slow_frame_to_fast_time_s))
         if n_out <= 0:
+            _uo_log("early_return reason=nonpositive_output_frames")
             return [], [], 1.0
 
         run_s = load_g61_csv(slow_csv)
         run_f = load_g61_csv(fast_csv)
 
         for req in ("Lat", "Lon", "Yaw"):
-            if not has_col(run_s, req):
+            has_s = bool(has_col(run_s, req))
+            has_f = bool(has_col(run_f, req))
+            _uo_log(f"cols req={req} slow={has_s} fast={has_f}")
+            if not has_s:
+                _uo_log(f"early_return reason=missing_column run=slow col={req}")
                 return [], [], 1.0
-            if not has_col(run_f, req):
+            if not has_f:
+                _uo_log(f"early_return reason=missing_column run=fast col={req}")
                 return [], [], 1.0
 
         t_s_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_s, slow_duration_s))
@@ -837,6 +950,40 @@ def _build_under_oversteer_proxy_frames_from_csv(
         yaw_s_raw = get_float_col(run_s, "Yaw")
         yaw_f_raw = get_float_col(run_f, "Yaw")
 
+        if dbg_enabled:
+            t_s_dt = _uo_inferred_dt(t_s_raw)
+            t_f_dt = _uo_inferred_dt(t_f_raw)
+            t_s_first = float(t_s_raw[0]) if t_s_raw else float("nan")
+            t_s_last = float(t_s_raw[-1]) if t_s_raw else float("nan")
+            t_f_first = float(t_f_raw[0]) if t_f_raw else float("nan")
+            t_f_last = float(t_f_raw[-1]) if t_f_raw else float("nan")
+            _uo_log(
+                f"[slow] csv lens t={len(t_s_raw)} lat={len(lat_s_raw)} lon={len(lon_s_raw)} yaw={len(yaw_s_raw)} "
+                + f"t_first={t_s_first:+.6f} t_last={t_s_last:+.6f} dt_inferred={(f'{t_s_dt:+.6f}' if t_s_dt is not None else 'n/a')}"
+            )
+            _uo_log(
+                f"[fast] csv lens t={len(t_f_raw)} lat={len(lat_f_raw)} lon={len(lon_f_raw)} yaw={len(yaw_f_raw)} "
+                + f"t_first={t_f_first:+.6f} t_last={t_f_last:+.6f} dt_inferred={(f'{t_f_dt:+.6f}' if t_f_dt is not None else 'n/a')}"
+            )
+            s_lat_cnt, s_lat_min, s_lat_max = _uo_finite_minmax(lat_s_raw)
+            s_lon_cnt, s_lon_min, s_lon_max = _uo_finite_minmax(lon_s_raw)
+            s_yaw_cnt, s_yaw_min, s_yaw_max = _uo_finite_minmax(yaw_s_raw)
+            f_lat_cnt, f_lat_min, f_lat_max = _uo_finite_minmax(lat_f_raw)
+            f_lon_cnt, f_lon_min, f_lon_max = _uo_finite_minmax(lon_f_raw)
+            f_yaw_cnt, f_yaw_min, f_yaw_max = _uo_finite_minmax(yaw_f_raw)
+            _uo_log(
+                f"[slow] minmax lat(cnt={s_lat_cnt})={(f'{s_lat_min:+.8f}..{s_lat_max:+.8f}' if s_lat_min is not None and s_lat_max is not None else 'n/a')} "
+                + f"lon(cnt={s_lon_cnt})={(f'{s_lon_min:+.8f}..{s_lon_max:+.8f}' if s_lon_min is not None and s_lon_max is not None else 'n/a')} "
+                + f"yaw(cnt={s_yaw_cnt})={(f'{s_yaw_min:+.6f}..{s_yaw_max:+.6f}' if s_yaw_min is not None and s_yaw_max is not None else 'n/a')} "
+                + f"samples lat={_uo_head_tail(lat_s_raw)} lon={_uo_head_tail(lon_s_raw)} yaw={_uo_head_tail(yaw_s_raw)}"
+            )
+            _uo_log(
+                f"[fast] minmax lat(cnt={f_lat_cnt})={(f'{f_lat_min:+.8f}..{f_lat_max:+.8f}' if f_lat_min is not None and f_lat_max is not None else 'n/a')} "
+                + f"lon(cnt={f_lon_cnt})={(f'{f_lon_min:+.8f}..{f_lon_max:+.8f}' if f_lon_min is not None and f_lon_max is not None else 'n/a')} "
+                + f"yaw(cnt={f_yaw_cnt})={(f'{f_yaw_min:+.6f}..{f_yaw_max:+.6f}' if f_yaw_min is not None and f_yaw_max is not None else 'n/a')} "
+                + f"samples lat={_uo_head_tail(lat_f_raw)} lon={_uo_head_tail(lon_f_raw)} yaw={_uo_head_tail(yaw_f_raw)}"
+            )
+
         lat0 = None
         lon0 = None
         n0 = min(len(lat_s_raw), len(lon_s_raw))
@@ -846,6 +993,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
                 lon0 = float(lon_s_raw[k])
                 break
         if lat0 is None or lon0 is None:
+            _uo_log("early_return reason=no_finite_latlon_seed")
             return [], [], 1.0
 
         lat0_rad = math.radians(float(lat0))
@@ -860,8 +1008,14 @@ def _build_under_oversteer_proxy_frames_from_csv(
         t_f_yaw, yaw_f = _prepare_scalar_time_series(t_f_raw, yaw_f_raw)
 
         if len(t_s_xy) < 2 or len(t_f_xy) < 2:
+            _uo_log(
+                f"early_return reason=xy_too_short slow_xy={len(t_s_xy)} fast_xy={len(t_f_xy)}"
+            )
             return [], [], 1.0
         if len(t_s_yaw) < 2 or len(t_f_yaw) < 2:
+            _uo_log(
+                f"early_return reason=yaw_too_short slow_yaw={len(t_s_yaw)} fast_yaw={len(t_f_yaw)}"
+            )
             return [], [], 1.0
 
         t_s_min = float(t_s_xy[0])
@@ -871,6 +1025,11 @@ def _build_under_oversteer_proxy_frames_from_csv(
 
         dt = 0.15
         heading_eps_m = 0.05
+        _uo_log(
+            f"settings output_fps={fps_safe:.6f} n_out={n_out} heading_dt={dt:.6f} heading_eps_m={heading_eps_m:.6f} "
+            + f"[slow]xy_len={len(t_s_xy)} yaw_len={len(t_s_yaw)} t=({t_s_min:+.6f}..{t_s_max:+.6f}) "
+            + f"[fast]xy_len={len(t_f_xy)} yaw_len={len(t_f_yaw)} t=({t_f_min:+.6f}..{t_f_max:+.6f})"
+        )
 
         def _heading_xy_at(
             t_query: float,
@@ -884,7 +1043,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
             j_t1x: int,
             j_t1y: int,
             last_heading: float,
-        ) -> tuple[float, int, int, int, int, float]:
+        ) -> tuple[float, int, int, int, int, float, float, bool]:
             t0 = _clamp(float(t_query) - dt, t_min, t_max)
             t1 = _clamp(float(t_query) + dt, t_min, t_max)
             if t1 <= t0:
@@ -901,8 +1060,8 @@ def _build_under_oversteer_proxy_frames_from_csv(
             nrm = math.hypot(dx, dy)
             if nrm >= heading_eps_m:
                 hdg = float(math.atan2(dy, dx))
-                return hdg, j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, hdg
-            return float(last_heading), j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, float(last_heading)
+                return hdg, j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, hdg, float(nrm), False
+            return float(last_heading), j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, float(last_heading), float(nrm), True
 
         def _seed_initial_heading(
             ts_xy: list[float],
@@ -952,9 +1111,88 @@ def _build_under_oversteer_proxy_frames_from_csv(
         seed_hdg_f = _seed_initial_heading(t_f_xy, x_f, y_f, t_f_min, t_f_max)
         last_hdg_s = float(seed_hdg_s) if (seed_hdg_s is not None and _is_finite_float(seed_hdg_s)) else 0.0
         last_hdg_f = float(seed_hdg_f) if (seed_hdg_f is not None and _is_finite_float(seed_hdg_f)) else 0.0
+        if dbg_enabled:
+            _uo_log(
+                f"[slow] seed_heading={(f'{last_hdg_s:+.6f}' if _is_finite_float(last_hdg_s) else 'n/a')} "
+                + f"(raw_seed={(f'{seed_hdg_s:+.6f}' if seed_hdg_s is not None and _is_finite_float(seed_hdg_s) else 'none')})"
+            )
+            _uo_log(
+                f"[fast] seed_heading={(f'{last_hdg_f:+.6f}' if _is_finite_float(last_hdg_f) else 'n/a')} "
+                + f"(raw_seed={(f'{seed_hdg_f:+.6f}' if seed_hdg_f is not None and _is_finite_float(seed_hdg_f) else 'none')})"
+            )
         last_t_fast = 0.0
 
         n_map = len(slow_frame_to_fast_time_s)
+        if dbg_enabled:
+            rep_idxs: list[int] = []
+            for k_rep in (0, 1, 10, 100, 300, 700, n_out - 1):
+                kk = int(k_rep)
+                if kk < 0 or kk >= n_out:
+                    continue
+                if kk not in rep_idxs:
+                    rep_idxs.append(kk)
+            for kk in rep_idxs:
+                map_idx = kk
+                if map_idx < 0:
+                    map_idx = 0
+                if map_idx >= n_map:
+                    map_idx = n_map - 1
+                t_slow_rep = float(kk) / fps_safe
+                try:
+                    t_fast_rep = float(slow_frame_to_fast_time_s[map_idx])
+                except Exception:
+                    t_fast_rep = float("nan")
+                dt_rep = float(t_fast_rep - t_slow_rep) if (_is_finite_float(t_fast_rep) and _is_finite_float(t_slow_rep)) else float("nan")
+                _uo_log(
+                    f"[map] k={kk} t_slow={t_slow_rep:+.6f} t_fast={t_fast_rep:+.6f} delta_t={dt_rep:+.6f} map_idx={map_idx}"
+                )
+
+            map_vals: list[float] = []
+            map_invalid = 0
+            for i_map in range(n_map):
+                try:
+                    v_map = float(slow_frame_to_fast_time_s[i_map])
+                except Exception:
+                    v_map = float("nan")
+                if not _is_finite_float(v_map):
+                    map_invalid += 1
+                    map_vals.append(float("nan"))
+                else:
+                    map_vals.append(float(v_map))
+            jump_rows: list[tuple[float, int, float, float, float]] = []
+            nonmono = 0
+            for i_map in range(1, n_map):
+                prev_map = float(map_vals[i_map - 1])
+                cur_map = float(map_vals[i_map])
+                if not (_is_finite_float(prev_map) and _is_finite_float(cur_map)):
+                    continue
+                d_map = float(cur_map - prev_map)
+                if d_map < 0.0:
+                    nonmono += 1
+                jump_rows.append((abs(float(d_map)), int(i_map), float(prev_map), float(cur_map), float(d_map)))
+            jump_rows.sort(key=lambda x: x[0], reverse=True)
+            _uo_log(f"[map] len={n_map} non_monotonic_count={nonmono} invalid_count={map_invalid}")
+            for rec in jump_rows[:10]:
+                _uo_log(
+                    f"[map] jump_top idx={int(rec[1])} prev={float(rec[2]):+.6f} cur={float(rec[3]):+.6f} diff={float(rec[4]):+.6f}"
+                )
+
+        hold_count_s = 0
+        hold_count_f = 0
+        first_valid_s: int | None = None
+        first_valid_f: int | None = None
+        run_hold_s = 0
+        run_hold_f = 0
+        max_run_hold_s = 0
+        max_run_hold_f = 0
+        max_run_hold_s_start = -1
+        max_run_hold_s_end = -1
+        max_run_hold_f_start = -1
+        max_run_hold_f_end = -1
+
+        dbg_rows: list[
+            tuple[int, float, float, float, float, float, float, int, float, float, float, float, int]
+        ] = []
         for frame_idx in range(n_out):
             t_slow = float(frame_idx) / fps_safe
 
@@ -973,34 +1211,136 @@ def _build_under_oversteer_proxy_frames_from_csv(
             last_t_fast = float(t_fast)
 
             yaw_sv, j_s_yaw = _interp_linear_clamped_time(t_s_yaw, yaw_s, t_slow, j_s_yaw)
-            hdg_s, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s = _heading_xy_at(
+            hdg_s, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s, nrm_s, held_s = _heading_xy_at(
                 t_slow, t_s_xy, x_s, y_s, t_s_min, t_s_max, j_s_t0x, j_s_t0y, j_s_t1x, j_s_t1y, last_hdg_s
             )
             err_s = _wrap_angle_pi(float(yaw_sv) - float(hdg_s))
             if not _is_finite_float(err_s):
                 err_s = 0.0
             slow_err_wrapped.append(float(err_s))
+            if dbg_enabled:
+                if held_s:
+                    hold_count_s += 1
+                    if run_hold_s <= 0:
+                        run_hold_s = 1
+                        cur_start_s = frame_idx
+                    else:
+                        run_hold_s += 1
+                        cur_start_s = frame_idx - run_hold_s + 1
+                    if run_hold_s > max_run_hold_s:
+                        max_run_hold_s = int(run_hold_s)
+                        max_run_hold_s_start = int(cur_start_s)
+                        max_run_hold_s_end = int(frame_idx)
+                else:
+                    run_hold_s = 0
+                    if first_valid_s is None:
+                        first_valid_s = int(frame_idx)
 
             yaw_fv, j_f_yaw = _interp_linear_clamped_time(t_f_yaw, yaw_f, t_fast, j_f_yaw)
-            hdg_f, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f = _heading_xy_at(
+            hdg_f, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f, nrm_f, held_f = _heading_xy_at(
                 t_fast, t_f_xy, x_f, y_f, t_f_min, t_f_max, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f
             )
             err_f = _wrap_angle_pi(float(yaw_fv) - float(hdg_f))
             if not _is_finite_float(err_f):
                 err_f = 0.0
             fast_err_wrapped.append(float(err_f))
+            if dbg_enabled:
+                if held_f:
+                    hold_count_f += 1
+                    if run_hold_f <= 0:
+                        run_hold_f = 1
+                        cur_start_f = frame_idx
+                    else:
+                        run_hold_f += 1
+                        cur_start_f = frame_idx - run_hold_f + 1
+                    if run_hold_f > max_run_hold_f:
+                        max_run_hold_f = int(run_hold_f)
+                        max_run_hold_f_start = int(cur_start_f)
+                        max_run_hold_f_end = int(frame_idx)
+                else:
+                    run_hold_f = 0
+                    if first_valid_f is None:
+                        first_valid_f = int(frame_idx)
 
-        slow_err = _unwrap_over_time(slow_err_wrapped)
-        fast_err = _unwrap_over_time(fast_err_wrapped)
+            if dbg_spam:
+                dbg_rows.append(
+                    (
+                        int(frame_idx),
+                        float(t_slow),
+                        float(t_fast),
+                        float(hdg_s),
+                        float(yaw_sv),
+                        float(err_s),
+                        float(nrm_s),
+                        int(1 if held_s else 0),
+                        float(hdg_f),
+                        float(yaw_fv),
+                        float(err_f),
+                        float(nrm_f),
+                        int(1 if held_f else 0),
+                    )
+                )
+
+        if dbg_enabled:
+            _uo_log(
+                f"[slow] heading_hold_count={hold_count_s} first_valid_idx={(first_valid_s if first_valid_s is not None else -1)} "
+                + f"longest_hold_run={max_run_hold_s} run_range={max_run_hold_s_start}..{max_run_hold_s_end}"
+            )
+            _uo_log(
+                f"[fast] heading_hold_count={hold_count_f} first_valid_idx={(first_valid_f if first_valid_f is not None else -1)} "
+                + f"longest_hold_run={max_run_hold_f} run_range={max_run_hold_f_start}..{max_run_hold_f_end}"
+            )
+            slow_raw_wrap_jump_count = _uo_count_wrap_jumps(slow_err_wrapped, 0.5 * math.pi)
+            fast_raw_wrap_jump_count = _uo_count_wrap_jumps(fast_err_wrapped, 0.5 * math.pi)
+            _uo_log(f"[slow] wrap_delta_gt_pi_over_2_raw={slow_raw_wrap_jump_count}")
+            _uo_log(f"[fast] wrap_delta_gt_pi_over_2_raw={fast_raw_wrap_jump_count}")
+            for idx_s, prev_s, cur_s, d_s, abs_d_s in _uo_top_steps(slow_err_wrapped, wrapped_delta=True, top_n=10):
+                _uo_log(
+                    f"[slow] top_step_raw idx={idx_s} prev={prev_s:+.6f} cur={cur_s:+.6f} delta={d_s:+.6f} abs={abs_d_s:.6f}"
+                )
+            for idx_f, prev_f, cur_f, d_f, abs_d_f in _uo_top_steps(fast_err_wrapped, wrapped_delta=True, top_n=10):
+                _uo_log(
+                    f"[fast] top_step_raw idx={idx_f} prev={prev_f:+.6f} cur={cur_f:+.6f} delta={d_f:+.6f} abs={abs_d_f:.6f}"
+                )
+
+        slow_err_unwrapped = _unwrap_over_time(slow_err_wrapped)
+        fast_err_unwrapped = _unwrap_over_time(fast_err_wrapped)
+        if dbg_enabled:
+            for idx_s, prev_s, cur_s, d_s, abs_d_s in _uo_top_steps(slow_err_unwrapped, wrapped_delta=False, top_n=10):
+                _uo_log(
+                    f"[slow] top_step_unwrapped idx={idx_s} prev={prev_s:+.6f} cur={cur_s:+.6f} delta={d_s:+.6f} abs={abs_d_s:.6f}"
+                )
+            for idx_f, prev_f, cur_f, d_f, abs_d_f in _uo_top_steps(fast_err_unwrapped, wrapped_delta=False, top_n=10):
+                _uo_log(
+                    f"[fast] top_step_unwrapped idx={idx_f} prev={prev_f:+.6f} cur={cur_f:+.6f} delta={d_f:+.6f} abs={abs_d_f:.6f}"
+                )
+
+        slow_err = list(slow_err_unwrapped)
+        fast_err = list(fast_err_unwrapped)
 
         # Global bias removal on unwrapped series (full precomputed series, stable over playback).
         slow_bias = _median(slow_err)
         fast_bias = _median(fast_err)
+        if dbg_enabled:
+            _uo_log(f"[slow] bias={slow_bias:+.6f}")
+            _uo_log(f"[fast] bias={fast_bias:+.6f}")
 
         if slow_err:
             slow_err = [float(v) - float(slow_bias) for v in slow_err]
         if fast_err:
             fast_err = [float(v) - float(fast_bias) for v in fast_err]
+
+        slow_max_abs_before_clamp = 0.0
+        fast_max_abs_before_clamp = 0.0
+        if dbg_enabled:
+            for v in slow_err:
+                av = abs(float(v))
+                if math.isfinite(av) and av > slow_max_abs_before_clamp:
+                    slow_max_abs_before_clamp = float(av)
+            for v in fast_err:
+                av = abs(float(v))
+                if math.isfinite(av) and av > fast_max_abs_before_clamp:
+                    fast_max_abs_before_clamp = float(av)
 
         abs_vals: list[float] = []
         for v in slow_err:
@@ -1016,13 +1356,75 @@ def _build_under_oversteer_proxy_frames_from_csv(
         if y_abs_base < 1e-6:
             y_abs_base = 0.05
 
-        slow_err = [_clamp(float(v), -float(y_abs_base), float(y_abs_base)) for v in slow_err]
-        fast_err = [_clamp(float(v), -float(y_abs_base), float(y_abs_base)) for v in fast_err]
+        slow_clamped_count = 0
+        fast_clamped_count = 0
+        slow_err_clamped: list[float] = []
+        fast_err_clamped: list[float] = []
+        y_min = -float(y_abs_base)
+        y_max = float(y_abs_base)
+        for v in slow_err:
+            fv = float(v)
+            if dbg_enabled and (fv < y_min or fv > y_max):
+                slow_clamped_count += 1
+            slow_err_clamped.append(float(_clamp(fv, y_min, y_max)))
+        for v in fast_err:
+            fv = float(v)
+            if dbg_enabled and (fv < y_min or fv > y_max):
+                fast_clamped_count += 1
+            fast_err_clamped.append(float(_clamp(fv, y_min, y_max)))
+        slow_err = slow_err_clamped
+        fast_err = fast_err_clamped
+
+        slow_max_abs_after_clamp = 0.0
+        fast_max_abs_after_clamp = 0.0
+        if dbg_enabled:
+            for v in slow_err:
+                av = abs(float(v))
+                if math.isfinite(av) and av > slow_max_abs_after_clamp:
+                    slow_max_abs_after_clamp = float(av)
+            for v in fast_err:
+                av = abs(float(v))
+                if math.isfinite(av) and av > fast_max_abs_after_clamp:
+                    fast_max_abs_after_clamp = float(av)
 
         headroom_ratio = 0.15
         y_abs = float(y_abs_base) * (1.0 + headroom_ratio)
+        if dbg_enabled:
+            _uo_log(
+                f"[scale] y_abs_base_p99={y_abs_base:+.6f} y_abs={y_abs:+.6f} headroom_ratio={headroom_ratio:.3f}"
+            )
+            _uo_log(
+                f"[slow] max_abs_before_clamp={slow_max_abs_before_clamp:+.6f} max_abs_after_clamp={slow_max_abs_after_clamp:+.6f} "
+                + f"clamped_points={slow_clamped_count}/{len(slow_err)}"
+            )
+            _uo_log(
+                f"[fast] max_abs_before_clamp={fast_max_abs_before_clamp:+.6f} max_abs_after_clamp={fast_max_abs_after_clamp:+.6f} "
+                + f"clamped_points={fast_clamped_count}/{len(fast_err)}"
+            )
+
+        if dbg_spam:
+            k0 = max(0, int(dbg_k) - 20)
+            k1 = min(n_out - 1, int(dbg_k) + 20)
+            _uo_log(
+                f"[kdbg] window center_k={int(dbg_k)} range={k0}..{k1} cols=k,t_slow,t_fast,hdg_s,yaw_s,err_s_raw,err_s_unw,err_s_final,mov_s,hold_s,hdg_f,yaw_f,err_f_raw,err_f_unw,err_f_final,mov_f,hold_f"
+            )
+            for rec in dbg_rows:
+                k_i = int(rec[0])
+                if k_i < k0 or k_i > k1:
+                    continue
+                s_unw = float(slow_err_unwrapped[k_i]) if k_i < len(slow_err_unwrapped) else float("nan")
+                s_fin = float(slow_err[k_i]) if k_i < len(slow_err) else float("nan")
+                f_unw = float(fast_err_unwrapped[k_i]) if k_i < len(fast_err_unwrapped) else float("nan")
+                f_fin = float(fast_err[k_i]) if k_i < len(fast_err) else float("nan")
+                _uo_log(
+                    "[kdbg] "
+                    + f"{k_i},{float(rec[1]):+.6f},{float(rec[2]):+.6f},{float(rec[3]):+.6f},{float(rec[4]):+.6f},{float(rec[5]):+.6f},{s_unw:+.6f},{s_fin:+.6f},{float(rec[6]):+.6f},{int(rec[7])},"
+                    + f"{float(rec[8]):+.6f},{float(rec[9]):+.6f},{float(rec[10]):+.6f},{f_unw:+.6f},{f_fin:+.6f},{float(rec[11]):+.6f},{int(rec[12])}"
+                )
+
         return slow_err, fast_err, y_abs
-    except Exception:
+    except Exception as e:
+        _uo_log(f"exception type={type(e).__name__} msg={e}")
         return [], [], 1.0
 
 
