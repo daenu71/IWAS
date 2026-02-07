@@ -20,7 +20,7 @@ from core.models import (
     PngViewState,
     Profile,
 )
-from core import persistence, filesvc
+from core import persistence, filesvc, profile_service
 from core.render_service import start_render
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from preview.png_preview import PngPreviewController
@@ -789,175 +789,79 @@ def main() -> None:
         
     def build_profile_dict() -> dict:
         nonlocal app_model
-        vnames: list[str] = []
-        cnames: list[str] = []
+        
+        def _set_app_model(model: AppModel) -> None:
+            nonlocal app_model
+            app_model = model
 
-        for p in videos[:2]:
-            try:
-                vnames.append(p.name)
-            except Exception:
-                pass
-
-        for p in csvs[:2]:
-            try:
-                cnames.append(p.name)
-            except Exception:
-                pass
-
-        starts: dict[str, int] = {}
-        ends: dict[str, int] = {}
-
-        for n in vnames:
-            try:
-                starts[n] = int(startframes_by_name.get(n, 0))
-            except Exception:
-                starts[n] = 0
-            try:
-                ends[n] = int(endframes_by_name.get(n, 0))
-            except Exception:
-                ends[n] = 0
-
-        profile = profile_model_from_ui_state(vnames, cnames, starts, ends)
-        app_model = AppModel(
-            output=profile.output,
-            hud_layout=HudLayoutState(hud_layout_data=profile.hud_layout_data),
-            png_view=PngViewState(png_view_data=profile.png_view_data),
+        return profile_service.build_profile_dict(
+            videos=videos,
+            csvs=csvs,
+            startframes_by_name=startframes_by_name,
+            endframes_by_name=endframes_by_name,
+            profile_model_from_ui_state=profile_model_from_ui_state,
+            set_app_model=_set_app_model,
         )
-        return profile.to_dict()
 
     def apply_profile_dict(d: dict) -> None:
         nonlocal videos, csvs, hud_layout_data, png_view_data, last_scan_sig, app_model
 
-        if not isinstance(d, dict):
-            return
+        def _set_hud_layout_data(data: dict) -> None:
+            nonlocal hud_layout_data
+            hud_layout_data = data
 
-        # Output / HUD-Breite setzen
-        out = d.get("output")
-        if isinstance(out, dict):
-            a = str(out.get("aspect") or "").strip()
-            p = str(out.get("preset") or "").strip()
-            q = str(out.get("quality") or "").strip()
-            h = str(out.get("hud_width_px") or "").strip()
+        def _set_png_view_data(data: dict) -> None:
+            nonlocal png_view_data
+            png_view_data = data
 
-            if a:
-                try:
-                    out_aspect_var.set(a)
-                except Exception:
-                    pass
-            if q:
-                try:
-                    out_quality_var.set(q)
-                except Exception:
-                    pass
-            if p:
-                try:
-                    out_preset_var.set(p)
-                except Exception:
-                    pass
-            if h != "":
-                try:
-                    hud_width_var.set(max(0, int(float(h))))
-                except Exception:
-                    pass
+        def _sync_app_model_from_ui_state() -> None:
+            nonlocal app_model
+            app_model = model_from_ui_state()
 
-            try:
-                persistence.save_output_format(
-                    {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get(), "hud_width_px": str(get_hud_width_px())}
-                )
-            except Exception:
-                pass
+        def _set_videos(data: list[Path]) -> None:
+            nonlocal videos
+            videos = data
 
-        # HUD-Layout + PNG-View komplett übernehmen (damit alles wieder da ist)
-        hl = d.get("hud_layout_data")
-        if isinstance(hl, dict):
-            hud_layout_data = hl
-            try:
-                persistence.save_hud_layout(hud_layout_data)
-            except Exception:
-                pass
+        def _set_csvs(data: list[Path]) -> None:
+            nonlocal csvs
+            csvs = data
 
-        pv = d.get("png_view_data")
-        if isinstance(pv, dict):
-            png_view_data = pv
-            try:
-                persistence.save_png_view(png_view_data)
-            except Exception:
-                pass
+        def _reset_last_scan_sig() -> None:
+            nonlocal last_scan_sig
+            last_scan_sig = None
 
-        # Mapping-Layer: aktuellen UI-Zustand zentral ins Modell spiegeln
-        app_model = model_from_ui_state()
-
-        # Start/Endframes mergen und speichern
-        sf = d.get("startframes")
-        if isinstance(sf, dict):
-            for k, v in sf.items():
-                try:
-                    startframes_by_name[str(k)] = int(v)
-                except Exception:
-                    pass
-            try:
-                persistence.save_startframes(startframes_by_name)
-            except Exception:
-                pass
-
-        ef = d.get("endframes")
-        if isinstance(ef, dict):
-            for k, v in ef.items():
-                try:
-                    endframes_by_name[str(k)] = int(v)
-                except Exception:
-                    pass
-            try:
-                persistence.save_endframes(endframes_by_name)
-            except Exception:
-                pass
-
-        # Dateien setzen (nur wenn sie im input-Ordner existieren)
-        vlist = d.get("videos")
-        clist = d.get("csvs")
-
-        new_videos: list[Path] = []
-        new_csvs: list[Path] = []
-
-        if isinstance(vlist, list):
-            for n in vlist[:2]:
-                try:
-                    p = input_video_dir / str(n)
-                    if p.exists():
-                        new_videos.append(p)
-                except Exception:
-                    pass
-
-        if isinstance(clist, list):
-            for n in clist[:2]:
-                try:
-                    p = input_csv_dir / str(n)
-                    if p.exists():
-                        new_csvs.append(p)
-                except Exception:
-                    pass
-
-        videos = new_videos[:2]
-        csvs = new_csvs[:2]
-
-        # Force refresh (auch wenn Ordner-Signatur gleich ist)
-        last_scan_sig = None
-        try:
-            close_preview_video()
-        except Exception:
-            pass
-        try:
-            refresh_display()
-        except Exception:
-            pass
-        try:
-            if preview_mode_var.get() == "png":
-                png_load_state_for_current()
-                render_png_preview(force_reload=True)
-            else:
-                refresh_layout_preview()
-        except Exception:
-            pass
+        profile_service.apply_profile_dict(
+            profile=d,
+            set_out_aspect=out_aspect_var.set,
+            set_out_quality=out_quality_var.set,
+            set_out_preset=out_preset_var.set,
+            set_hud_width_px=hud_width_var.set,
+            get_out_aspect=out_aspect_var.get,
+            get_out_quality=out_quality_var.get,
+            get_out_preset=out_preset_var.get,
+            get_hud_width_px=get_hud_width_px,
+            save_output_format=persistence.save_output_format,
+            set_hud_layout_data=_set_hud_layout_data,
+            save_hud_layout=persistence.save_hud_layout,
+            set_png_view_data=_set_png_view_data,
+            save_png_view=persistence.save_png_view,
+            sync_app_model_from_ui_state=_sync_app_model_from_ui_state,
+            startframes_by_name=startframes_by_name,
+            endframes_by_name=endframes_by_name,
+            save_startframes=persistence.save_startframes,
+            save_endframes=persistence.save_endframes,
+            input_video_dir=input_video_dir,
+            input_csv_dir=input_csv_dir,
+            set_videos=_set_videos,
+            set_csvs=_set_csvs,
+            reset_last_scan_sig=_reset_last_scan_sig,
+            close_preview_video=close_preview_video,
+            refresh_display=refresh_display,
+            get_preview_mode=preview_mode_var.get,
+            png_load_state_for_current=png_load_state_for_current,
+            render_png_preview=render_png_preview,
+            refresh_layout_preview=refresh_layout_preview,
+        )
 
     def profile_save_dialog() -> None:
         try:
