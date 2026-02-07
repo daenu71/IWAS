@@ -3,7 +3,9 @@ from tkinter import ttk, filedialog
 import re
 from pathlib import Path
 import json
+import os
 import subprocess
+import threading
 
 from core.models import (
     AppModel,
@@ -20,6 +22,24 @@ from ui.controller import Controller, UIContext
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
+
+
+def _debug_swallowed_enabled() -> bool:
+    s = str(os.environ.get("IRVC_DEBUG_SWALLOWED", "") or "").strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
+def _safe(fn, *args, default=None, label: str | None = None, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        if _debug_swallowed_enabled():
+            name = label or getattr(fn, "__name__", "call")
+            try:
+                print(f"[IRVC_DEBUG_SWALLOWED] {name}: {e}")
+            except Exception:
+                pass
+        return default
 
 
 def find_project_root(script_path: Path) -> Path:
@@ -618,21 +638,15 @@ def main() -> None:
                     video_info_cache[key] = (int(w), int(h), float(fp))
                 except Exception:
                     video_info_cache[key] = (0, 0, 0.0)
-                try:
-                    video_info_inflight.discard(key)
-                except Exception:
-                    pass
-                try:
-                    refresh_display()
-                except Exception:
-                    pass
+                _safe(video_info_inflight.discard, key, label="request_video_info.inflight_discard")
+                _safe(refresh_display, label="request_video_info.refresh_display")
 
-            try:
-                root.after(0, apply)
-            except Exception:
-                pass
+            _safe(root.after, 0, apply, label="request_video_info.after")
 
-        pass
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            _safe(video_info_inflight.discard, key, label="request_video_info.thread_start_discard")
 
     def fmt_res(w: int, h: int) -> str:
         if w <= 0 or h <= 0:
@@ -1309,86 +1323,32 @@ def main() -> None:
         btn_cancel.config(command=request_cancel)
 
         def set_text(t: str):
-            try:
-                lbl.config(text=t)
-            except Exception:
-                pass
+            _safe(lbl.config, text=t, label="show_progress_with_cancel.set_text")
 
         def set_progress(pct: float):
-            try:
-                bar["value"] = max(0.0, min(100.0, float(pct)))
-            except Exception:
-                pass
+            _safe(bar.__setitem__, "value", max(0.0, min(100.0, float(pct))), label="show_progress_with_cancel.set_progress")
 
         def is_cancelled() -> bool:
             return bool(cancel_state["cancel"])
 
         def close():
-            try:
-                win.grab_release()
-            except Exception:
-                pass
-            try:
-                win.destroy()
-            except Exception:
-                pass
+            _safe(win.grab_release, label="show_progress_with_cancel.grab_release")
+            _safe(win.destroy, label="show_progress_with_cancel.destroy")
 
         return win, close, set_text, set_progress, is_cancelled
 
-        frm = ttk.Frame(win, padding=12)
-        frm.grid(row=0, column=0, sticky="nsew")
+    def show_progress(title: str, text: str):
+        win, close, _set_text, _set_progress, _is_cancelled = show_progress_with_cancel(title, text)
 
-        lbl = ttk.Label(frm, text=text)
-        lbl.grid(row=0, column=0, sticky="w")
+        def hide_cancel_button() -> None:
+            for child in win.winfo_children():
+                for grand in child.winfo_children():
+                    if isinstance(grand, ttk.Button):
+                        grand.grid_remove()
+            win.update_idletasks()
 
-        bar = ttk.Progressbar(frm, mode="determinate", length=420, maximum=100.0)
-        bar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-
-        btn_cancel = ttk.Button(frm, text="Abbrechen")
-        btn_cancel.grid(row=2, column=0, sticky="e", pady=(10, 0))
-
-        win.update_idletasks()
-        x = root.winfo_rootx() + 80
-        y = root.winfo_rooty() + 80
-        win.geometry(f"+{x}+{y}")
-        win.update()
-
-        cancel_state = {"cancel": False}
-
-        def request_cancel():
-            cancel_state["cancel"] = True
-
-        btn_cancel.config(command=request_cancel)
-
-        def set_text(t: str):
-            try:
-                lbl.config(text=t)
-            except Exception:
-                pass
-
-        def set_progress(pct: float):
-            try:
-                bar["value"] = max(0.0, min(100.0, float(pct)))
-            except Exception:
-                pass
-
-        def is_cancelled() -> bool:
-            try:
-                return bool(cancel_state["cancel"])
-            except Exception:
-                return False
-
-        def close():
-            try:
-                win.grab_release()
-            except Exception:
-                pass
-            try:
-                win.destroy()
-            except Exception:
-                pass
-
-        return win, close, set_text, set_progress, is_cancelled
+        _safe(hide_cancel_button, label="show_progress.hide_cancel")
+        return win, close
 
     def parse_ffmpeg_time_to_sec(s: str) -> float:
         # "00:01:23.45" -> Sekunden
@@ -1510,7 +1470,7 @@ def main() -> None:
         extract_time_ms=extract_time_ms,
         show_preview_controls=show_preview_controls,
         sync_from_folders_if_needed_ui=sync_from_folders_if_needed_ui,
-        show_progress=lambda title, text: show_progress(title, text),
+        show_progress=show_progress,
     )
 
     ui_ctx = UIContext(
