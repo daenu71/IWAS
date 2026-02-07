@@ -22,7 +22,7 @@ from core.models import (
     Profile,
     RenderPayload,
 )
-from core import persistence
+from core import persistence, filesvc
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -768,20 +768,6 @@ def main() -> None:
     tip_c1 = HoverTooltip(lbl_c1)
     tip_c2 = HoverTooltip(lbl_c2)
 
-    def open_folder(path: Path) -> None:
-        try:
-            os.startfile(str(path.parent))
-        except Exception:
-            pass
-
-    def delete_file(path: Path) -> bool:
-        try:
-            if path.exists():
-                path.unlink()
-            return True
-        except Exception:
-            return False
-
     def clear_result() -> None:
         lbl_fast.config(text="Fast: –")
         lbl_slow.config(text="Slow: –")
@@ -1117,53 +1103,29 @@ def main() -> None:
         else:
             clear_result()
 
-    def copy_to_dir(src: Path, dst_dir: Path) -> Path:
-        dst = dst_dir / src.name
-        if not dst.exists():
-            shutil.copy2(src, dst)
-        return dst
-
     last_scan_sig: tuple[tuple[str, ...], tuple[str, ...]] | None = None
 
-    def scan_folders_signature() -> tuple[tuple[str, ...], tuple[str, ...]]:
-        vid_exts = {".mp4", ".mkv", ".mov", ".avi"}
-        vids = tuple(sorted([p.name for p in input_video_dir.iterdir() if p.is_file() and p.suffix.lower() in vid_exts]))
-        cs = tuple(sorted([p.name for p in input_csv_dir.glob("*.csv") if p.is_file()]))
-        return vids, cs
-
-    def sync_from_folders_if_needed(force: bool = False) -> None:
+    def sync_from_folders_if_needed_ui(force: bool = False) -> None:
         nonlocal videos, csvs, last_scan_sig
+        videos, csvs, last_scan_sig = filesvc.sync_from_folders_if_needed(
+            videos=videos,
+            csvs=csvs,
+            last_scan_sig=last_scan_sig,
+            input_video_dir=input_video_dir,
+            input_csv_dir=input_csv_dir,
+            refresh_display=refresh_display,
+            force=force,
+        )
 
-        sig = scan_folders_signature()
-        if (not force) and (sig == last_scan_sig):
-            return
-        last_scan_sig = sig
+    def run_periodic_folder_watch() -> None:
+        filesvc.periodic_folder_watch(
+            sync_callback=lambda: sync_from_folders_if_needed_ui(force=False),
+            schedule_callback=lambda: root.after(1000, run_periodic_folder_watch),
+        )
 
-        available_videos = [input_video_dir / n for n in sig[0]]
-        available_csvs = [input_csv_dir / n for n in sig[1]]
+    run_periodic_folder_watch()
 
-        videos = [p for p in videos if p.exists()]
-        csvs = [p for p in csvs if p.exists()]
-
-        if len(videos) == 0 and len(available_videos) > 0:
-            videos = available_videos[:2]
-        else:
-            videos = [p for p in videos if p in available_videos][:2]
-
-        if len(csvs) == 0 and len(available_csvs) > 0:
-            csvs = available_csvs[:2]
-        else:
-            csvs = [p for p in csvs if p in available_csvs][:2]
-
-        refresh_display()
-
-    def periodic_folder_watch() -> None:
-        sync_from_folders_if_needed(force=False)
-        root.after(1000, periodic_folder_watch)
-
-    periodic_folder_watch()
-
-    def select_files() -> None:
+    def on_select_files() -> None:
         paths = filedialog.askopenfilenames(
             title="Dateien auswählen (2 Videos + optional CSV)",
             filetypes=[
@@ -1172,30 +1134,20 @@ def main() -> None:
                 ("CSV", "*.csv"),
             ],
         )
-        if not paths:
+        status, selected_videos, selected_csvs = filesvc.select_files(
+            paths=paths,
+            input_video_dir=input_video_dir,
+            input_csv_dir=input_csv_dir,
+        )
+        if status == "empty":
             return
 
-        selected_videos: list[Path] = []
-        selected_csvs: list[Path] = []
-
-        for p in paths:
-            pp = Path(p)
-            suf = pp.suffix.lower()
-            if suf == ".mp4":
-                selected_videos.append(pp)
-            elif suf == ".csv":
-                selected_csvs.append(pp)
-
-        if len(selected_videos) == 0 and len(selected_csvs) > 0:
-            copied_csvs: list[Path] = []
-            for c in selected_csvs[:2]:
-                copied_csvs.append(copy_to_dir(c, input_csv_dir))
-
-            csvs[:] = copied_csvs[:2]
+        if status == "csv_only":
+            csvs[:] = selected_csvs[:2]
             refresh_display()
             return
 
-        if len(selected_videos) != 2:
+        if status == "need_two_videos":
             videos.clear()
             csvs.clear()
             refresh_display()
@@ -1204,19 +1156,11 @@ def main() -> None:
             close_preview_video()
             return
 
-        copied_videos: list[Path] = []
-        for v in selected_videos:
-            copied_videos.append(copy_to_dir(v, input_video_dir))
-
-        copied_csvs: list[Path] = []
-        for c in selected_csvs[:2]:
-            copied_csvs.append(copy_to_dir(c, input_csv_dir))
-
-        videos[:] = copied_videos[:2]
-        csvs[:] = copied_csvs[:2]
+        videos[:] = selected_videos[:2]
+        csvs[:] = selected_csvs[:2]
         refresh_display()
 
-    btn_select.config(command=select_files)
+    btn_select.config(command=on_select_files)
     btn_profile_save.config(command=profile_save_dialog)
     btn_profile_load.config(command=profile_load_dialog)
 
@@ -3295,7 +3239,7 @@ def main() -> None:
             if not (tmp.exists() and tmp.stat().st_size > 0):
                 lbl_loaded.config(text="Video: Schneiden fehlgeschlagen")
                 safe_unlink(tmp)
-                sync_from_folders_if_needed(force=True)
+                sync_from_folders_if_needed_ui(force=True)
                 return
 
             safe_unlink(dst_final)
@@ -3314,7 +3258,7 @@ def main() -> None:
         finally:
             progress_close()
 
-        sync_from_folders_if_needed(force=True)
+        sync_from_folders_if_needed_ui(force=True)
         start_crop_for_video(dst_final)
 
     is_playing: bool = False
@@ -3694,7 +3638,7 @@ def main() -> None:
                 if current_video_original is not None and item.name == current_video_original.name:
                     close_preview_video()
 
-            ok = delete_file(item)
+            ok = filesvc.delete_file(item)
             if not ok:
                 return
 
@@ -3706,7 +3650,7 @@ def main() -> None:
             refresh_display()
 
         def do_open_folder() -> None:
-            open_folder(item)
+            filesvc.open_folder(item)
 
         menu.add_command(label="Löschen", command=do_delete)
         menu.add_command(label="Ordner öffnen", command=do_open_folder)
@@ -3717,7 +3661,7 @@ def main() -> None:
     btn_c1.bind("<Button-1>", lambda e: show_menu_for_item(e, "csv", 0))
     btn_c2.bind("<Button-1>", lambda e: show_menu_for_item(e, "csv", 1))
 
-    sync_from_folders_if_needed(force=True)
+    sync_from_folders_if_needed_ui(force=True)
     root.mainloop()
 
 
