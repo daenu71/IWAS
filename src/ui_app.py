@@ -1544,7 +1544,7 @@ def main() -> None:
         render_png_preview=render_png_preview,
         png_load_state_for_current=png_load_state_for_current,
         png_save_state_for_current=png_save_state_for_current,
-        close_preview_video=close_preview_video,
+        close_preview_video=lambda: video_preview_ctrl.close_preview_video() if video_preview_ctrl is not None else None,
         refresh_display=refresh_display,
         set_fast_text=lambda text: lbl_fast.config(text=text),
         set_slow_text=lambda text: lbl_slow.config(text=text),
