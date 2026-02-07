@@ -764,6 +764,50 @@ def _build_under_oversteer_proxy_frames_from_csv(
             return float(xs[m])
         return float(0.5 * (xs[m - 1] + xs[m]))
 
+    def _unwrap_over_time(vals_wrapped: list[float]) -> list[float]:
+        if not vals_wrapped:
+            return []
+        out: list[float] = []
+        prev_wrapped = 0.0
+        running = 0.0
+        have_prev = False
+        # Guard against single-frame telemetry glitches causing a permanent +/-2pi branch shift.
+        unwrap_delta_abs_cap = 1.2
+        for a_in in vals_wrapped:
+            a = float(a_in)
+            if not _is_finite_float(a):
+                a = prev_wrapped if have_prev else 0.0
+            if not have_prev:
+                prev_wrapped = float(a)
+                running = float(a)
+                out.append(float(running))
+                have_prev = True
+                continue
+            delta = _wrap_angle_pi(float(a) - float(prev_wrapped))
+            if abs(float(delta)) > float(unwrap_delta_abs_cap):
+                delta = 0.0
+            running = float(running + delta)
+            prev_wrapped = float(a)
+            out.append(float(running))
+        return out
+
+    def _percentile_sorted(vals_sorted: list[float], q: float) -> float:
+        n = len(vals_sorted)
+        if n <= 0:
+            return 0.0
+        if n == 1:
+            return float(vals_sorted[0])
+        qq = _clamp(float(q), 0.0, 100.0)
+        pos = (qq / 100.0) * float(n - 1)
+        i0 = int(math.floor(pos))
+        i1 = int(math.ceil(pos))
+        if i0 <= 0 and i1 <= 0:
+            return float(vals_sorted[0])
+        if i0 >= (n - 1) and i1 >= (n - 1):
+            return float(vals_sorted[n - 1])
+        w = float(pos - float(i0))
+        return float((1.0 - w) * float(vals_sorted[i0]) + w * float(vals_sorted[i1]))
+
     try:
         if not slow_frame_to_fast_time_s:
             return [], [], 1.0
@@ -825,7 +869,8 @@ def _build_under_oversteer_proxy_frames_from_csv(
         t_f_min = float(t_f_xy[0])
         t_f_max = float(t_f_xy[len(t_f_xy) - 1])
 
-        dt = max(0.01, (0.5 / max(1.0, fps_safe)))
+        dt = 0.15
+        heading_eps_m = 0.05
 
         def _heading_xy_at(
             t_query: float,
@@ -854,13 +899,13 @@ def _build_under_oversteer_proxy_frames_from_csv(
             dx = float(x1 - x0)
             dy = float(y1 - y0)
             nrm = math.hypot(dx, dy)
-            if nrm > 1e-6:
+            if nrm >= heading_eps_m:
                 hdg = float(math.atan2(dy, dx))
                 return hdg, j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, hdg
             return float(last_heading), j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, float(last_heading)
 
-        slow_err: list[float] = []
-        fast_err: list[float] = []
+        slow_err_wrapped: list[float] = []
+        fast_err_wrapped: list[float] = []
 
         j_s_yaw = 0
         j_f_yaw = 0
@@ -902,7 +947,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
             err_s = _wrap_angle_pi(float(yaw_sv) - float(hdg_s))
             if not _is_finite_float(err_s):
                 err_s = 0.0
-            slow_err.append(float(err_s))
+            slow_err_wrapped.append(float(err_s))
 
             yaw_fv, j_f_yaw = _interp_linear_clamped_time(t_f_yaw, yaw_f, t_fast, j_f_yaw)
             hdg_f, j_f_t0x, j_f_t0y, j_f_t1x, j_f_t1y, last_hdg_f = _heading_xy_at(
@@ -911,9 +956,12 @@ def _build_under_oversteer_proxy_frames_from_csv(
             err_f = _wrap_angle_pi(float(yaw_fv) - float(hdg_f))
             if not _is_finite_float(err_f):
                 err_f = 0.0
-            fast_err.append(float(err_f))
+            fast_err_wrapped.append(float(err_f))
 
-        # Global bias removal (full precomputed series, stable over playback).
+        slow_err = _unwrap_over_time(slow_err_wrapped)
+        fast_err = _unwrap_over_time(fast_err_wrapped)
+
+        # Global bias removal on unwrapped series (full precomputed series, stable over playback).
         slow_bias = _median(slow_err)
         fast_bias = _median(fast_err)
 
@@ -922,20 +970,25 @@ def _build_under_oversteer_proxy_frames_from_csv(
         if fast_err:
             fast_err = [float(v) - float(fast_bias) for v in fast_err]
 
-        base_abs = 0.0
+        abs_vals: list[float] = []
         for v in slow_err:
             av = abs(float(v))
-            if math.isfinite(av) and av > base_abs:
-                base_abs = av
+            if math.isfinite(av):
+                abs_vals.append(float(av))
         for v in fast_err:
             av = abs(float(v))
-            if math.isfinite(av) and av > base_abs:
-                base_abs = av
-        if base_abs < 1e-6:
-            base_abs = 1e-6
+            if math.isfinite(av):
+                abs_vals.append(float(av))
+        abs_vals.sort()
+        y_abs_base = _percentile_sorted(abs_vals, 99.0)
+        if y_abs_base < 1e-6:
+            y_abs_base = 0.05
+
+        slow_err = [_clamp(float(v), -float(y_abs_base), float(y_abs_base)) for v in slow_err]
+        fast_err = [_clamp(float(v), -float(y_abs_base), float(y_abs_base)) for v in fast_err]
 
         headroom_ratio = 0.15
-        y_abs = float(base_abs) * (1.0 + headroom_ratio)
+        y_abs = float(y_abs_base) * (1.0 + headroom_ratio)
         return slow_err, fast_err, y_abs
     except Exception:
         return [], [], 1.0
