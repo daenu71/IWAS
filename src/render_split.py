@@ -8,22 +8,29 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from huds.gear_rpm import render_gear_rpm
+from huds.common import (
+    COL_FAST_BRIGHTBLUE,
+    COL_FAST_DARKBLUE,
+    COL_SLOW_BRIGHTRED,
+    COL_SLOW_DARKRED,
+    COL_WHITE,
+    SCROLL_HUD_NAMES as _SCROLL_HUD_NAMES,
+    TABLE_HUD_NAMES as _TABLE_HUD_NAMES,
+)
 from huds.delta import render_delta
+from huds.gear_rpm import render_gear_rpm
+from huds.line_delta import render_line_delta
 from huds.speed import render_speed
 from huds.steering import render_steering
 from huds.throttle_brake import render_throttle_brake
-from huds.line_delta import render_line_delta
 from huds.under_oversteer import render_under_oversteer
 
-# ---------------------------------------------------------------------------
-# Global HUD colors (RGBA) – shared by all HUDs
-# ---------------------------------------------------------------------------
-COL_SLOW_DARKRED = (234, 0, 0, 255)          # dunkel rot
-COL_SLOW_BRIGHTRED = (255, 137, 117, 255)    # hell rot
-COL_FAST_DARKBLUE = (36, 0, 250, 255)        # dunkel blau
-COL_FAST_BRIGHTBLUE = (1, 253, 255, 255)     # hell blau (cyan)
-COL_WHITE = (255, 255, 255, 255)             # weiss
+# Orchestrator flow used by render_split_screen_sync:
+# 1) Config reading
+# 2) Sync/Mapping
+# 3) Layout
+# 4) HUD Render
+# 5) FFmpeg Run
 
 
 
@@ -400,7 +407,7 @@ def _bool(v: Any, default: bool) -> bool:
     return default
 
 
-def _build_side_chain(input_idx: int, target_w: int, target_h: int, r: int, view: dict[str, Any], label_out: str) -> str:
+def _build_side_chain_core(input_ref: str, target_w: int, target_h: int, r: int, view: dict[str, Any], label_out: str) -> str:
     zoom = _num(view.get("zoom"), 1.0)
     if zoom < 1.0:
         zoom = 1.0
@@ -408,7 +415,7 @@ def _build_side_chain(input_idx: int, target_w: int, target_h: int, r: int, view
     off_y = -_int(view.get("off_y"), 0)
     fit_to_height = _bool(view.get("fit_to_height"), True)
 
-    chain = f"[{input_idx}:v]fps={r},setpts=PTS-STARTPTS"
+    chain = f"[{input_ref}]fps={r},setpts=PTS-STARTPTS"
 
     if fit_to_height:
         chain += f",scale=-2:{target_h}"
@@ -423,31 +430,14 @@ def _build_side_chain(input_idx: int, target_w: int, target_h: int, r: int, view
     chain += f",crop={target_w}:{target_h}:{x_expr}:{y_expr}[{label_out}]"
 
     return chain
+
+
+def _build_side_chain(input_idx: int, target_w: int, target_h: int, r: int, view: dict[str, Any], label_out: str) -> str:
+    return _build_side_chain_core(f"{input_idx}:v", target_w, target_h, r, view, label_out)
 
 
 def _build_side_chain_from_label(in_label: str, target_w: int, target_h: int, r: int, view: dict[str, Any], label_out: str) -> str:
-    zoom = _num(view.get("zoom"), 1.0)
-    if zoom < 1.0:
-        zoom = 1.0
-    off_x = -_int(view.get("off_x"), 0)
-    off_y = -_int(view.get("off_y"), 0)
-    fit_to_height = _bool(view.get("fit_to_height"), True)
-
-    chain = f"[{in_label}]fps={r},setpts=PTS-STARTPTS"
-
-    if fit_to_height:
-        chain += f",scale=-2:{target_h}"
-    else:
-        chain += f",scale=-2:{target_h}"
-
-    if abs(zoom - 1.0) > 1e-6:
-        chain += f",scale=iw*{zoom}:ih*{zoom}"
-
-    x_expr = f"max(0\\,min(iw-{target_w}\\,(iw-{target_w})/2+{off_x}))"
-    y_expr = f"max(0\\,min(ih-{target_h}\\,(ih-{target_h})/2+{off_y}))"
-    chain += f",crop={target_w}:{target_h}:{x_expr}:{y_expr}[{label_out}]"
-
-    return chain
+    return _build_side_chain_core(in_label, target_w, target_h, r, view, label_out)
 
 def _hud_drawboxes_chain(
     geom: "OutputGeometry",
@@ -751,18 +741,6 @@ def _choose_encoder(W: int, fps: float) -> list[EncodeSpec]:
     return specs
 
 
-def _run(cmd: list[str]) -> None:
-    p = subprocess.run(cmd)
-    if p.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed (rc={p.returncode})")
-
-
-def _tail_lines(s: str, n: int = 20) -> str:
-    lines = (s or "").splitlines()
-    tail = lines[-n:] if len(lines) > n else lines
-    return "\n".join(tail).strip()
-
-
 def _filter_args_for_ffmpeg(filter_complex: str, out_dir: Path) -> list[str]:
     # Windows: CreateProcess/Commandline kann hart limitiert sein.
     # Deshalb: Filter relativ früh in Datei auslagern.
@@ -873,36 +851,6 @@ def _run_live_or_tail_on_fail(
         for t in tail[-tail_n:]:
             print(t)
     return int(rc)
-
-    # stdout selten wichtig; stderr ist ffmpeg-Log
-    if p.stderr is not None:
-        for raw in p.stderr:
-            line = (raw or "").rstrip("\n")
-            if not line:
-                continue
-            tail.append(line)
-            _append(line)
-            if live_stdout:
-                print(line)
-
-    rc = p.wait()
-
-    if rc != 0:
-        msg = f"[ffmpeg] FAIL rc={rc} -> tail({tail_n})"
-        _append(msg)
-        if live_stdout:
-            print(msg)
-        for t in list(tail):
-            _append(t)
-            if live_stdout:
-                print(t)
-
-    return int(rc)
-    
-    
-
-def _safe_mkdir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
 
 
 def _force_strictly_increasing(xs: list[float], eps: float = 1e-9) -> list[float]:
@@ -1100,20 +1048,8 @@ def _build_sync_cache_maps_from_csv(
     sp_s = get_float_col(run_s, "Speed") if has_speed_s else []
     sp_f = get_float_col(run_f, "Speed") if has_speed_f else []
 
-    def _time_axis_or_fallback(run, duration_s: float) -> list[float]:
-        if has_col(run, "Time_s"):
-            return get_float_col(run, "Time_s")
-        n = int(getattr(run, "row_count", 0) or 0)
-        if n < 2:
-            raise RuntimeError("CSV hat zu wenig Zeilen für Fallback-Zeitachse.")
-        dt = float(duration_s) / float(n - 1)
-        out: list[float] = []
-        for i in range(n):
-            out.append(float(i) * dt)
-        return out
-
-    t_s = _time_axis_or_fallback(run_s, slow_duration_s)
-    t_f = _time_axis_or_fallback(run_f, fast_duration_s)
+    t_s = _csv_time_axis_or_fallback(run_s, slow_duration_s)
+    t_f = _csv_time_axis_or_fallback(run_f, fast_duration_s)
 
     t_s = _force_strictly_increasing(t_s)
     t_f = _force_strictly_increasing(t_f)
@@ -1292,15 +1228,6 @@ def _compute_common_cut_by_fast_time(
     if i0 is None or i1 is None or i1 <= i0:
         raise RuntimeError("sync: kein gemeinsamer Bereich (Fast-Zeit ungueltig).")
     return int(i0), int(i1)
-
-def _ffmpeg_escape_path(p: "Path") -> str:
-    # Für Filter-Strings: Backslashes -> '/', Quotes escapen.
-    # Wichtig (Windows): der Doppelpunkt muss als "\:" erscheinen -> "C\:/..."
-    s = str(p).replace("\\", "/")
-    s = s.replace("'", "\\'")
-    s = s.replace(":", "\\:")
-    return s
-
 
 def _build_hud_context(
     *,
@@ -1890,11 +1817,6 @@ def _render_hud_scroll_frames_png(
 
             for hud_key, x0, y0, w, h in active_table_items:
                 try:
-                    xL = int(x0 + 6)
-                    xR = int(x0 + (w // 2) + 6)
-                    y1 = int(y0 + 6)
-                    y2 = int(y0 + 26)
-
                     def _hud_table_speed() -> None:
                         speed_ctx = {
                             "fps": fps,
@@ -2160,111 +2082,6 @@ def _wrap_delta_05(a: float, b: float) -> float:
     d = (float(a) - float(b) + 0.5) % 1.0 - 0.5
     return float(d)
 
-def _first_enabled_hud_name(hud_enabled: Any | None, hud_boxes: Any | None) -> str | None:
-    try:
-        enabled = hud_enabled if isinstance(hud_enabled, dict) else {}
-        boxes = hud_boxes if isinstance(hud_boxes, dict) else {}
-        for name, on in enabled.items():
-            if bool(on) and isinstance(boxes.get(name), dict):
-                return str(name)
-    except Exception:
-        pass
-    return None
-
-def _first_enabled_hud_box_abs(
-    geom: OutputGeometry,
-    hud_enabled: Any | None,
-    hud_boxes: Any | None,
-) -> tuple[int, int, int, int] | None:
-    # Re-Use Logik wie _hud_drawboxes_chain (nur: wir geben die ERSTE Box zurück)
-    enabled_names: set[str] = set()
-    try:
-        if isinstance(hud_enabled, dict):
-            for k, v in hud_enabled.items():
-                if v:
-                    enabled_names.add(str(k))
-        elif isinstance(hud_enabled, (list, tuple, set)):
-            for k in hud_enabled:
-                enabled_names.add(str(k))
-    except Exception:
-        enabled_names = set()
-
-    norm_boxes: list[dict[str, Any]] = []
-    try:
-        if isinstance(hud_boxes, dict):
-            for k, v in hud_boxes.items():
-                if isinstance(v, dict):
-                    norm_boxes.append(
-                        {
-                            "name": v.get("name") or str(k),
-                            "x": v.get("x", 0),
-                            "y": v.get("y", 0),
-                            "w": v.get("w", 0),
-                            "h": v.get("h", 0),
-                        }
-                    )
-        elif isinstance(hud_boxes, list):
-            for b in hud_boxes:
-                if isinstance(b, dict):
-                    norm_boxes.append(b)
-    except Exception:
-        norm_boxes = []
-
-    hud_x0 = int(getattr(geom, "left_w", 0))
-
-    # Auto-Detect absolut vs relativ
-    max_x = 0
-    try:
-        for b in norm_boxes:
-            max_x = max(max_x, int(round(float(b.get("x", 0) or 0))))
-    except Exception:
-        max_x = 0
-
-    boxes_are_absolute = False
-    try:
-        boxes_are_absolute = max_x > (int(getattr(geom, "hud")) + 10)
-    except Exception:
-        boxes_are_absolute = False
-
-    for b in norm_boxes:
-        try:
-            name = str(b.get("name") or b.get("id") or "")
-            if not name:
-                continue
-            if enabled_names and (name not in enabled_names):
-                continue
-
-            x = int(round(float(b.get("x", 0))))
-            y = int(round(float(b.get("y", 0))))
-            w = int(round(float(b.get("w", 0))))
-            h = int(round(float(b.get("h", 0))))
-            if w <= 0 or h <= 0:
-                continue
-
-            if boxes_are_absolute:
-                x_abs = max(0, x)
-            else:
-                x_abs = hud_x0 + max(0, x)
-            y_abs = max(0, y)
-            return (x_abs, y_abs, w, h)
-        except Exception:
-            continue
-
-    return None
-
-_SCROLL_HUD_NAMES: set[str] = {
-    "Throttle / Brake",
-    "Steering",
-    "Delta",
-    "Line Delta",
-    "Under-/Oversteer",
-}
-
-_TABLE_HUD_NAMES: set[str] = {
-    "Speed",
-    "Gear & RPM",
-}
-
 def _enabled_hud_boxes_abs(
     geom: OutputGeometry,
     hud_enabled: Any | None,
@@ -2350,179 +2167,6 @@ def _enabled_hud_boxes_abs(
             continue
 
     return out
-
-
-def _write_hud_scroll_cmds(
-    cmd_path: "Path",
-    fps: float,
-    cut_i0: int,
-    cut_i1: int,
-    slow_frame_to_lapdist: list[float],
-    box_abs: tuple[int, int, int, int],
-    *,
-    before_s: float | None = None,
-    after_s: float | None = None,
-    log_file: "Path | None" = None
-) -> None:
-    # Demo: Tick-Raster + fester Marker (Marker ist statisch im Filter)
-    # Ticks werden pro Frame gesetzt, basierend auf LapDistPct.
-    x0, y0, w, h = box_abs
-
-    try:
-        before = float((os.environ.get("IRVC_HUD_WINDOW_BEFORE") or "").strip() or "0.02")
-    except Exception:
-        before = 0.02
-    try:
-        after = float((os.environ.get("IRVC_HUD_WINDOW_AFTER") or "").strip() or "0.02")
-    except Exception:
-        after = 0.02
-    before = max(1e-6, float(before))
-    after = max(1e-6, float(after))
-
-    try:
-        step = float((os.environ.get("IRVC_HUD_TICK_STEP") or "").strip() or "0.01")
-    except Exception:
-        step = 0.01
-    step = max(1e-6, float(step))
-
-    try:
-        max_ticks = int((os.environ.get("IRVC_HUD_MAX_TICKS") or "").strip() or "21")
-    except Exception:
-        max_ticks = 21
-    if max_ticks < 3:
-        max_ticks = 3
-    if max_ticks > 99:
-        max_ticks = 99
-
-    hud_dbg = (os.environ.get("IRVC_HUD_DEBUG") or "0").strip().lower() in ("1", "true", "yes", "on")
-    if hud_dbg:
-        _log_print(
-            f"[hud] sendcmd-gen: path={cmd_path} fps={float(fps):.3f} cut_i0={int(cut_i0)} cut_i1={int(cut_i1)} box_abs=({x0},{y0},{w},{h}) before={before:.6f} after={after:.6f} step={step:.6f} max_ticks={max_ticks}",
-            log_file,
-        )
-
-    center_x = x0 + (w // 2)
-    tick_w = 2
-
-    def _delta_to_x(delta: float) -> int:
-        # Marker ist in der Mitte.
-        # Links: -before .. 0, Rechts: 0 .. +after
-        if delta < 0.0:
-            x = int(round(center_x + (delta * (float(w) / 2.0) / before)))
-        else:
-            x = int(round(center_x + (delta * (float(w) / 2.0) / after)))
-        if x < x0:
-            x = x0
-        if x > x0 + w - tick_w:
-            x = x0 + w - tick_w
-        return x
-
-    lines: list[str] = []
-
-    out_frames = max(0, int(cut_i1) - int(cut_i0))
-    r = max(1.0, float(fps))
-
-    # Anzahl Ticks links/rechts (ohne Marker). Beispiel: 21 -> 10 links + 10 rechts
-    half = max(1, (max_ticks - 1) // 2)
-
-    for j in range(out_frames):
-        i = int(cut_i0) + j
-        if i < 0 or i >= len(slow_frame_to_lapdist):
-            continue
-
-        ld = float(slow_frame_to_lapdist[i]) % 1.0
-        t = float(j) / r
-
-        # sendcmd: braucht "start-end" und dann Befehle, getrennt mit ";"
-        iv = f"{t:.6f}-{t:.6f}"
-
-        cmds: list[str] = []
-        used_xs: list[int] = []
-
-        # Hard-Test: Wenn das NICHT springt, wirkt sendcmd nicht auf drawbox.
-        hud_sendcmd_test = (os.environ.get("IRVC_HUD_SENDCMD_TEST") or "").strip() == "1"
-        if hud_sendcmd_test:
-            x_left = x0
-            x_right = x0 + w - tick_w
-            xk = x_left if (j % 2 == 0) else x_right
-
-            # Nur Tick0 sichtbar und bewegt
-            cmds.append(f"hud_tick0 x {xk}")
-            cmds.append(f"hud_tick0 color white@0.95")
-            used_xs.append(xk)
-
-            # Alle anderen Ticks ausblenden
-            for slot in range(1, max_ticks):
-                cmds.append(f"hud_tick{slot} x {x0 - 10}")
-                cmds.append(f"hud_tick{slot} color white@0.00")
-
-            # Rest der normalen Logik überspringen
-            slot = max_ticks
-            ld_mod = 0.0
-
-
-        slot = 0
-
-        # Rest innerhalb des Tick-Schritts (0..step)
-        ld_mod = ld % step
-
-        # Links: -half .. -1
-        for k in range(-half, 0):
-            # Scroll: Tick-Delta hängt vom aktuellen LapDistPct ab
-            delta = (float(k) * step) - ld_mod
-            show = (-before <= delta <= after)
-            if show and slot < max_ticks:
-                xk = _delta_to_x(delta)
-                used_xs.append(xk)
-                cmds.append(f"hud_tick{slot} x {xk}")
-                cmds.append(f"hud_tick{slot} color white@0.80")
-            elif slot < max_ticks:
-                cmds.append(f"hud_tick{slot} x {x0 - 10}")
-                cmds.append(f"hud_tick{slot} color white@0.00")
-            slot += 1
-
-        # Rechts: +1 .. +half
-        for k in range(1, half + 1):
-            delta = float(k) * step
-            show = (-before <= delta <= after)
-            if show and slot < max_ticks:
-                xk = _delta_to_x(delta)
-                used_xs.append(xk)
-                cmds.append(f"hud_tick{slot} x {xk}")
-                cmds.append(f"hud_tick{slot} color white@0.80")
-            elif slot < max_ticks:
-                cmds.append(f"hud_tick{slot} x {x0 - 10}")
-                cmds.append(f"hud_tick{slot} color white@0.00")
-            slot += 1
-
-        # Restliche Slots ausblenden
-        while slot < max_ticks:
-            cmds.append(f"hud_tick{slot} x {x0 - 10}")
-            cmds.append(f"hud_tick{slot} color white@0.00")
-            slot += 1
-
-        # sendcmd stabil: 1 Command pro Zeile
-        # Format: "time [enter] target command arg"
-        # Beispiel: 0.008333 [enter] hud_tick0 x 2259
-        first_line = ""
-        for c in cmds:
-            # Wichtig: Jede INTERVAL-Zeile muss mit ";" enden, sonst fehlt der Separator.
-            # Wichtig: Wir benutzen "start-end", damit sendcmd das als echtes Intervall behandelt.
-            l = f"{iv} [enter] {c};"
-            if not first_line:
-                first_line = l
-            lines.append(l)
-
-        if hud_dbg and j < 3:
-            _log_print(
-                f"[hud] sendcmd-gen sample j={j} t={t:.6f} ld={ld:.6f} ticks_visible={len(used_xs)} xs={used_xs[:12]}",
-                log_file,
-            )
-            _log_print(f"[hud] sendcmd-gen sample line={first_line[:180]}...", log_file)
-
-    cmd_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 
 
 def _build_stream_sync_filter(
@@ -2785,81 +2429,6 @@ def _build_stream_sync_filter(
     return ";".join(parts), audio_map
 
 
-def _extract_frames(video: Path, fps_int: int, out_dir: Path) -> None:
-    # Story 6: wird nicht mehr benutzt, bleibt für Debug/Alt-Code erhalten
-    _safe_mkdir(out_dir)
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-y",
-        "-i",
-        str(video),
-        "-vf",
-        f"fps={fps_int}",
-        "-start_number",
-        "0",
-        str(out_dir / "%06d.png"),
-    ]
-    _run(cmd)
-
-
-def _remap_frames(src_dir: Path, dst_dir: Path, frame_map: list[int]) -> None:
-    # Story 6: wird nicht mehr benutzt, bleibt für Debug/Alt-Code erhalten
-    _safe_mkdir(dst_dir)
-
-    for out_idx, src_idx in enumerate(frame_map):
-        src = src_dir / f"{src_idx:06d}.png"
-        dst = dst_dir / f"{out_idx:06d}.png"
-        if not src.exists():
-            raise RuntimeError(f"fast frame fehlt: {src}")
-        try:
-            os.link(src, dst)
-        except Exception:
-            shutil.copyfile(src, dst)
-
-
-def _encode_from_frames(frames_dir: Path, fps_int: int, out_mp4: Path, encoders: list[EncodeSpec]) -> None:
-    # Story 6: wird nicht mehr benutzt, bleibt für Debug/Alt-Code erhalten
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
-
-    last_rc = 1
-    for enc in encoders:
-        print(f"[sync-encode] try vcodec={enc.vcodec}")
-
-        cmd: list[str] = [
-            "ffmpeg",
-            "-hide_banner",
-            "-y",
-            "-framerate",
-            str(fps_int),
-            "-i",
-            str(frames_dir / "%06d.png"),
-            "-c:v",
-            enc.vcodec,
-            "-pix_fmt",
-            enc.pix_fmt,
-        ]
-
-        cmd += list(enc.extra)
-
-        if enc.vcodec in ("hevc_nvenc", "hevc_qsv", "hevc_amf"):
-            if "-tag:v" not in cmd:
-                cmd += ["-tag:v", "hvc1"]
-
-        cmd += [str(out_mp4)]
-
-        rc = _run_live_or_tail_on_fail(cmd, tail_n=20)
-        last_rc = rc
-
-        if rc == 0 and out_mp4.exists():
-            print(f"[sync-encode] OK vcodec={enc.vcodec}")
-            return
-        else:
-            print(f"[sync-encode] FAIL vcodec={enc.vcodec} rc={rc}")
-
-    raise RuntimeError(f"sync encode failed (rc={last_rc})")
-
-
 def render_split_screen(
     slow: Path,
     fast: Path,
@@ -2879,6 +2448,7 @@ def render_split_screen(
     hud_gear_rpm_update_hz: int = 60,
     log_file: "Path | None" = None,
 ) -> None:
+    # 1) Config reading
     slow = Path(slow).resolve()
     fast = Path(fast).resolve()
     outp = Path(outp).resolve()
@@ -2901,6 +2471,7 @@ def render_split_screen(
     if preset_w > 0 and preset_h > 0:
         preset = f"{int(preset_w)}x{int(preset_h)}"
 
+    # 3) Layout
     geom = build_output_geometry(preset, hud_width_px=hud_width_px)
 
     filt = _build_split_filter_from_geometry(
@@ -2919,6 +2490,7 @@ def render_split_screen(
     has_amf = _ffmpeg_has_encoder("h264_amf") or _ffmpeg_has_encoder("hevc_amf")
     print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
 
+    # 5) FFmpeg Run
     last_rc = 1
     for enc in encode_candidates:
         print(f"[encode] try vcodec={enc.vcodec}")
@@ -2992,6 +2564,7 @@ def render_split_screen_sync(
     log_file: "Path | None" = None,
 ) -> None:
     # Story 6: Stream-Sync (ohne PNG, ohne fast_sync.mp4, ein ffmpeg-Run)
+    # 1) Config reading
     slow = Path(slow).resolve()
     fast = Path(fast).resolve()
     scsv = Path(slow_csv).resolve()
@@ -3016,8 +2589,7 @@ def render_split_screen_sync(
     if preset_w > 0 and preset_h > 0:
         preset = f"{int(preset_w)}x{int(preset_h)}"
 
-    geom = build_output_geometry(preset, hud_width_px=hud_width_px)
-
+    # 2) Sync/Mapping
     frame_map, slow_frame_to_lapdist, slow_frame_to_fast_time_s, slow_frame_speed_diff = _build_sync_cache_maps_from_csv(
         slow_csv=scsv,
         fast_csv=fcsv,
@@ -3090,6 +2662,9 @@ def render_split_screen_sync(
         fast_duration_s=mf.duration_s,
         fps=float(fps_int),
     )
+
+    # 3) Layout
+    geom = build_output_geometry(preset, hud_width_px=hud_width_px)
     
     # Debug: Cut-Bereich auf die ersten N Sekunden begrenzen
     try:
@@ -3144,6 +2719,7 @@ def render_split_screen_sync(
         print("[sync6] audio: fast hat keinen Audio-Stream -> audio=none")
         audio_source = "none"
 
+    # 4) HUD Render
     # Story 2: HUD pro Frame in Python rendern (PNG Sequenz), dann als 3. ffmpeg Input überlagern
     hud_seq_pattern = None
     hud_scroll_on = (os.environ.get("IRVC_HUD_SCROLL") or "").strip() == "1"
@@ -3301,6 +2877,7 @@ def render_split_screen_sync(
     has_amf = _ffmpeg_has_encoder("h264_amf") or _ffmpeg_has_encoder("hevc_amf")
     print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
 
+    # 5) FFmpeg Run
     last_rc = 1
     for enc in encode_candidates:
         print(f"[encode] try vcodec={enc.vcodec}")
