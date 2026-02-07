@@ -3,6 +3,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from huds.common import (
+    COL_HUD_BG,
+    build_value_boundaries,
+    choose_tick_step,
+    draw_left_axis_labels,
+    draw_stripe_grid,
+    value_boundaries_to_y,
+)
+
 
 def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
     x0, y0, w, h = box
@@ -44,6 +53,8 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
 
     font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
     font_title = _load_font(font_sz)
+    font_axis = _load_font(max(8, int(font_sz - 2)))
+    font_axis_small = _load_font(max(7, int(font_sz - 3)))
 
     top_pad = int(round(max(14.0, float(font_sz) + 8.0)))
     plot_y0 = int(y0) + top_pad
@@ -79,12 +90,26 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     label_x = int(x0 + 4)
     label_top_y = int(y0 + 2)
     label_bottom_y = int(y0 + h - font_sz - 2)
+
+    # Story 10: 5 Segmente, symmetrisch um 0.
+    axis_labels: list[tuple[int, str]] = []
     try:
-        dr.text((label_x, label_top_y), "Oversteer", fill=COL_WHITE, font=font_title)
-    except Exception:
-        pass
-    try:
-        dr.text((label_x, label_bottom_y), "Understeer", fill=COL_WHITE, font=font_title)
+        step = choose_tick_step(y_min, y_max, min_segments=2, max_segments=5, target_segments=5)
+        if step is not None:
+            val_bounds = build_value_boundaries(y_min, y_max, float(step), anchor="top")
+            y_bounds = value_boundaries_to_y(val_bounds, _y_from_val, int(plot_y0), int(plot_y1))
+            draw_stripe_grid(
+                dr,
+                int(x0),
+                int(w),
+                int(plot_y0),
+                int(plot_y1),
+                y_bounds,
+                col_bg=COL_HUD_BG,
+                darken_delta=6,
+            )
+            for vv in val_bounds:
+                axis_labels.append((int(_y_from_val(float(vv))), f"{float(vv):.1f}"))
     except Exception:
         pass
 
@@ -174,3 +199,25 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
             dr.line(pts_fast, fill=COL_FAST_DARKBLUE, width=2)  # fast = blue
         except Exception:
             pass
+
+    # Text zuletzt: Y-Achse + Titel.
+    draw_left_axis_labels(
+        dr,
+        int(x0),
+        int(w),
+        int(plot_y0),
+        int(plot_y1),
+        axis_labels,
+        font_axis,
+        col_text=COL_WHITE,
+        x_pad=6,
+        fallback_font_obj=font_axis_small,
+    )
+    try:
+        dr.text((label_x, label_top_y), "Oversteer", fill=COL_WHITE, font=font_title)
+    except Exception:
+        pass
+    try:
+        dr.text((label_x, label_bottom_y), "Understeer", fill=COL_WHITE, font=font_title)
+    except Exception:
+        pass

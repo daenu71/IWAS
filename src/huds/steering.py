@@ -4,6 +4,16 @@ import math
 import os
 from typing import Any
 
+from huds.common import (
+    COL_HUD_BG,
+    build_value_boundaries,
+    choose_tick_step,
+    draw_left_axis_labels,
+    draw_stripe_grid,
+    format_int_or_1dp,
+    value_boundaries_to_y,
+)
+
 
 def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
     x0, y0, w, h = box
@@ -38,6 +48,16 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
     # Story 3: Steering-Linien zeichnen
     if hud_key == "Steering":
         try:
+            title_pos: tuple[int, int] | None = None
+            title_txt = "Steering wheel angle"
+            fast_val_draw: tuple[int, int, str] | None = None
+            slow_val_draw: tuple[int, int, str] | None = None
+            axis_labels: list[tuple[int, str]] = []
+            font_axis = None
+            font_axis_small = None
+            font_title = None
+            font_val = None
+
             # --- Headroom nur oben (positiv) ---
             # Default: 1.20 (20% Headroom oben). Unten kein Headroom.
             try:
@@ -61,7 +81,47 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 else:
                     yy = mid_y - (sn * amp_neg)
                 return int(round(yy))
-    
+
+            # Story 10: 5 Segmente bevorzugt, Labels in bestehender Winkel-Logik.
+            try:
+                deg_scale = float(steer_abs_max) * 180.0 / math.pi
+                if abs(deg_scale) < 1e-9:
+                    deg_scale = 1.0
+
+                def _y_from_deg(v_deg: float) -> int:
+                    sn_v = float(v_deg) / deg_scale
+                    if sn_v >= 0.0:
+                        yy_v = mid_y - (sn_v * amp_pos)
+                    else:
+                        yy_v = mid_y - (sn_v * amp_neg)
+                    return int(round(yy_v))
+
+                y_top_i = int(y0)
+                y_bot_i = int(y0 + h - 1)
+                sn_top = (mid_y - float(y_top_i)) / max(1e-6, amp_pos)
+                sn_bot = (mid_y - float(y_bot_i)) / max(1e-6, amp_neg)
+                val_top = float(sn_top * deg_scale)
+                val_bot = float(sn_bot * deg_scale)
+
+                step = choose_tick_step(val_bot, val_top, min_segments=2, max_segments=5, target_segments=5)
+                if step is not None:
+                    val_bounds = build_value_boundaries(val_bot, val_top, float(step), anchor="top")
+                    y_bounds = value_boundaries_to_y(val_bounds, _y_from_deg, y_top_i, y_bot_i)
+                    draw_stripe_grid(
+                        dr,
+                        int(x0),
+                        int(w),
+                        y_top_i,
+                        y_bot_i,
+                        y_bounds,
+                        col_bg=COL_HUD_BG,
+                        darken_delta=6,
+                    )
+                    for vv in val_bounds:
+                        axis_labels.append((int(_y_from_deg(float(vv))), format_int_or_1dp(float(vv))))
+            except Exception:
+                pass
+     
             # 0-Lenkung Mittellinie
             try:
                 y_mid = int(round(mid_y))
@@ -99,6 +159,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
     
                 font_title = _load_font(font_sz)
                 font_val = _load_font(font_val_sz)
+                font_axis = _load_font(max(8, int(font_sz - 2)))
+                font_axis_small = _load_font(max(7, int(font_sz - 3)))
     
                 def _text_w(text: str, font_obj):
                     try:
@@ -112,7 +174,7 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                             return int(len(text) * 8)
     
                 y_txt = int(y0 + 2)  # gleiche HÃ¶he wie Titel
-                dr.text((int(x0 + 4), y_txt), "Steering wheel angle", fill=COL_WHITE, font=font_title)
+                title_pos = (int(x0 + 4), y_txt)
     
                 # Werte holen (Radiant -> Grad)
                 sv_cur = 0.0
@@ -161,8 +223,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 if s_x > int(x0 + w - 2):
                     s_x = int(x0 + w - 2)
     
-                dr.text((f_x, y_txt), f_txt, fill=(255, 0, 0, 255), font=font_val)       # Fast (rot) links am Marker
-                dr.text((s_x, y_txt), s_txt, fill=(0, 120, 255, 255), font=font_val)     # Slow (blau) rechts am Marker
+                fast_val_draw = (f_x, y_txt, f_txt)
+                slow_val_draw = (s_x, y_txt, s_txt)
             except Exception:
                 pass
     
@@ -365,6 +427,36 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 dr.line(pts_s, fill=COL_SLOW_DARKRED, width=2)   # slow = rot
             if len(pts_f) >= 2:
                 dr.line(pts_f, fill=COL_FAST_DARKBLUE, width=2)  # fast = blau
+
+            # Story 10: Text zuletzt (Y-Achse, Titel, Werte).
+            draw_left_axis_labels(
+                dr,
+                int(x0),
+                int(w),
+                int(y0),
+                int(y0 + h - 1),
+                axis_labels,
+                font_axis,
+                col_text=COL_WHITE,
+                x_pad=6,
+                fallback_font_obj=font_axis_small,
+            )
+            if title_pos is not None:
+                dr.text((int(title_pos[0]), int(title_pos[1])), title_txt, fill=COL_WHITE, font=font_title)
+            if fast_val_draw is not None:
+                dr.text(
+                    (int(fast_val_draw[0]), int(fast_val_draw[1])),
+                    str(fast_val_draw[2]),
+                    fill=(255, 0, 0, 255),
+                    font=font_val,
+                )  # Fast (rot) links am Marker
+            if slow_val_draw is not None:
+                dr.text(
+                    (int(slow_val_draw[0]), int(slow_val_draw[1])),
+                    str(slow_val_draw[2]),
+                    fill=(0, 120, 255, 255),
+                    font=font_val,
+                )  # Slow (blau) rechts am Marker
         except Exception:
             pass
     

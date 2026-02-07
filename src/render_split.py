@@ -24,6 +24,7 @@ from ffmpeg_plan import (
 from huds.common import (
     COL_FAST_BRIGHTBLUE,
     COL_FAST_DARKBLUE,
+    COL_HUD_BG,
     COL_SLOW_BRIGHTRED,
     COL_SLOW_DARKRED,
     COL_WHITE,
@@ -1875,6 +1876,25 @@ def _render_hud_scroll_frames_png(
     fast_speed_u = _hold_every_n(_speed_to_units(fast_speed_frames))
     slow_min_u = _hold_every_n(_speed_to_units(slow_min_speed_frames))
     fast_min_u = _hold_every_n(_speed_to_units(fast_min_speed_frames))
+    speed_axis_min_u = 0.0
+    speed_axis_max_u = 1.0
+    try:
+        vmax = 0.0
+        for arr in (slow_speed_u, fast_speed_u, slow_min_u, fast_min_u):
+            if not arr:
+                continue
+            for vv in arr:
+                try:
+                    fv = float(vv)
+                except Exception:
+                    continue
+                if not math.isfinite(fv):
+                    continue
+                if fv > vmax:
+                    vmax = fv
+        speed_axis_max_u = max(1.0, float(vmax))
+    except Exception:
+        speed_axis_max_u = 1.0
 
     # Story 6: Gear & RPM (Update-Rate clamp + Werte halten)
     gr_hz = int(hud_gear_rpm_update_hz) if int(hud_gear_rpm_update_hz) > 0 else 60
@@ -2302,6 +2322,10 @@ def _render_hud_scroll_frames_png(
 
             for hud_key, x0, y0, w, h in active_table_items:
                 try:
+                    dr.rectangle(
+                        [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
+                        fill=COL_HUD_BG,
+                    )
                     def _hud_table_speed() -> None:
                         speed_ctx = {
                             "fps": fps,
@@ -2317,6 +2341,8 @@ def _render_hud_scroll_frames_png(
                             "fast_speed_u": fast_speed_u,
                             "slow_min_u": slow_min_u,
                             "fast_min_u": fast_min_u,
+                            "speed_axis_min_u": speed_axis_min_u,
+                            "speed_axis_max_u": speed_axis_max_u,
                             "unit_label": unit_label,
                             "hud_key": hud_key,
                             "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
@@ -2414,7 +2440,11 @@ def _render_hud_scroll_frames_png(
                         x = x0 + w - tick_w
                     return x
 
-                # Marker (pro HUD-Box)
+                # HUD-BG + Marker (pro HUD-Box)
+                dr.rectangle(
+                    [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
+                    fill=COL_HUD_BG,
+                )
                 mx = int(center_x)
                 dr.rectangle([mx, y0, mx + 1, y0 + h], fill=(255, 255, 255, 230))
 

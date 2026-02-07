@@ -3,6 +3,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from huds.common import (
+    COL_HUD_BG,
+    build_value_boundaries,
+    choose_tick_step,
+    draw_left_axis_labels,
+    draw_stripe_grid,
+    value_boundaries_to_y,
+)
+
 
 def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
     x0, y0, w, h = box
@@ -53,6 +62,8 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
     font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
     font_title = _load_font(font_sz)
     font_val = _load_font(font_val_sz)
+    font_axis = _load_font(max(8, int(font_sz - 2)))
+    font_axis_small = _load_font(max(7, int(font_sz - 3)))
 
     top_pad = int(round(max(14.0, float(font_sz) + 8.0)))
     plot_y0 = int(y0) + top_pad
@@ -115,9 +126,25 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
         yy = float(plot_y1) - (frac * float(plot_y1 - plot_y0))
         return int(round(yy))
 
-    # Titel
+    # Story 10: 5 Segmente, symmetrisch um 0.
+    axis_labels: list[tuple[int, str]] = []
     try:
-        dr.text((int(x0 + 4), int(y0 + 2)), "Line delta", fill=COL_WHITE, font=font_title)
+        step = choose_tick_step(y_min_m, y_max_m, min_segments=2, max_segments=5, target_segments=5)
+        if step is not None:
+            val_bounds = build_value_boundaries(y_min_m, y_max_m, float(step), anchor="top")
+            y_bounds = value_boundaries_to_y(val_bounds, _y_from_m, int(plot_y0), int(plot_y1))
+            draw_stripe_grid(
+                dr,
+                int(x0),
+                int(w),
+                int(plot_y0),
+                int(plot_y1),
+                y_bounds,
+                col_bg=COL_HUD_BG,
+                darken_delta=6,
+            )
+            for vv in val_bounds:
+                axis_labels.append((int(_y_from_m(float(vv))), f"{float(vv):.1f}"))
     except Exception:
         pass
 
@@ -180,6 +207,24 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
     if x_val < int(x0 + 4):
         x_val = int(x0 + 4)
     y_val = int(y0 + 2)
+
+    # Text zuletzt: Y-Achse + Titel + aktueller Wert.
+    draw_left_axis_labels(
+        dr,
+        int(x0),
+        int(w),
+        int(plot_y0),
+        int(plot_y1),
+        axis_labels,
+        font_axis,
+        col_text=COL_WHITE,
+        x_pad=6,
+        fallback_font_obj=font_axis_small,
+    )
+    try:
+        dr.text((int(x0 + 4), int(y0 + 2)), "Line delta", fill=COL_WHITE, font=font_title)
+    except Exception:
+        pass
     try:
         dr.text((x_val, y_val), txt, fill=COL_WHITE, font=font_val)
     except Exception:

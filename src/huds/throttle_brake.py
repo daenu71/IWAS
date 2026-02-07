@@ -3,6 +3,13 @@
 import os
 from typing import Any
 
+from huds.common import (
+    COL_HUD_BG,
+    draw_left_axis_labels,
+    draw_stripe_grid,
+    value_boundaries_to_y,
+)
+
 
 def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
     x0, y0, w, h = box
@@ -82,10 +89,11 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
             font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
             font_title = _load_font(font_sz)
             font_val = _load_font(font_val_sz)
-    
+            font_axis = _load_font(max(8, int(font_sz - 2)))
+            font_axis_small = _load_font(max(7, int(font_sz - 3)))
+     
             # Titel + Werte auf gleicher HÃ¶he (ruhig, kein Springen)
             y_txt = int(y0 + 2)
-            dr.text((int(x0 + 4), y_txt), "Throttle / Brake", fill=COL_WHITE, font=font_title)
     
             # Skalen (CSV ~60Hz -> Video-Frames)
             n_frames = float(max(1, len(slow_frame_to_lapdist) - 1))
@@ -162,10 +170,6 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
             if s_x > int(x0 + w - 2):
                 s_x = int(x0 + w - 2)
     
-            # Fast links, Slow rechts (wie Steering)
-            dr.text((f_x, y_txt), f_txt, fill=COL_SLOW_BRAKE, font=font_val)
-            dr.text((s_x, y_txt), s_txt, fill=COL_FAST_BRAKE, font=font_val)
-    
             # Layout: ABS-Balken direkt unter Titelzeile, danach Plot
             abs_h = int(max(10, min(15, round(float(h) * 0.085))))
             abs_gap_y = 2
@@ -184,6 +188,28 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                 v_scaled = v01 / max(1.0, headroom)
                 yy = float(plot_top) + float(plot_h) - (v_scaled * float(plot_h))
                 return int(round(yy))
+
+            # Story 10: 5 Segmente (0..100%) mit festen Labels 20/40/60/80.
+            grid_vals = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+            y_grid_top = int(_y_from_01(1.0))
+            y_grid_bot = int(_y_from_01(0.0))
+            y_grid_bounds = value_boundaries_to_y(grid_vals, _y_from_01, y_grid_top, y_grid_bot)
+            draw_stripe_grid(
+                dr,
+                int(x0),
+                int(w),
+                int(min(y_grid_top, y_grid_bot)),
+                int(max(y_grid_top, y_grid_bot)),
+                y_grid_bounds,
+                col_bg=COL_HUD_BG,
+                darken_delta=6,
+            )
+            axis_labels = [
+                (int(_y_from_01(0.2)), "20"),
+                (int(_y_from_01(0.4)), "40"),
+                (int(_y_from_01(0.6)), "60"),
+                (int(_y_from_01(0.8)), "80"),
+            ]
     
             # Stride / Punktdichte (wie Steering)
             span_n = max(1, int(iR - iL))
@@ -338,6 +364,24 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
     
             _draw_abs_segments(int(y_abs_s + abs_h // 2), COL_SLOW_BRAKE, _abs_val_s)
             _draw_abs_segments(int(y_abs_f + abs_h // 2), COL_FAST_BRAKE, _abs_val_f)
-    
+
+            # Story 10: Text zuletzt (Y-Achse + Titel + Werte).
+            draw_left_axis_labels(
+                dr,
+                int(x0),
+                int(w),
+                int(min(y_grid_top, y_grid_bot)),
+                int(max(y_grid_top, y_grid_bot)),
+                axis_labels,
+                font_axis,
+                col_text=COL_WHITE,
+                x_pad=6,
+                fallback_font_obj=font_axis_small,
+            )
+            dr.text((int(x0 + 4), y_txt), "Throttle / Brake", fill=COL_WHITE, font=font_title)
+            # Fast links, Slow rechts (wie Steering)
+            dr.text((f_x, y_txt), f_txt, fill=COL_SLOW_BRAKE, font=font_val)
+            dr.text((s_x, y_txt), s_txt, fill=COL_FAST_BRAKE, font=font_val)
+     
         except Exception:
             pass
