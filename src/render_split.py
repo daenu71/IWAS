@@ -184,6 +184,8 @@ class HudSignals:
     fast_brake_frames: list[float] | None = None
     slow_abs_frames: list[int] | None = None
     fast_abs_frames: list[int] | None = None
+    line_delta_m_frames: list[float] | None = None
+    line_delta_y_abs_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -380,6 +382,249 @@ def _sample_csv_col_to_frames_int_nearest(csv_path: Path, duration_s: float, fps
         except Exception:
             out.append(0)
     return out
+
+
+def _build_line_delta_frames_from_csv(
+    *,
+    slow_csv: Path,
+    fast_csv: Path,
+    slow_duration_s: float,
+    fast_duration_s: float,
+    fps: float,
+    slow_frame_to_fast_time_s: list[float] | None,
+    frame_count_hint: int,
+) -> list[float]:
+    from csv_g61 import get_float_col, has_col, load_g61_csv
+
+    def _is_finite(v: Any) -> bool:
+        try:
+            x = float(v)
+            return (x == x) and math.isfinite(x)
+        except Exception:
+            return False
+
+    def _prepare_xy_series(
+        t_raw: list[float],
+        lat_raw: list[float],
+        lon_raw: list[float],
+        lat0_rad: float,
+        lon0_rad: float,
+        cos_lat0: float,
+    ) -> tuple[list[float], list[float], list[float]]:
+        n = min(len(t_raw), len(lat_raw), len(lon_raw))
+        ts: list[float] = []
+        xs: list[float] = []
+        ys: list[float] = []
+        r = 6378137.0
+        for k in range(n):
+            tv = t_raw[k]
+            lav = lat_raw[k]
+            lov = lon_raw[k]
+            if (not _is_finite(tv)) or (not _is_finite(lav)) or (not _is_finite(lov)):
+                continue
+            tr = float(tv)
+            lat_rad = math.radians(float(lav))
+            lon_rad = math.radians(float(lov))
+            # Lokale equirectangular-Projektion in Meter mit gemeinsamem Ursprung.
+            x_m = (lon_rad - lon0_rad) * cos_lat0 * r
+            y_m = (lat_rad - lat0_rad) * r
+            ts.append(tr)
+            xs.append(float(x_m))
+            ys.append(float(y_m))
+        if len(ts) < 2:
+            return [], [], []
+        ts = _force_strictly_increasing(ts)
+        return ts, xs, ys
+
+    def _prepare_scalar_series(t_raw: list[float], v_raw: list[float]) -> tuple[list[float], list[float]]:
+        n = min(len(t_raw), len(v_raw))
+        ts: list[float] = []
+        vs: list[float] = []
+        for k in range(n):
+            tv = t_raw[k]
+            vv = v_raw[k]
+            if (not _is_finite(tv)) or (not _is_finite(vv)):
+                continue
+            ts.append(float(tv))
+            vs.append(float(vv))
+        if len(ts) < 2:
+            return [], []
+        ts = _force_strictly_increasing(ts)
+        return ts, vs
+
+    def _interp_linear_clamped(
+        ts: list[float],
+        vs: list[float],
+        t_query: float,
+        j_hint: int,
+    ) -> tuple[float, int]:
+        n = len(ts)
+        if n <= 0 or len(vs) <= 0:
+            return 0.0, 0
+        if n == 1 or len(vs) == 1:
+            return float(vs[0]), 0
+        if t_query <= ts[0]:
+            return float(vs[0]), 0
+        if t_query >= ts[n - 1]:
+            return float(vs[n - 1]), max(0, n - 2)
+
+        j = int(j_hint)
+        if j < 0:
+            j = 0
+        if j > n - 2:
+            j = n - 2
+
+        while j < (n - 2) and ts[j + 1] < t_query:
+            j += 1
+        while j > 0 and ts[j] > t_query:
+            j -= 1
+
+        t0 = float(ts[j])
+        t1 = float(ts[j + 1])
+        v0 = float(vs[j])
+        v1 = float(vs[j + 1])
+
+        if t1 <= t0:
+            return v0, j
+
+        a = (float(t_query) - t0) / (t1 - t0)
+        if a < 0.0:
+            a = 0.0
+        if a > 1.0:
+            a = 1.0
+        return (v0 + (v1 - v0) * a), j
+
+    try:
+        if not slow_frame_to_fast_time_s:
+            return []
+        fps_safe = float(fps) if float(fps) > 0.1 else 30.0
+        n_out = int(frame_count_hint)
+        if n_out <= 0:
+            n_out = int(len(slow_frame_to_fast_time_s))
+        if n_out <= 0:
+            return []
+
+        run_s = load_g61_csv(slow_csv)
+        run_f = load_g61_csv(fast_csv)
+        for req in ("Lat", "Lon", "LapDistPct"):
+            if not has_col(run_s, req):
+                return []
+        for req in ("Lat", "Lon"):
+            if not has_col(run_f, req):
+                return []
+
+        t_s_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_s, slow_duration_s))
+        t_f_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_f, fast_duration_s))
+        lat_s_raw = get_float_col(run_s, "Lat")
+        lon_s_raw = get_float_col(run_s, "Lon")
+        lat_f_raw = get_float_col(run_f, "Lat")
+        lon_f_raw = get_float_col(run_f, "Lon")
+        ld_s_raw = get_float_col(run_s, "LapDistPct")
+
+        lat0 = None
+        lon0 = None
+        n0 = min(len(lat_s_raw), len(lon_s_raw))
+        for k in range(n0):
+            if _is_finite(lat_s_raw[k]) and _is_finite(lon_s_raw[k]):
+                lat0 = float(lat_s_raw[k])
+                lon0 = float(lon_s_raw[k])
+                break
+        if lat0 is None or lon0 is None:
+            return []
+
+        lat0_rad = math.radians(float(lat0))
+        lon0_rad = math.radians(float(lon0))
+        cos_lat0 = math.cos(lat0_rad)
+        if abs(cos_lat0) < 1e-6:
+            cos_lat0 = 1e-6 if cos_lat0 >= 0.0 else -1e-6
+
+        t_s_xy, x_s, y_s = _prepare_xy_series(t_s_raw, lat_s_raw, lon_s_raw, lat0_rad, lon0_rad, cos_lat0)
+        t_f_xy, x_f, y_f = _prepare_xy_series(t_f_raw, lat_f_raw, lon_f_raw, lat0_rad, lon0_rad, cos_lat0)
+        t_s_ld, ld_s = _prepare_scalar_series(t_s_raw, ld_s_raw)
+
+        if len(t_s_xy) < 2 or len(t_f_xy) < 2:
+            return []
+        if len(t_s_ld) < 2:
+            t_s_ld = t_s_xy
+            ld_s = [0.0] * len(t_s_xy)
+
+        t_s_min = float(t_s_xy[0])
+        t_s_max = float(t_s_xy[len(t_s_xy) - 1])
+
+        # Tangente aus +/- dt um die Slow-Zeit pro Output-Frame.
+        dt = max(0.01, (0.5 / max(1.0, fps_safe)))
+
+        out: list[float] = []
+        j_sx = 0
+        j_sy = 0
+        j_fx = 0
+        j_fy = 0
+        j_ld = 0
+        j_t0x = 0
+        j_t0y = 0
+        j_t1x = 0
+        j_t1y = 0
+        has_last_n = False
+        last_nx = 0.0
+        last_ny = 1.0
+
+        n_map = len(slow_frame_to_fast_time_s)
+        for frame_idx in range(n_out):
+            t_slow = float(frame_idx) / fps_safe
+
+            map_idx = frame_idx
+            if map_idx < 0:
+                map_idx = 0
+            if map_idx >= n_map:
+                map_idx = n_map - 1
+            t_fast = float(slow_frame_to_fast_time_s[map_idx])
+
+            xs, j_sx = _interp_linear_clamped(t_s_xy, x_s, t_slow, j_sx)
+            ys, j_sy = _interp_linear_clamped(t_s_xy, y_s, t_slow, j_sy)
+            # Story-Vorgabe: LapDistPct_slow(t_slow) wird ebenfalls über Time_s interpoliert.
+            _ld_slow, j_ld = _interp_linear_clamped(t_s_ld, ld_s, t_slow, j_ld)
+            _ = _ld_slow
+            xf, j_fx = _interp_linear_clamped(t_f_xy, x_f, t_fast, j_fx)
+            yf, j_fy = _interp_linear_clamped(t_f_xy, y_f, t_fast, j_fy)
+
+            t0 = _clamp(t_slow - dt, t_s_min, t_s_max)
+            t1 = _clamp(t_slow + dt, t_s_min, t_s_max)
+            if t1 <= t0:
+                t0 = _clamp(t_slow - (2.0 * dt), t_s_min, t_s_max)
+                t1 = _clamp(t_slow + (2.0 * dt), t_s_min, t_s_max)
+
+            x0, j_t0x = _interp_linear_clamped(t_s_xy, x_s, t0, j_t0x)
+            y0, j_t0y = _interp_linear_clamped(t_s_xy, y_s, t0, j_t0y)
+            x1, j_t1x = _interp_linear_clamped(t_s_xy, x_s, t1, j_t1x)
+            y1, j_t1y = _interp_linear_clamped(t_s_xy, y_s, t1, j_t1y)
+
+            tx = float(x1 - x0)
+            ty = float(y1 - y0)
+            norm_t = math.hypot(tx, ty)
+            if norm_t > 1e-6:
+                nx = -ty / norm_t
+                ny = tx / norm_t
+                last_nx = float(nx)
+                last_ny = float(ny)
+                has_last_n = True
+            elif has_last_n:
+                nx = float(last_nx)
+                ny = float(last_ny)
+            else:
+                nx = 0.0
+                ny = 1.0
+
+            dx = float(xf - xs)
+            dy = float(yf - ys)
+            delta_m = (dx * nx) + (dy * ny)
+            if not math.isfinite(delta_m):
+                delta_m = 0.0
+            out.append(float(delta_m))
+
+        return out
+    except Exception:
+        return []
+
 
 def _compute_min_speed_display(speed_frames: list[float], fps: float, units: str) -> list[float]:
     if not speed_frames:
@@ -704,6 +949,8 @@ def _render_hud_scroll_frames_png(
     fast_brake_frames = ctx.signals.fast_brake_frames
     slow_abs_frames = ctx.signals.slow_abs_frames
     fast_abs_frames = ctx.signals.fast_abs_frames
+    line_delta_m_frames = ctx.signals.line_delta_m_frames
+    line_delta_y_abs_m = ctx.signals.line_delta_y_abs_m
 
     before_s = float(ctx.window.before_s)
     after_s = float(ctx.window.after_s)
@@ -1439,6 +1686,13 @@ def _render_hud_scroll_frames_png(
                 def _hud_line_delta() -> None:
                     line_delta_ctx = {
                         "hud_key": hud_key,
+                        "i": i,
+                        "before_f": before_f,
+                        "after_f": after_f,
+                        "line_delta_m_frames": line_delta_m_frames,
+                        "line_delta_y_abs_m": line_delta_y_abs_m,
+                        "COL_WHITE": COL_WHITE,
+                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
                     }
                     render_line_delta(line_delta_ctx, (x0, y0, w, h), dr)
 
@@ -1797,6 +2051,8 @@ def render_split_screen_sync(
     fast_brake_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "Brake")
     slow_abs_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "ABSActive")
     fast_abs_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "ABSActive")
+    line_delta_m_frames: list[float] = []
+    line_delta_y_abs_m = 0.0
 
 
     slow_min_speed_frames = _compute_min_speed_display(slow_speed_frames, float(fps_int), str(hud_speed_units)) if slow_speed_frames else []
@@ -1879,6 +2135,25 @@ def render_split_screen_sync(
         # aktive HUDs bestimmen (nur Namen)
         boxes_abs = _enabled_hud_boxes_abs(geom=geom, hud_enabled=hud_enabled, hud_boxes=hud_boxes)
         active_names = [n for (n, _b) in boxes_abs]
+        if "Line Delta" in active_names:
+            line_delta_m_frames = _build_line_delta_frames_from_csv(
+                slow_csv=scsv,
+                fast_csv=fcsv,
+                slow_duration_s=ms.duration_s,
+                fast_duration_s=mf.duration_s,
+                fps=float(fps_int),
+                slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
+                frame_count_hint=len(slow_frame_to_lapdist),
+            )
+            abs_global_max = 0.0
+            for dv in line_delta_m_frames:
+                try:
+                    av = abs(float(dv))
+                    if math.isfinite(av) and av > abs_global_max:
+                        abs_global_max = av
+                except Exception:
+                    pass
+            line_delta_y_abs_m = float(abs_global_max) * 2.0
 
         # Overrides normalisieren
         ovs = hud_window_overrides if isinstance(hud_window_overrides, dict) else None
@@ -1963,6 +2238,8 @@ def render_split_screen_sync(
                 fast_brake_frames=fast_brake_frames,
                 slow_abs_frames=slow_abs_frames,
                 fast_abs_frames=fast_abs_frames,
+                line_delta_m_frames=line_delta_m_frames,
+                line_delta_y_abs_m=line_delta_y_abs_m,
             ),
             window=HudWindowParams(
                 before_s=float(before_default_s),
