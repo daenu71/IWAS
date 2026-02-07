@@ -7,7 +7,6 @@ import os
 import json
 import time
 import subprocess
-import configparser
 import threading
 import queue
 import sys
@@ -23,6 +22,7 @@ from core.models import (
     Profile,
     RenderPayload,
 )
+from core import persistence
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -179,60 +179,12 @@ def main() -> None:
 
     config_dir = project_root / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
-    startframes_file = config_dir / "startframes.json"
-
-    def load_startframes() -> dict[str, int]:
-        try:
-            if startframes_file.exists():
-                data = json.loads(startframes_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    out: dict[str, int] = {}
-                    for k, v in data.items():
-                        try:
-                            out[str(k)] = int(v)
-                        except Exception:
-                            pass
-                    return out
-        except Exception:
-            pass
-        return {}
-
-    def save_startframes(d: dict[str, int]) -> None:
-        try:
-            startframes_file.write_text(json.dumps(d, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    startframes_by_name: dict[str, int] = load_startframes()
+    startframes_by_name: dict[str, int] = persistence.load_startframes()
     
     profiles_dir = config_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
 
-    endframes_file = config_dir / "endframes.json"
-
-    def load_endframes() -> dict[str, int]:
-        try:
-            if endframes_file.exists():
-                data = json.loads(endframes_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    out: dict[str, int] = {}
-                    for k, v in data.items():
-                        try:
-                            out[str(k)] = int(v)
-                        except Exception:
-                            pass
-                    return out
-        except Exception:
-            pass
-        return {}
-
-    def save_endframes(d: dict[str, int]) -> None:
-        try:
-            endframes_file.write_text(json.dumps(d, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    endframes_by_name: dict[str, int] = load_endframes()
+    endframes_by_name: dict[str, int] = persistence.load_endframes()
 
     frame_files = ttk.LabelFrame(root, text="Dateibereich")
     frame_preview = ttk.LabelFrame(root, text="Vorschau")
@@ -250,44 +202,7 @@ def main() -> None:
     root.grid_rowconfigure(1, weight=0)
 
     # ---- Output-Format (Story 4) ----
-
-    defaults_ini = config_dir / "defaults.ini"
-    cfg = configparser.ConfigParser()
-    try:
-        if defaults_ini.exists():
-            cfg.read(defaults_ini, encoding="utf-8")
-    except Exception:
-        pass
-
-    def cfg_get(section: str, key: str, fallback: str) -> str:
-        try:
-            return cfg.get(section, key, fallback=fallback)
-        except Exception:
-            return fallback
-
-    output_format_file = config_dir / "output_format.json"
-
-    hud_layout_file = config_dir / "hud_layout.json"
-
-    png_view_file = config_dir / "png_view.json"
-
-    def load_png_view() -> dict:
-        try:
-            if png_view_file.exists():
-                data = json.loads(png_view_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            pass
-        return {}
-
-    def save_png_view(data: dict) -> None:
-        try:
-            png_view_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    png_view_data: dict = load_png_view()
+    png_view_data: dict = persistence.load_png_view()
 
     def get_hud_width_px() -> int:
         try:
@@ -326,23 +241,7 @@ def main() -> None:
             {"type": "Under-/Oversteer", "x": 0, "y": 870, "w": 320, "h": 110},
         ]
 
-    def load_hud_layout() -> dict:
-        try:
-            if hud_layout_file.exists():
-                data = json.loads(hud_layout_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            pass
-        return {}
-
-    def save_hud_layout(data: dict) -> None:
-        try:
-            hud_layout_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    hud_layout_data: dict = load_hud_layout()
+    hud_layout_data: dict = persistence.load_hud_layout()
 
     def hud_layout_key() -> str:
         # Pro Output-Preset + HUD-Breite separat speichern
@@ -381,54 +280,7 @@ def main() -> None:
 
     def set_hud_boxes_for_current(boxes: list[dict]) -> None:
         hud_layout_data[hud_layout_key()] = boxes
-        save_hud_layout(hud_layout_data)
-
-    def load_output_format() -> dict[str, str]:
-        # Reihenfolge: config/output_format.json (User-Wahl) -> defaults.ini -> Fallback
-        out: dict[str, str] = {
-            "aspect": cfg_get("video_compare", "output_aspect", "32:9"),
-            "preset": cfg_get("video_compare", "output_preset", "5120x1440"),
-            "quality": cfg_get("video_compare", "output_quality", "Original"),
-            "hud_width_px": cfg_get("video_compare", "hud_width_px", "320"),
-        }
-        try:
-            if output_format_file.exists():
-                data = json.loads(output_format_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    a = str(data.get("aspect") or "").strip()
-                    p = str(data.get("preset") or "").strip()
-                    q = str(data.get("quality") or "").strip()
-                    h = str(data.get("hud_width_px") or "").strip()
-                    if a:
-                        out["aspect"] = a
-                    if p:
-                        out["preset"] = p
-                    if q:
-                        out["quality"] = q
-                    if h:
-                        out["hud_width_px"] = h
-        except Exception:
-            pass
-        return out
-
-    def save_output_format(d: dict[str, str]) -> None:
-        try:
-            merged: dict[str, str] = {}
-            if output_format_file.exists():
-                try:
-                    old = json.loads(output_format_file.read_text(encoding="utf-8"))
-                    if isinstance(old, dict):
-                        for k, v in old.items():
-                            merged[str(k)] = str(v)
-                except Exception:
-                    pass
-
-            for k, v in (d or {}).items():
-                merged[str(k)] = str(v)
-
-            output_format_file.write_text(json.dumps(merged, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        persistence.save_hud_layout(hud_layout_data)
 
     # Auswahlmöglichkeiten
     ASPECTS = ["32:9", "21:9", "16:9"]
@@ -442,7 +294,7 @@ def main() -> None:
     def get_presets_for_aspect(a: str) -> list[str]:
         return list(PRESETS_BY_ASPECT.get(a, ["1920x1080"]))
 
-    sel = load_output_format()
+    sel = persistence.load_output_format()
     out_aspect_var = tk.StringVar(value=sel.get("aspect", "32:9"))
     out_preset_var = tk.StringVar(value=sel.get("preset", get_presets_for_aspect(sel.get("aspect", "32:9"))[0]))
 
@@ -552,7 +404,7 @@ def main() -> None:
     lbl_out_fps.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(6, 6))
 
     def on_hud_width_change(_event=None) -> None:
-        save_output_format({"hud_width_px": str(get_hud_width_px())})
+        persistence.save_output_format({"hud_width_px": str(get_hud_width_px())})
         try:
             if preview_mode_var.get() == "png":
                 png_load_state_for_current()
@@ -841,7 +693,7 @@ def main() -> None:
         except Exception:
             pass
 
-        save_output_format(
+        persistence.save_output_format(
             {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get()}
         )
 
@@ -1021,7 +873,7 @@ def main() -> None:
                     pass
 
             try:
-                save_output_format(
+                persistence.save_output_format(
                     {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get(), "hud_width_px": str(get_hud_width_px())}
                 )
             except Exception:
@@ -1032,7 +884,7 @@ def main() -> None:
         if isinstance(hl, dict):
             hud_layout_data = hl
             try:
-                save_hud_layout(hud_layout_data)
+                persistence.save_hud_layout(hud_layout_data)
             except Exception:
                 pass
 
@@ -1040,7 +892,7 @@ def main() -> None:
         if isinstance(pv, dict):
             png_view_data = pv
             try:
-                save_png_view(png_view_data)
+                persistence.save_png_view(png_view_data)
             except Exception:
                 pass
 
@@ -1056,7 +908,7 @@ def main() -> None:
                 except Exception:
                     pass
             try:
-                save_startframes(startframes_by_name)
+                persistence.save_startframes(startframes_by_name)
             except Exception:
                 pass
 
@@ -1068,7 +920,7 @@ def main() -> None:
                 except Exception:
                     pass
             try:
-                save_endframes(endframes_by_name)
+                persistence.save_endframes(endframes_by_name)
             except Exception:
                 pass
 
@@ -1230,7 +1082,7 @@ def main() -> None:
                 )
                 if out_preset_var.get() != new_preset:
                     out_preset_var.set(new_preset)
-                save_output_format(
+                persistence.save_output_format(
                     {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get()}
                 )
                 if cap is None:
@@ -1545,7 +1397,7 @@ def main() -> None:
             "off_ry": int(png_state["R"]["off_y"]),
             "fit_r": bool(png_state["R"].get("fit_to_height", False)),
         }
-        save_png_view(png_view_data)
+        persistence.save_png_view(png_view_data)
 
     def choose_slow_fast_paths() -> tuple[Path | None, Path | None]:
         if len(videos) != 2:
@@ -2750,7 +2602,7 @@ def main() -> None:
 
         if save and current_video_original is not None:
             endframes_by_name[current_video_original.name] = int(end_frame_idx)
-            save_endframes(endframes_by_name)
+            persistence.save_endframes(endframes_by_name)
 
     def auto_end_from_start(start_idx: int) -> None:
         lap_ms = extract_time_ms(current_video_original) if current_video_original is not None else None
@@ -2939,60 +2791,32 @@ def main() -> None:
         except Exception:
             pass
 
-        def _cfg_float(section: str, key: str, fallback: float) -> float:
-            try:
-                v = str(cfg_get(section, key, str(fallback))).strip()
-                return float(v) if v else float(fallback)
-            except Exception:
-                return float(fallback)
-
-        def _cfg_float_opt(section: str, key: str) -> float | None:
-            try:
-                v = str(cfg_get(section, key, "")).strip()
-                return float(v) if v else None
-            except Exception:
-                return None
-                
-        def _cfg_int(section: str, key: str, fallback: int) -> int:
-            try:
-                v = str(cfg_get(section, key, str(fallback))).strip()
-                return int(float(v)) if v else int(fallback)
-            except Exception:
-                return int(fallback)
-
-        def _cfg_int_opt(section: str, key: str) -> int | None:
-            try:
-                v = str(cfg_get(section, key, "")).strip()
-                return int(float(v)) if v else None
-            except Exception:
-                return None
-                
         # Story 6: Gear & RPM HUD (Update-Rate)
-        gear_rpm_update_hz = _cfg_int("video_compare", "gear_rpm_update_hz", 60)
+        gear_rpm_update_hz = persistence._cfg_int("video_compare", "gear_rpm_update_hz", 60)
         if gear_rpm_update_hz < 1:
             gear_rpm_update_hz = 1
         if gear_rpm_update_hz > 60:
             gear_rpm_update_hz = 60
 
         # Story 5: Speed HUD (Einheit + Update-Rate)
-        speed_units = str(cfg_get("video_compare", "speed_units", "kmh")).strip().lower()
+        speed_units = str(persistence.cfg_get("video_compare", "speed_units", "kmh")).strip().lower()
         if speed_units not in ("kmh", "mph"):
             speed_units = "kmh"
 
-        speed_update_hz = _cfg_int("video_compare", "speed_update_hz", 60)
+        speed_update_hz = persistence._cfg_int("video_compare", "speed_update_hz", 60)
         if speed_update_hz < 1:
             speed_update_hz = 1
         if speed_update_hz > 60:
             speed_update_hz = 60
 
-        hud_win_default_before = _cfg_float("video_compare", "hud_window_default_before_s", 10.0)
-        hud_win_default_after = _cfg_float("video_compare", "hud_window_default_after_s", 10.0)
+        hud_win_default_before = persistence._cfg_float("video_compare", "hud_window_default_before_s", 10.0)
+        hud_win_default_after = persistence._cfg_float("video_compare", "hud_window_default_after_s", 10.0)
 
         hud_win_overrides: dict[str, dict[str, float]] = {}
 
         def _add_override(hud_name: str, ini_prefix: str) -> None:
-            b = _cfg_float_opt("video_compare", f"hud_window_{ini_prefix}_before_s")
-            a = _cfg_float_opt("video_compare", f"hud_window_{ini_prefix}_after_s")
+            b = persistence._cfg_float_opt("video_compare", f"hud_window_{ini_prefix}_before_s")
+            a = persistence._cfg_float_opt("video_compare", f"hud_window_{ini_prefix}_after_s")
             if b is None and a is None:
                 return
             d: dict[str, float] = {}
@@ -3009,12 +2833,12 @@ def main() -> None:
         _add_override("Under-/Oversteer", "under_oversteer")
         
         # Story 3: HUD-Kurvenpunkte (Punktdichte)
-        hud_pts_default = _cfg_int("video_compare", "hud_curve_points_default", 180)
+        hud_pts_default = persistence._cfg_int("video_compare", "hud_curve_points_default", 180)
 
         hud_pts_overrides: dict[str, int] = {}
 
         def _add_pts_override(hud_name: str, ini_suffix: str) -> None:
-            v = _cfg_int_opt("video_compare", f"hud_curve_points_{ini_suffix}")
+            v = persistence._cfg_int_opt("video_compare", f"hud_curve_points_{ini_suffix}")
             if v is None:
                 return
             hud_pts_overrides[hud_name] = int(v)
@@ -3478,10 +3302,10 @@ def main() -> None:
             tmp.replace(dst_final)
 
             startframes_by_name[dst_final.name] = 0
-            save_startframes(startframes_by_name)
+            persistence.save_startframes(startframes_by_name)
 
             endframes_by_name[dst_final.name] = clamp_frame(int(dur_sec * max(1.0, fps)))
-            save_endframes(endframes_by_name)
+            persistence.save_endframes(endframes_by_name)
 
             lbl_loaded.config(text="Video: Geschnitten & ersetzt")
         except Exception:
@@ -3762,7 +3586,7 @@ def main() -> None:
         if current_video_original is None:
             return
         startframes_by_name[current_video_original.name] = int(current_frame_idx)
-        save_startframes(startframes_by_name)
+        persistence.save_startframes(startframes_by_name)
         auto_end_from_start(int(current_frame_idx))
 
     def start_crop_for_video(video_path: Path) -> None:
