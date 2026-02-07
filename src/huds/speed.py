@@ -7,7 +7,6 @@ from huds.common import (
     build_value_boundaries,
     choose_tick_step,
     draw_hud_background,
-    draw_left_axis_labels,
     draw_stripe_grid,
     value_boundaries_to_y,
 )
@@ -70,7 +69,6 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
         yy = float(y0 + h - 1) - (frac * float(max(1, h - 1)))
         return int(round(yy))
 
-    axis_labels: list[tuple[int, str]] = []
     try:
         step = choose_tick_step(v_min, v_max, min_segments=2, max_segments=5, target_segments=5)
         if step is not None:
@@ -86,12 +84,6 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                 col_bg=COL_HUD_BG,
                 darken_delta=6,
             )
-            for vv in val_bounds:
-                if abs(float(step) - 0.5) < 1e-9:
-                    lbl = f"{float(vv):.1f}"
-                else:
-                    lbl = f"{int(round(float(vv)))}"
-                axis_labels.append((int(_y_from_speed(float(vv))), lbl))
     except Exception:
         pass
 
@@ -118,19 +110,6 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
         font_axis = _load_font(12)
         font_axis_small = _load_font(11)
 
-        # Text zuletzt (Y-Achse + Titel + Werte).
-        draw_left_axis_labels(
-            dr,
-            int(x0),
-            int(w),
-            int(y0),
-            int(y0 + h - 1),
-            axis_labels,
-            font_axis,
-            x_pad=6,
-            fallback_font_obj=font_axis_small,
-        )
-
         y_title = int(y0 + 6)
         dr.text((xL, y_title), f"Speed / Min ({unit_label})", fill=col_slow_darkred, font=font_title)
         dr.text((xR, y_title), f"Speed / Min ({unit_label})", fill=col_fast_darkblue, font=font_title)
@@ -141,19 +120,7 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
 
     except Exception:
         # Fallback ohne Fonts
-        draw_left_axis_labels(
-            dr,
-            int(x0),
-            int(w),
-            int(y0),
-            int(y0 + h - 1),
-            axis_labels,
-            None,
-            x_pad=6,
-            fallback_font_obj=None,
-        )
         dr.text((xL, y1), f"Speed / Min ({unit_label})", fill=col_slow_darkred)
         dr.text((xR, y1), f"Speed / Min ({unit_label})", fill=col_fast_darkblue)
         dr.text((xL, y2), f"{sv} / {smin}", fill=col_slow_darkred)
         dr.text((xR, y2), f"{fv} / {fmin}", fill=col_fast_darkblue)
-

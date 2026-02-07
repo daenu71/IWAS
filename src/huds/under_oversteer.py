@@ -9,6 +9,9 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    filter_axis_labels_by_position,
+    format_value_for_step,
+    should_suppress_boundary_label,
     value_boundaries_to_y,
 )
 
@@ -94,7 +97,8 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     # Story 10: 5 Segmente, symmetrisch um 0.
     axis_labels: list[tuple[int, str]] = []
     try:
-        step = choose_tick_step(y_min, y_max, min_segments=2, max_segments=5, target_segments=5)
+        tick_ref_max = max(abs(float(y_min)), abs(float(y_max)))
+        step = choose_tick_step(0.0, tick_ref_max, min_segments=2, max_segments=5, target_segments=5)
         if step is not None:
             val_bounds = build_value_boundaries(y_min, y_max, float(step), anchor="top")
             y_bounds = value_boundaries_to_y(val_bounds, _y_from_val, int(plot_y0), int(plot_y1))
@@ -109,7 +113,9 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
                 darken_delta=6,
             )
             for vv in val_bounds:
-                axis_labels.append((int(_y_from_val(float(vv))), f"{float(vv):.1f}"))
+                if should_suppress_boundary_label(float(vv), y_min, y_max, suppress_zero=True):
+                    continue
+                axis_labels.append((int(_y_from_val(float(vv))), format_value_for_step(float(vv), float(step), min_decimals=0)))
     except Exception:
         pass
 
@@ -119,8 +125,21 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
         dr.line([(int(x0), int(y_zero)), (int(x0 + w - 1), int(y_zero))], fill=COL_WHITE, width=1)
     except Exception:
         pass
+    axis_labels = filter_axis_labels_by_position(
+        axis_labels,
+        int(plot_y0),
+        int(plot_y1),
+        zero_y=int(y_zero),
+        pad_px=2,
+    )
 
     marker_xf = float(x0) + (float(w) / 2.0)
+    marker_x = int(round(marker_xf))
+    try:
+        dr.rectangle([marker_x, int(y0), marker_x + 1, int(y0 + h - 1)], fill=(255, 255, 255, 230))
+    except Exception:
+        pass
+
     half_w = float(w) / 2.0
 
     slow_series = slow_vals if isinstance(slow_vals, list) else []

@@ -8,6 +8,9 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    filter_axis_labels_by_position,
+    format_value_for_step,
+    should_suppress_boundary_label,
     value_boundaries_to_y,
 )
 
@@ -164,8 +167,14 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                         darken_delta=6,
                     )
                     for vv in val_bounds:
-                        if vv >= -1e-9:
-                            axis_labels.append((int(_y_from_delta(float(vv))), f"{float(vv):.1f}"))
+                        if should_suppress_boundary_label(float(vv), 0.0, pos_max, suppress_zero=True):
+                            continue
+                        axis_labels.append(
+                            (
+                                int(_y_from_delta(float(vv))),
+                                format_value_for_step(float(vv), float(step), min_decimals=1, max_decimals=3),
+                            )
+                        )
             except Exception as e:
                 if hud_dbg:
                     try:
@@ -308,6 +317,17 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                     seg_pts.append((int(x), int(y)))
 
             _flush_segment()
+
+            axis_labels = filter_axis_labels_by_position(
+                axis_labels,
+                int(round(y_top)),
+                int(round(y_zero)),
+                zero_y=int(round(y_zero)),
+                pad_px=2,
+            )
+            if axis_labels:
+                y_top_label = min(int(y_px) for y_px, _txt in axis_labels)
+                axis_labels = [(int(y_px), str(txt)) for (y_px, txt) in axis_labels if int(y_px) != int(y_top_label)]
 
             # 5) Text (Y-Achse + Titel + aktueller Wert)
             draw_left_axis_labels(

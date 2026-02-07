@@ -11,7 +11,21 @@ COL_FAST_BRIGHTBLUE = (1, 253, 255, 255)
 COL_WHITE = (255, 255, 255, 255)
 COL_HUD_BG = (18, 18, 18, 96)
 
-ALLOWED_TICK_STEPS: tuple[float, ...] = (100.0, 10.0, 1.0, 0.5)
+ALLOWED_TICK_STEPS: tuple[float, ...] = (
+    100.0,
+    50.0,
+    20.0,
+    10.0,
+    5.0,
+    2.0,
+    1.0,
+    0.5,
+    0.2,
+    0.1,
+    0.05,
+    0.02,
+    0.01,
+)
 
 # HUD-name groups used by the orchestrator.
 SCROLL_HUD_NAMES: set[str] = {
@@ -215,10 +229,13 @@ def draw_left_axis_labels(
     if not labels:
         return
 
-    x_min = int(x0 + max(2, int(x_pad)))
+    x_min = int(x0 + max(4, int(x_pad)))
     x_max = int(x0 + w - 2)
-    y_min = int(y_top)
-    y_max = int(y_bottom)
+    y_min = int(y_top + 2)
+    y_max = int(y_bottom - 2)
+    if y_max <= y_min:
+        y_min = int(y_top)
+        y_max = int(y_bottom)
 
     for y_px, txt in labels:
         text = str(txt)
@@ -251,6 +268,71 @@ def format_int_or_1dp(v: float) -> str:
     if abs(vf - round(vf)) < 1e-6:
         return str(int(round(vf)))
     return f"{vf:.1f}"
+
+
+def should_suppress_boundary_label(
+    value: float,
+    v_min: float,
+    v_max: float,
+    suppress_zero: bool = False,
+) -> bool:
+    lo = float(min(v_min, v_max))
+    hi = float(max(v_min, v_max))
+    tol = max(1e-6, abs(hi - lo) * 1e-6)
+    vv = float(value)
+
+    if abs(vv - lo) <= tol:
+        return True
+    if abs(vv - hi) <= tol:
+        return True
+
+    if suppress_zero and (lo - tol) <= 0.0 <= (hi + tol) and abs(vv) <= tol:
+        return True
+
+    return False
+
+
+def format_value_for_step(value: float, step: float, min_decimals: int = 0, max_decimals: int = 4) -> str:
+    s = abs(float(step))
+    dec = 0
+    while dec < int(max_decimals):
+        scaled = s * (10 ** dec)
+        if abs(scaled - round(scaled)) <= 1e-6:
+            break
+        dec += 1
+    dec = max(int(min_decimals), min(int(max_decimals), int(dec)))
+
+    txt = f"{float(value):.{dec}f}"
+    if dec > int(min_decimals):
+        txt = txt.rstrip("0").rstrip(".")
+    if txt == "-0":
+        txt = "0"
+    return txt
+
+
+def filter_axis_labels_by_position(
+    labels: list[tuple[int, str]],
+    y_top: int,
+    y_bottom: int,
+    zero_y: int | None = None,
+    pad_px: int = 2,
+) -> list[tuple[int, str]]:
+    if not labels:
+        return []
+    y0 = int(min(y_top, y_bottom))
+    y1 = int(max(y_top, y_bottom))
+    out: list[tuple[int, str]] = []
+    tol = max(1, int(pad_px))
+    for y_px, txt in labels:
+        yy = int(y_px)
+        if abs(yy - y0) <= tol:
+            continue
+        if abs(yy - y1) <= tol:
+            continue
+        if zero_y is not None and abs(yy - int(zero_y)) <= tol:
+            continue
+        out.append((yy, str(txt)))
+    return out
 
 
 def value_boundaries_to_y(

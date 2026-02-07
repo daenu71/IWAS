@@ -10,7 +10,9 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    filter_axis_labels_by_position,
     format_int_or_1dp,
+    should_suppress_boundary_label,
     value_boundaries_to_y,
 )
 
@@ -103,7 +105,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 val_top = float(sn_top * deg_scale)
                 val_bot = float(sn_bot * deg_scale)
 
-                step = choose_tick_step(val_bot, val_top, min_segments=2, max_segments=5, target_segments=5)
+                tick_ref_max = max(abs(float(val_bot)), abs(float(val_top)))
+                step = choose_tick_step(0.0, tick_ref_max, min_segments=2, max_segments=5, target_segments=5)
                 if step is not None:
                     val_bounds = build_value_boundaries(val_bot, val_top, float(step), anchor="top")
                     y_bounds = value_boundaries_to_y(val_bounds, _y_from_deg, y_top_i, y_bot_i)
@@ -118,6 +121,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                         darken_delta=6,
                     )
                     for vv in val_bounds:
+                        if should_suppress_boundary_label(float(vv), val_bot, val_top, suppress_zero=True):
+                            continue
                         axis_labels.append((int(_y_from_deg(float(vv))), format_int_or_1dp(float(vv))))
             except Exception:
                 pass
@@ -173,7 +178,7 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                         except Exception:
                             return int(len(text) * 8)
     
-                y_txt = int(y0 + 2)  # gleiche HÃ¶he wie Titel
+                y_txt = int(y0 + 4)  # mehr Luft nach oben
                 title_pos = (int(x0 + 4), y_txt)
     
                 # Werte holen (Radiant -> Grad)
@@ -428,17 +433,25 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             if len(pts_f) >= 2:
                 dr.line(pts_f, fill=COL_FAST_DARKBLUE, width=2)  # fast = blau
 
+            axis_labels = filter_axis_labels_by_position(
+                axis_labels,
+                int(y0 + 4),
+                int(y0 + h - 5),
+                zero_y=int(round(mid_y)),
+                pad_px=2,
+            )
+
             # Story 10: Text zuletzt (Y-Achse, Titel, Werte).
             draw_left_axis_labels(
                 dr,
                 int(x0),
                 int(w),
-                int(y0),
-                int(y0 + h - 1),
+                int(y0 + 4),
+                int(y0 + h - 5),
                 axis_labels,
                 font_axis,
                 col_text=COL_WHITE,
-                x_pad=6,
+                x_pad=8,
                 fallback_font_obj=font_axis_small,
             )
             if title_pos is not None:
@@ -458,7 +471,7 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                     font=font_val,
                 )  # Slow (blau) rechts am Marker
         except Exception:
-            pass
+            return
     
     
             pts_target = int(hud_curve_points_default or 180)

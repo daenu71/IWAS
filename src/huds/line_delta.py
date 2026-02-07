@@ -9,6 +9,9 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    filter_axis_labels_by_position,
+    format_value_for_step,
+    should_suppress_boundary_label,
     value_boundaries_to_y,
 )
 
@@ -129,7 +132,8 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
     # Story 10: 5 Segmente, symmetrisch um 0.
     axis_labels: list[tuple[int, str]] = []
     try:
-        step = choose_tick_step(y_min_m, y_max_m, min_segments=2, max_segments=5, target_segments=5)
+        tick_ref_max = max(abs(float(y_min_m)), abs(float(y_max_m)))
+        step = choose_tick_step(0.0, tick_ref_max, min_segments=2, max_segments=5, target_segments=5)
         if step is not None:
             val_bounds = build_value_boundaries(y_min_m, y_max_m, float(step), anchor="top")
             y_bounds = value_boundaries_to_y(val_bounds, _y_from_m, int(plot_y0), int(plot_y1))
@@ -144,7 +148,9 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
                 darken_delta=6,
             )
             for vv in val_bounds:
-                axis_labels.append((int(_y_from_m(float(vv))), f"{float(vv):.1f}"))
+                if should_suppress_boundary_label(float(vv), y_min_m, y_max_m, suppress_zero=True):
+                    continue
+                axis_labels.append((int(_y_from_m(float(vv))), format_value_for_step(float(vv), float(step), min_decimals=0)))
     except Exception:
         pass
 
@@ -154,6 +160,14 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
         dr.line([(int(x0), y_zero), (int(x0 + w - 1), y_zero)], fill=COL_WHITE, width=1)
     except Exception:
         pass
+
+    axis_labels = filter_axis_labels_by_position(
+        axis_labels,
+        int(plot_y0),
+        int(plot_y1),
+        zero_y=int(y_zero),
+        pad_px=2,
+    )
 
     # Kurve (blau): X-Mapping strikt ueber Frame-Offset relativ zum Marker.
     half_w = float(w) / 2.0
