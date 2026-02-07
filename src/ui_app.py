@@ -15,6 +15,15 @@ import sys
 import cv2
 from PIL import Image, ImageTk
 
+from core.models import (
+    AppModel,
+    HudLayoutState,
+    OutputFormat,
+    PngViewState,
+    Profile,
+    RenderPayload,
+)
+
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
 
@@ -474,6 +483,67 @@ def main() -> None:
         hud_default = 320
     hud_width_var = tk.IntVar(value=max(0, hud_default))
 
+    # --- Mapping-Layer (Story 2): UI-State <-> zentrale Modelle ---
+    app_model = AppModel()
+
+    def model_from_ui_state() -> AppModel:
+        return AppModel(
+            output=OutputFormat(
+                aspect=str(out_aspect_var.get()),
+                preset=str(out_preset_var.get()),
+                quality=str(out_quality_var.get()),
+                hud_width_px=int(get_hud_width_px()),
+            ),
+            hud_layout=HudLayoutState(hud_layout_data=hud_layout_data),
+            png_view=PngViewState(png_view_data=png_view_data),
+        )
+
+    def apply_model_to_ui_state(model: AppModel) -> None:
+        nonlocal hud_layout_data, png_view_data, app_model
+        if not isinstance(model, AppModel):
+            return
+        app_model = model
+        try:
+            out_aspect_var.set(str(model.output.aspect))
+        except Exception:
+            pass
+        try:
+            out_preset_var.set(str(model.output.preset))
+        except Exception:
+            pass
+        try:
+            out_quality_var.set(str(model.output.quality))
+        except Exception:
+            pass
+        try:
+            hud_width_var.set(max(0, int(model.output.hud_width_px)))
+        except Exception:
+            pass
+        if isinstance(model.hud_layout.hud_layout_data, dict):
+            hud_layout_data = model.hud_layout.hud_layout_data
+        if isinstance(model.png_view.png_view_data, dict):
+            png_view_data = model.png_view.png_view_data
+
+    def profile_model_from_ui_state(
+        videos_names: list[str],
+        csv_names: list[str],
+        starts: dict[str, int],
+        ends: dict[str, int],
+    ) -> Profile:
+        m = model_from_ui_state()
+        return Profile(
+            version=1,
+            videos=videos_names,
+            csvs=csv_names,
+            startframes=starts,
+            endframes=ends,
+            output=m.output,
+            hud_layout_data=m.hud_layout.hud_layout_data,
+            png_view_data=m.png_view.png_view_data,
+        )
+
+    apply_model_to_ui_state(model_from_ui_state())
+
     ttk.Label(frame_settings, text="HUD-Breite (px):").grid(row=5, column=0, sticky="w", padx=10, pady=2)
     spn_hud = ttk.Spinbox(frame_settings, from_=0, to=10000, width=10, textvariable=hud_width_var)
     spn_hud.grid(row=5, column=1, sticky="w", padx=10, pady=2)
@@ -878,6 +948,7 @@ def main() -> None:
         return
         
     def build_profile_dict() -> dict:
+        nonlocal app_model
         vnames: list[str] = []
         cnames: list[str] = []
 
@@ -906,25 +977,16 @@ def main() -> None:
             except Exception:
                 ends[n] = 0
 
-        d = {
-            "version": 1,
-            "videos": vnames,
-            "csvs": cnames,
-            "startframes": starts,
-            "endframes": ends,
-            "output": {
-                "aspect": str(out_aspect_var.get()),
-                "preset": str(out_preset_var.get()),
-                "quality": str(out_quality_var.get()),
-                "hud_width_px": str(get_hud_width_px()),
-            },
-            "hud_layout_data": hud_layout_data,
-            "png_view_data": png_view_data,
-        }
-        return d
+        profile = profile_model_from_ui_state(vnames, cnames, starts, ends)
+        app_model = AppModel(
+            output=profile.output,
+            hud_layout=HudLayoutState(hud_layout_data=profile.hud_layout_data),
+            png_view=PngViewState(png_view_data=profile.png_view_data),
+        )
+        return profile.to_dict()
 
     def apply_profile_dict(d: dict) -> None:
-        nonlocal videos, csvs, hud_layout_data, png_view_data, last_scan_sig
+        nonlocal videos, csvs, hud_layout_data, png_view_data, last_scan_sig, app_model
 
         if not isinstance(d, dict):
             return
@@ -981,6 +1043,9 @@ def main() -> None:
                 save_png_view(png_view_data)
             except Exception:
                 pass
+
+        # Mapping-Layer: aktuellen UI-Zustand zentral ins Modell spiegeln
+        app_model = model_from_ui_state()
 
         # Start/Endframes mergen und speichern
         sf = d.get("startframes")
@@ -2835,6 +2900,7 @@ def main() -> None:
             return 0.0
 
     def generate_compare_video() -> None:
+        nonlocal app_model
         if len(videos) != 2:
             lbl_loaded.config(text="Video: Bitte genau 2 Videos wählen")
             return
@@ -2959,6 +3025,7 @@ def main() -> None:
         _add_pts_override("Line Delta", "line_delta")
         _add_pts_override("Under-/Oversteer", "under_oversteer")
 
+        app_model = model_from_ui_state()
         payload = {
             "version": 1,
             "videos": vnames,
@@ -3004,9 +3071,28 @@ def main() -> None:
             "png_view_key": "",
             "png_view_state": {"L": {}, "R": {}},
             # Gesamt-States (für Profil / Zukunft)
-            "hud_layout_data": hud_layout_data,
-            "png_view_data": png_view_data,
+            "hud_layout_data": app_model.hud_layout.hud_layout_data,
+            "png_view_data": app_model.png_view.png_view_data,
         }
+        payload = RenderPayload(
+            version=payload.get("version", 1),
+            videos=payload.get("videos", []),
+            csvs=payload.get("csvs", []),
+            slow_video=payload.get("slow_video", ""),
+            fast_video=payload.get("fast_video", ""),
+            out_video=payload.get("out_video", ""),
+            output=OutputFormat.from_dict(payload.get("output") if isinstance(payload.get("output"), dict) else {}),
+            hud_enabled=payload.get("hud_enabled", {}),
+            hud_boxes=payload.get("hud_boxes", {}),
+            hud_window=payload.get("hud_window", {}),
+            hud_speed=payload.get("hud_speed", {}),
+            hud_curve_points=payload.get("hud_curve_points", {}),
+            hud_gear_rpm=payload.get("hud_gear_rpm", {}),
+            png_view_key=payload.get("png_view_key", ""),
+            png_view_state=payload.get("png_view_state", {"L": {}, "R": {}}),
+            hud_layout_data=payload.get("hud_layout_data", {}),
+            png_view_data=payload.get("png_view_data", {}),
+        ).to_dict()
 
         # Aktuelle HUD-Boxen einsammeln
         try:
