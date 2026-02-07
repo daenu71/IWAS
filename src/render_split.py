@@ -247,6 +247,65 @@ class OutputGeometry:
     fast_out_y: int
 
 
+@dataclass(frozen=True)
+class HudSyncMapping:
+    slow_frame_to_lapdist: list[float]
+    slow_to_fast_frame: list[int] | None = None
+    slow_frame_to_fast_time_s: list[float] | None = None
+
+
+@dataclass(frozen=True)
+class HudSignals:
+    slow_speed_frames: list[float] | None = None
+    fast_speed_frames: list[float] | None = None
+    slow_min_speed_frames: list[float] | None = None
+    fast_min_speed_frames: list[float] | None = None
+    slow_gear_frames: list[int] | None = None
+    fast_gear_frames: list[int] | None = None
+    slow_rpm_frames: list[float] | None = None
+    fast_rpm_frames: list[float] | None = None
+    slow_steer_frames: list[float] | None = None
+    fast_steer_frames: list[float] | None = None
+    slow_throttle_frames: list[float] | None = None
+    fast_throttle_frames: list[float] | None = None
+    slow_brake_frames: list[float] | None = None
+    fast_brake_frames: list[float] | None = None
+    slow_abs_frames: list[int] | None = None
+    fast_abs_frames: list[int] | None = None
+
+
+@dataclass(frozen=True)
+class HudWindowParams:
+    before_s: float = 10.0
+    after_s: float = 10.0
+    hud_name: str | None = None
+    hud_windows: Any | None = None
+
+
+@dataclass(frozen=True)
+class HudRenderSettings:
+    speed_units: str = "kmh"
+    speed_update_hz: int = 60
+    gear_rpm_update_hz: int = 60
+    curve_points_default: int = 180
+    curve_points_overrides: Any | None = None
+
+
+@dataclass(frozen=True)
+class HudContext:
+    fps: float
+    cut_i0: int
+    cut_i1: int
+    geom: OutputGeometry
+    hud_enabled: Any | None
+    hud_boxes: Any | None
+    sync: HudSyncMapping
+    signals: HudSignals
+    window: HudWindowParams
+    settings: HudRenderSettings
+    log_file: Path | None = None
+
+
 def parse_output_preset(preset: str) -> tuple[int, int]:
     s = (preset or "").strip().lower()
     if "x" not in s:
@@ -1242,8 +1301,8 @@ def _ffmpeg_escape_path(p: "Path") -> str:
     s = s.replace(":", "\\:")
     return s
 
-def _render_hud_scroll_frames_png(
-    out_dir: Path,
+
+def _build_hud_context(
     *,
     fps: float,
     cut_i0: int,
@@ -1251,40 +1310,77 @@ def _render_hud_scroll_frames_png(
     geom: OutputGeometry,
     hud_enabled: Any | None,
     hud_boxes: Any | None,
-    slow_frame_to_lapdist: list[float],
-    hud_gear_rpm_update_hz: int = 60,
-    slow_frame_to_fast_time_s: list[float] | None = None,
-    slow_to_fast_frame: list[int] | None = None,
-    hud_curve_points_default: int = 180,
-    hud_curve_points_overrides: Any | None = None,
-    slow_speed_frames: list[float] | None = None,
-    fast_speed_frames: list[float] | None = None,
-    slow_min_speed_frames: list[float] | None = None,
-    fast_min_speed_frames: list[float] | None = None,
-    slow_gear_frames: list[int] | None = None,
-    fast_gear_frames: list[int] | None = None,
-    slow_rpm_frames: list[float] | None = None,
-    fast_rpm_frames: list[float] | None = None,
-    slow_steer_frames: list[float] | None = None,
-    fast_steer_frames: list[float] | None = None,
-    before_s: float = 10.0,
-    after_s: float = 10.0,
-    slow_throttle_frames: list[float] | None = None,
-    fast_throttle_frames: list[float] | None = None,
-    slow_brake_frames: list[float] | None = None,
-    fast_brake_frames: list[float] | None = None,
-    slow_abs_frames: list[int] | None = None,
-    fast_abs_frames: list[int] | None = None,
-    hud_speed_units: str = "kmh",
-    hud_speed_update_hz: int = 60,
-    hud_name: str | None = None,
-    hud_windows: Any | None = None,
+    sync: HudSyncMapping,
+    signals: HudSignals,
+    window: HudWindowParams,
+    settings: HudRenderSettings,
     log_file: Path | None = None,
+) -> HudContext:
+    return HudContext(
+        fps=float(fps),
+        cut_i0=int(cut_i0),
+        cut_i1=int(cut_i1),
+        geom=geom,
+        hud_enabled=hud_enabled,
+        hud_boxes=hud_boxes,
+        sync=sync,
+        signals=signals,
+        window=window,
+        settings=settings,
+        log_file=log_file,
+    )
+
+
+def _render_hud_scroll_frames_png(
+    out_dir: Path,
+    ctx: HudContext,
 ) -> str | None:
     """
     Rendert pro Frame eine PNG (transparent) für die HUD-Spalte (geom.hud x geom.H).
     Gibt ffmpeg-Pattern zurück: ".../hud_%06d.png" oder None.
     """
+    fps = float(ctx.fps)
+    cut_i0 = int(ctx.cut_i0)
+    cut_i1 = int(ctx.cut_i1)
+    geom = ctx.geom
+    hud_enabled = ctx.hud_enabled
+    hud_boxes = ctx.hud_boxes
+
+    slow_frame_to_lapdist = ctx.sync.slow_frame_to_lapdist
+    slow_to_fast_frame = ctx.sync.slow_to_fast_frame
+    slow_frame_to_fast_time_s = ctx.sync.slow_frame_to_fast_time_s
+
+    slow_speed_frames = ctx.signals.slow_speed_frames
+    fast_speed_frames = ctx.signals.fast_speed_frames
+    slow_min_speed_frames = ctx.signals.slow_min_speed_frames
+    fast_min_speed_frames = ctx.signals.fast_min_speed_frames
+    slow_gear_frames = ctx.signals.slow_gear_frames
+    fast_gear_frames = ctx.signals.fast_gear_frames
+    slow_rpm_frames = ctx.signals.slow_rpm_frames
+    fast_rpm_frames = ctx.signals.fast_rpm_frames
+    slow_steer_frames = ctx.signals.slow_steer_frames
+    fast_steer_frames = ctx.signals.fast_steer_frames
+    slow_throttle_frames = ctx.signals.slow_throttle_frames
+    fast_throttle_frames = ctx.signals.fast_throttle_frames
+    slow_brake_frames = ctx.signals.slow_brake_frames
+    fast_brake_frames = ctx.signals.fast_brake_frames
+    slow_abs_frames = ctx.signals.slow_abs_frames
+    fast_abs_frames = ctx.signals.fast_abs_frames
+
+    before_s = float(ctx.window.before_s)
+    after_s = float(ctx.window.after_s)
+    hud_name = ctx.window.hud_name
+    hud_windows = ctx.window.hud_windows
+
+    hud_speed_units = str(ctx.settings.speed_units)
+    hud_speed_update_hz = int(ctx.settings.speed_update_hz)
+    hud_gear_rpm_update_hz = int(ctx.settings.gear_rpm_update_hz)
+    hud_curve_points_default = int(ctx.settings.curve_points_default)
+    hud_curve_points_overrides = ctx.settings.curve_points_overrides
+
+    log_file = ctx.log_file
+    _ = hud_name
+
     try:
         from PIL import Image, ImageDraw
     except Exception as e:
@@ -3116,44 +3212,52 @@ def render_split_screen_sync(
             af = max(1, int(round(float(a) * r)))
             _log_print(f"[hudpy] hud={hud_name} before_s={b} after_s={a} frames={bf+af+1}", log_file)
 
-        hud_seq_pattern = _render_hud_scroll_frames_png(
-            hud_frames_dir,
+        hud_ctx = _build_hud_context(
             fps=float(fps_int),
             cut_i0=int(cut_i0),
             cut_i1=int(cut_i1),
             geom=geom,
             hud_enabled=hud_enabled,
             hud_boxes=hud_boxes,
-            slow_frame_to_lapdist=slow_frame_to_lapdist,
-            slow_to_fast_frame=frame_map,
-            slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
-            slow_speed_frames=slow_speed_frames,
-            fast_speed_frames=fast_speed_frames,
-            slow_min_speed_frames=slow_min_speed_frames,
-            fast_min_speed_frames=fast_min_speed_frames,
-            hud_speed_units=str(hud_speed_units),
-            hud_speed_update_hz=int(hud_speed_update_hz),
-            slow_gear_frames=slow_gear_frames,
-            fast_gear_frames=fast_gear_frames,
-            slow_rpm_frames=slow_rpm_frames,
-            fast_rpm_frames=fast_rpm_frames,
-            slow_steer_frames=slow_steer_frames,
-            fast_steer_frames=fast_steer_frames,
-            hud_curve_points_default=int(hud_curve_points_default),
-            hud_gear_rpm_update_hz=int(hud_gear_rpm_update_hz),
-            slow_throttle_frames=slow_throttle_frames,
-            fast_throttle_frames=fast_throttle_frames,
-            slow_brake_frames=slow_brake_frames,
-            fast_brake_frames=fast_brake_frames,
-            slow_abs_frames=slow_abs_frames,
-            fast_abs_frames=fast_abs_frames,
-            hud_curve_points_overrides=hud_curve_points_overrides,
-            before_s=float(before_default_s),
-            after_s=float(after_default_s),
-            hud_name=None,
-            hud_windows=hud_windows,
+            sync=HudSyncMapping(
+                slow_frame_to_lapdist=slow_frame_to_lapdist,
+                slow_to_fast_frame=frame_map,
+                slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
+            ),
+            signals=HudSignals(
+                slow_speed_frames=slow_speed_frames,
+                fast_speed_frames=fast_speed_frames,
+                slow_min_speed_frames=slow_min_speed_frames,
+                fast_min_speed_frames=fast_min_speed_frames,
+                slow_gear_frames=slow_gear_frames,
+                fast_gear_frames=fast_gear_frames,
+                slow_rpm_frames=slow_rpm_frames,
+                fast_rpm_frames=fast_rpm_frames,
+                slow_steer_frames=slow_steer_frames,
+                fast_steer_frames=fast_steer_frames,
+                slow_throttle_frames=slow_throttle_frames,
+                fast_throttle_frames=fast_throttle_frames,
+                slow_brake_frames=slow_brake_frames,
+                fast_brake_frames=fast_brake_frames,
+                slow_abs_frames=slow_abs_frames,
+                fast_abs_frames=fast_abs_frames,
+            ),
+            window=HudWindowParams(
+                before_s=float(before_default_s),
+                after_s=float(after_default_s),
+                hud_name=None,
+                hud_windows=hud_windows,
+            ),
+            settings=HudRenderSettings(
+                speed_units=str(hud_speed_units),
+                speed_update_hz=int(hud_speed_update_hz),
+                gear_rpm_update_hz=int(hud_gear_rpm_update_hz),
+                curve_points_default=int(hud_curve_points_default),
+                curve_points_overrides=hud_curve_points_overrides,
+            ),
             log_file=log_file,
         )
+        hud_seq_pattern = _render_hud_scroll_frames_png(hud_frames_dir, hud_ctx)
         
         if hud_seq_pattern:
             _log_print(f"[hudpy] ON -> {hud_seq_pattern}", log_file)
