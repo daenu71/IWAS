@@ -1,0 +1,308 @@
+﻿from __future__ import annotations
+
+from typing import Any
+
+
+def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
+    x0, y0, w, h = box
+    hud_key = ctx["hud_key"]
+    fps = float(ctx["fps"])
+    i = int(ctx["i"])
+    iL = int(ctx["iL"])
+    iR = int(ctx["iR"])
+    mx = int(ctx["mx"])
+    _idx_to_x = ctx["_idx_to_x"]
+    slow_frame_to_fast_time_s = ctx["slow_frame_to_fast_time_s"]
+    delta_has_neg = bool(ctx["delta_has_neg"])
+    delta_pos_max = float(ctx["delta_pos_max"])
+    delta_neg_min = float(ctx["delta_neg_min"])
+    hud_curve_points_default = int(ctx["hud_curve_points_default"])
+    hud_curve_points_overrides = ctx["hud_curve_points_overrides"]
+    hud_dbg = bool(ctx["hud_dbg"])
+    _log_print = ctx["_log_print"]
+    log_file = ctx["log_file"]
+    COL_WHITE = ctx["COL_WHITE"]
+    COL_SLOW_DARKRED = ctx["COL_SLOW_DARKRED"]
+    COL_FAST_DARKBLUE = ctx["COL_FAST_DARKBLUE"]
+
+    # Story 7: Delta (Time delta) HUD
+    if hud_key == "Delta":
+        try:
+            # Fonts
+            try:
+                from PIL import ImageFont
+            except Exception:
+                ImageFont = None  # type: ignore
+    
+            font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+            font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+    
+            def _load_font(sz: int):
+                if ImageFont is None:
+                    return None
+                try:
+                    return ImageFont.truetype("arial.ttf", sz)
+                except Exception:
+                    pass
+                try:
+                    return ImageFont.truetype("DejaVuSans.ttf", sz)
+                except Exception:
+                    pass
+                try:
+                    return ImageFont.load_default()
+                except Exception:
+                    return None
+    
+            font_title = _load_font(font_sz)
+            font_val = _load_font(font_val_sz)
+    
+            # Text oben: reservierter Bereich (Headroom)
+            top_pad = int(round(max(14.0, float(font_sz) + 8.0)))
+            plot_y0 = int(y0) + top_pad
+            plot_y1 = int(y0 + h - 2)
+    
+            if plot_y1 <= plot_y0 + 4:
+                plot_y0 = int(y0) + 2
+                plot_y1 = int(y0 + h - 2)
+    
+            # Titel
+            try:
+                dr.text((int(x0 + 4), int(y0 + 2)), "Time delta", fill=COL_WHITE, font=font_title)
+            except Exception as e:
+                if hud_dbg:
+                    try:
+                        _log_print(f"[hudpy][Delta][EXC][title] {type(e).__name__}: {e}", log_file)
+                    except Exception:
+                        pass
+    
+            # Delta-Funktion (aus Sync-Map)
+            def _delta_at_slow_frame(idx0: int) -> float:
+                fps_safe = float(fps) if float(fps) > 0.1 else 30.0
+                if not slow_frame_to_fast_time_s:
+                    return 0.0
+                if idx0 < 0:
+                    idx0 = 0
+                if idx0 >= len(slow_frame_to_fast_time_s):
+                    idx0 = len(slow_frame_to_fast_time_s) - 1
+                slow_t = float(idx0) / fps_safe
+                fast_t = float(slow_frame_to_fast_time_s[idx0])
+                return float(slow_t - fast_t)
+    
+            # Y-Skalierung wie gewÃ¼nscht:
+            # - wenn kein negatives Delta: 0-Linie unten, nur positive Skala
+            # - wenn negatives Delta vorhanden: 0-Linie zwischen min_neg und max_pos
+            y_top = float(plot_y0)
+            y_bot = float(plot_y1)
+            span = max(10.0, (y_bot - y_top))
+    
+            if not delta_has_neg:
+                y_zero = y_bot  # 0s ganz unten
+                pos_span = max(4.0, (y_zero - y_top))
+    
+                def _y_from_delta(dsec: float) -> int:
+                    d = float(dsec)
+                    if d < 0.0:
+                        d = 0.0
+                    if d > float(delta_pos_max):
+                        d = float(delta_pos_max)
+                    yy = y_zero - (d / float(delta_pos_max)) * pos_span
+                    return int(round(yy))
+            else:
+                # min_neg ist negativ, range_neg = abs(min_neg)
+                range_neg = float(abs(delta_neg_min))
+                range_pos = float(delta_pos_max)
+                total = max(1e-6, (range_neg + range_pos))
+    
+                # 0-Linie so, dass oben Platz fÃ¼r +Delta und unten fÃ¼r -Delta bleibt
+                y_zero = y_top + (range_pos / total) * span
+                y_zero = max(y_top + 2.0, min(y_bot - 2.0, y_zero))
+    
+                pos_span = max(4.0, (y_zero - y_top))
+                neg_span = max(4.0, (y_bot - y_zero))
+    
+                def _y_from_delta(dsec: float) -> int:
+                    d = float(dsec)
+                    if d >= 0.0:
+                        if d > range_pos:
+                            d = range_pos
+                        yy = y_zero - (d / range_pos) * pos_span
+                    else:
+                        ad = abs(d)
+                        if ad > range_neg:
+                            ad = range_neg
+                        yy = y_zero + (ad / range_neg) * neg_span
+                    return int(round(yy))
+    
+            # 0-Linie (rot)
+            try:
+                y_mid = int(round(y_zero))
+                dr.line(
+                    [(int(x0), y_mid), (int(x0 + w - 1), y_mid)],
+                    fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
+                    width=1,
+                )
+            except Exception as e:
+                if hud_dbg:
+                    try:
+                        _log_print(f"[hudpy][Delta][EXC][zero_line] {type(e).__name__}: {e}", log_file)
+                    except Exception:
+                        pass
+    
+            # Aktueller Wert oberhalb Marker (stabile Breite, Vorzeichen immer)
+            try:
+                d_cur = float(_delta_at_slow_frame(int(i)))
+                col_cur = COL_FAST_DARKBLUE if d_cur >= 0.0 else COL_SLOW_DARKRED
+    
+                placeholder = "+999.999s"
+                try:
+                    bb = dr.textbbox((0, 0), placeholder, font=font_val)
+                    w_fix = int(bb[2] - bb[0])
+                except Exception:
+                    w_fix = int(len(placeholder) * max(6, int(font_val_sz * 0.6)))
+    
+                # 1 Zeichen Abstand zum Marker
+                x_val = int(mx) - 6 - int(w_fix)
+                y_val = int(y0 + 2)
+    
+                txt = f"{d_cur:+.3f}s"
+                if len(txt) < len(placeholder):
+                    txt = txt.rjust(len(placeholder), " ")
+    
+                dr.text((x_val, y_val), txt, fill=col_cur, font=font_val)
+            except Exception as e:
+                if hud_dbg:
+                    try:
+                        _log_print(f"[hudpy][Delta][EXC][value_text] {type(e).__name__}: {e}", log_file)
+                    except Exception:
+                        pass
+    
+            # Kurve: Anzahl Punkte aus Override, ohne 600-Cap, bis zur HUD-Breite
+            span_n = max(1, int(iR) - int(iL))
+            pts_target = int(hud_curve_points_default or 180)
+            try:
+                ovs = hud_curve_points_overrides if isinstance(hud_curve_points_overrides, dict) else None
+                if ovs and hud_key in ovs:
+                    pts_target = int(float(ovs.get(hud_key) or pts_target))
+            except Exception as e:
+                if hud_dbg:
+                    try:
+                        _log_print(f"[hudpy][Delta][EXC][curve_points] {type(e).__name__}: {e}", log_file)
+                    except Exception:
+                        pass
+    
+            if pts_target < 10:
+                pts_target = 10
+    
+            max_pts = max(10, min(int(w), int(pts_target)))
+            stride = max(1, int(round(float(span_n) / float(max_pts))))
+    
+            # Debug: Warum wird ggf. keine Kurve sichtbar?
+            if hud_dbg:
+                try:
+                    _log_print(
+                        (
+                            f"[hudpy][Delta] i={int(i)} iL={int(iL)} iR={int(iR)} "
+                            f"span_n={int(span_n)} w={int(w)} pts_target={int(pts_target)} "
+                            f"max_pts={int(max_pts)} stride={int(stride)}"
+                        ),
+                        log_file,
+                    )
+                    _log_print(
+                        (
+                            f"[hudpy][Delta] pos_max={float(delta_pos_max):.6f}s "
+                            f"neg_min={float(delta_neg_min):.6f}s has_neg={bool(delta_has_neg)}"
+                        ),
+                        log_file,
+                    )
+                    _log_print(
+                        f"[hudpy][Delta] sync_len={0 if not slow_frame_to_fast_time_s else len(slow_frame_to_fast_time_s)}",
+                        log_file,
+                    )
+                    dL = float(_delta_at_slow_frame(int(iL)))
+                    dC = float(_delta_at_slow_frame(int(i)))
+                    dR = float(_delta_at_slow_frame(int(iR)))
+                    _log_print(
+                        f"[hudpy][Delta] samples: dL={dL:+.6f}s dC={dC:+.6f}s dR={dR:+.6f}s",
+                        log_file,
+                    )
+                except Exception as e:
+                    try:
+                        _log_print(f"[hudpy][Delta][EXC][dbg] {type(e).__name__}: {e}", log_file)
+                    except Exception:
+                        pass
+    
+            idxs = []
+            k = int(i)
+            while k >= int(iL):
+                idxs.append(k)
+                k -= int(stride)
+            k = int(i) + int(stride)
+            while k <= int(iR):
+                idxs.append(k)
+                k += int(stride)
+    
+            idxs = sorted(set(idxs))
+            if idxs:
+                if idxs[0] != int(iL):
+                    idxs.insert(0, int(iL))
+                if idxs[-1] != int(iR):
+                    idxs.append(int(iR))
+            else:
+                idxs = [int(iL), int(i), int(iR)]
+    
+            # Segmente nach Vorzeichen einfÃ¤rben (blau >=0, rot <0)
+            seg_pts = []
+            seg_col = COL_FAST_DARKBLUE
+    
+            def _flush_segment():
+                nonlocal seg_pts, seg_col
+                if len(seg_pts) >= 2:
+                    try:
+                        dr.line(seg_pts, fill=seg_col, width=2)
+                    except Exception as e:
+                        if hud_dbg:
+                            try:
+                                _log_print(f"[hudpy][Delta][EXC][segment_line] {type(e).__name__}: {e}", log_file)
+                            except Exception:
+                                pass
+                seg_pts = []
+    
+            last_sign = None
+    
+            for idx in idxs:
+                if idx < int(iL) or idx > int(iR):
+                    continue
+    
+                x = int(round(_idx_to_x(int(idx))))
+                dsec = float(_delta_at_slow_frame(int(idx)))
+                y = int(round(_y_from_delta(float(dsec))))
+    
+                sign = 1 if dsec >= 0.0 else -1
+                col = COL_FAST_DARKBLUE if sign >= 0 else COL_SLOW_DARKRED
+    
+                if last_sign is None:
+                    last_sign = sign
+                    seg_col = col
+    
+                if sign != last_sign:
+                    _flush_segment()
+                    seg_col = col
+                    last_sign = sign
+    
+                # Punktaufbereitung wie Steering: pro X nur ein Punkt (letzter gewinnt)
+                if seg_pts and int(seg_pts[-1][0]) == int(x):
+                    seg_pts[-1] = (int(x), int(y))
+                else:
+                    seg_pts.append((int(x), int(y)))
+    
+            _flush_segment()
+    
+        except Exception as e:
+            try:
+                _log_print(
+                    f"[hudpy][Delta][EXC][draw] {type(e).__name__}: {e}",
+                    log_file,
+                )
+            except Exception:
+                pass
+    
