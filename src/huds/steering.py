@@ -433,6 +433,13 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             if len(pts_f) >= 2:
                 dr.line(pts_f, fill=COL_FAST_DARKBLUE, width=2)  # fast = blau
 
+            # Vertical center marker: draw after curves, before text.
+            mx = int(x0 + (w // 2))
+            try:
+                dr.rectangle([int(mx), int(y0), int(mx + 1), int(y0 + h)], fill=(255, 255, 255, 230))
+            except Exception:
+                pass
+
             axis_labels = filter_axis_labels_by_position(
                 axis_labels,
                 int(y0 + 4),

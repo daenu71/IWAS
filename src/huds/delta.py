@@ -318,6 +318,12 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
 
             _flush_segment()
 
+            # Vertical center marker: draw after curve segments, before text.
+            try:
+                dr.rectangle([int(mx), int(y0), int(mx + 1), int(y0 + h)], fill=(255, 255, 255, 230))
+            except Exception:
+                pass
+
             axis_labels = filter_axis_labels_by_position(
                 axis_labels,
                 int(round(y_top)),

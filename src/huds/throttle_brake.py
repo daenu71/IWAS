@@ -365,6 +365,12 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
             _draw_abs_segments(int(y_abs_s + abs_h // 2), COL_SLOW_BRAKE, _abs_val_s)
             _draw_abs_segments(int(y_abs_f + abs_h // 2), COL_FAST_BRAKE, _abs_val_f)
 
+            # Vertical center marker: draw after curves/segments, before text.
+            try:
+                dr.rectangle([int(mx0), int(y0), int(mx0 + 1), int(y0 + h)], fill=(255, 255, 255, 230))
+            except Exception:
+                pass
+
             # Story 10: Text zuletzt (Y-Achse + Titel + Werte).
             draw_left_axis_labels(
                 dr,
