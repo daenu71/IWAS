@@ -904,6 +904,36 @@ def _build_under_oversteer_proxy_frames_from_csv(
                 return hdg, j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, hdg
             return float(last_heading), j_t0x_out, j_t0y_out, j_t1x_out, j_t1y_out, float(last_heading)
 
+        def _seed_initial_heading(
+            ts_xy: list[float],
+            xs: list[float],
+            ys: list[float],
+            t_min: float,
+            t_max: float,
+        ) -> float | None:
+            j_t0x = 0
+            j_t0y = 0
+            j_t1x = 0
+            j_t1y = 0
+            for t_query in ts_xy:
+                t0 = _clamp(float(t_query) - dt, t_min, t_max)
+                t1 = _clamp(float(t_query) + dt, t_min, t_max)
+                if t1 <= t0:
+                    t0 = _clamp(float(t_query) - (2.0 * dt), t_min, t_max)
+                    t1 = _clamp(float(t_query) + (2.0 * dt), t_min, t_max)
+
+                x0, j_t0x = _interp_linear_clamped_time(ts_xy, xs, t0, j_t0x)
+                y0, j_t0y = _interp_linear_clamped_time(ts_xy, ys, t0, j_t0y)
+                x1, j_t1x = _interp_linear_clamped_time(ts_xy, xs, t1, j_t1x)
+                y1, j_t1y = _interp_linear_clamped_time(ts_xy, ys, t1, j_t1y)
+
+                dx = float(x1 - x0)
+                dy = float(y1 - y0)
+                nrm = math.hypot(dx, dy)
+                if nrm >= heading_eps_m:
+                    return float(math.atan2(dy, dx))
+            return None
+
         slow_err_wrapped: list[float] = []
         fast_err_wrapped: list[float] = []
 
@@ -918,8 +948,10 @@ def _build_under_oversteer_proxy_frames_from_csv(
         j_f_t1x = 0
         j_f_t1y = 0
 
-        last_hdg_s = 0.0
-        last_hdg_f = 0.0
+        seed_hdg_s = _seed_initial_heading(t_s_xy, x_s, y_s, t_s_min, t_s_max)
+        seed_hdg_f = _seed_initial_heading(t_f_xy, x_f, y_f, t_f_min, t_f_max)
+        last_hdg_s = float(seed_hdg_s) if (seed_hdg_s is not None and _is_finite_float(seed_hdg_s)) else 0.0
+        last_hdg_f = float(seed_hdg_f) if (seed_hdg_f is not None and _is_finite_float(seed_hdg_f)) else 0.0
         last_t_fast = 0.0
 
         n_map = len(slow_frame_to_fast_time_s)
