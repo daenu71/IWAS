@@ -127,12 +127,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             except Exception:
                 pass
      
-            # 0-Lenkung Mittellinie
-            try:
-                y_mid = int(round(mid_y))
-                dr.line([(int(x0), y_mid), (int(x0 + w - 1), y_mid)], fill=(COL_WHITE[0], COL_WHITE[1], COL_WHITE[2], 180), width=1)
-            except Exception:
-                pass
+            # 0-Lenkung Mittellinie (Linie spaeter zeichnen).
+            y_mid = int(round(mid_y))
     
             # Titel oben links + Werte am Marker (grÃ¶ÃŸer, gleiche HÃ¶he, stabil formatiert)
             try:
@@ -432,6 +428,16 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 dr.line(pts_s, fill=COL_SLOW_DARKRED, width=2)   # slow = rot
             if len(pts_f) >= 2:
                 dr.line(pts_f, fill=COL_FAST_DARKBLUE, width=2)  # fast = blau
+
+            # 0-Lenkung Mittellinie: nach den Kurven, damit sie durchgehend bleibt.
+            try:
+                dr.line(
+                    [(int(x0), int(y_mid)), (int(x0 + w - 1), int(y_mid))],
+                    fill=(COL_WHITE[0], COL_WHITE[1], COL_WHITE[2], 180),
+                    width=1,
+                )
+            except Exception:
+                pass
 
             # Vertical center marker: draw after curves, before text.
             mx = int(x0 + (w // 2))

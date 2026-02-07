@@ -119,12 +119,8 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     except Exception:
         pass
 
-    # Neutral baseline.
+    # Neutral baseline: Linie spaeter zeichnen.
     y_zero = _y_from_val(0.0)
-    try:
-        dr.line([(int(x0), int(y_zero)), (int(x0 + w - 1), int(y_zero))], fill=COL_WHITE, width=1)
-    except Exception:
-        pass
     axis_labels = filter_axis_labels_by_position(
         axis_labels,
         int(plot_y0),
@@ -134,12 +130,6 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     )
 
     marker_xf = float(x0) + (float(w) / 2.0)
-    marker_x = int(round(marker_xf))
-    try:
-        dr.rectangle([marker_x, int(y0), marker_x + 1, int(y0 + h - 1)], fill=(255, 255, 255, 230))
-    except Exception:
-        pass
-
     half_w = float(w) / 2.0
 
     slow_series = slow_vals if isinstance(slow_vals, list) else []
@@ -218,6 +208,18 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
             dr.line(pts_fast, fill=COL_FAST_DARKBLUE, width=2)  # fast = blue
         except Exception:
             pass
+
+    # Neutral baseline nach den Kurven zeichnen, damit sie durchgehend bleibt.
+    try:
+        dr.line([(int(x0), int(y_zero)), (int(x0 + w - 1), int(y_zero))], fill=COL_WHITE, width=1)
+    except Exception:
+        pass
+
+    marker_x = int(round(marker_xf))
+    try:
+        dr.rectangle([marker_x, int(y0), marker_x + 1, int(y0 + h - 1)], fill=(255, 255, 255, 230))
+    except Exception:
+        pass
 
     # Text zuletzt: Y-Achse + Titel.
     draw_left_axis_labels(

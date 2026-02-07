@@ -154,12 +154,8 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
     except Exception:
         pass
 
-    # 0m Referenzlinie
+    # 0m Referenzlinie: Linie spaeter zeichnen.
     y_zero = int(_y_from_m(0.0))
-    try:
-        dr.line([(int(x0), y_zero), (int(x0 + w - 1), y_zero)], fill=COL_WHITE, width=1)
-    except Exception:
-        pass
 
     axis_labels = filter_axis_labels_by_position(
         axis_labels,
@@ -193,6 +189,12 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
             dr.line(pts, fill=COL_FAST_DARKBLUE, width=2)
         except Exception:
             pass
+
+    # 0m Referenzlinie nach der Kurve zeichnen, damit sie durchgehend bleibt.
+    try:
+        dr.line([(int(x0), int(y_zero)), (int(x0 + w - 1), int(y_zero))], fill=COL_WHITE, width=1)
+    except Exception:
+        pass
 
     # Center-Marker bleibt fix bei x = w/2.
     try:

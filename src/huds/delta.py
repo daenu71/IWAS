@@ -182,20 +182,8 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                     except Exception:
                         pass
 
-            # 3) 0-Linie
-            try:
-                y_mid = int(round(y_zero))
-                dr.line(
-                    [(int(x0), y_mid), (int(x0 + w - 1), y_mid)],
-                    fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
-                    width=1,
-                )
-            except Exception as e:
-                if hud_dbg:
-                    try:
-                        _log_print(f"[hudpy][Delta][EXC][zero_line] {type(e).__name__}: {e}", log_file)
-                    except Exception:
-                        pass
+            # 3) 0-Linie (Linie spaeter zeichnen).
+            y_mid = int(round(y_zero))
 
             # 4) Kurve: Anzahl Punkte aus Override, ohne 600-Cap, bis zur HUD-Breite
             span_n = max(1, int(iR) - int(iL))
@@ -317,6 +305,20 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                     seg_pts.append((int(x), int(y)))
 
             _flush_segment()
+
+            # 0-Linie nach der Kurve zeichnen, damit sie durchgehend bleibt.
+            try:
+                dr.line(
+                    [(int(x0), int(y_mid)), (int(x0 + w - 1), int(y_mid))],
+                    fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
+                    width=1,
+                )
+            except Exception as e:
+                if hud_dbg:
+                    try:
+                        _log_print(f"[hudpy][Delta][EXC][zero_line] {type(e).__name__}: {e}", log_file)
+                    except Exception:
+                        pass
 
             # Vertical center marker: draw after curve segments, before text.
             try:
