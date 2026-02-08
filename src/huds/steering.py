@@ -64,8 +64,6 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             font_axis_small = None
             font_title = None
             font_val = None
-            data_area_top = int(y0 + 10)
-
             # --- Headroom nur oben (positiv) ---
             # Default: 1.20 (20% Headroom oben). Unten kein Headroom.
             try:
@@ -137,13 +135,13 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
      
             # 0-Lenkung Mittellinie (Linie spaeter zeichnen).
             y_mid = int(round(mid_y))
-    
-            text_pad_top = 4
+
+            text_pad_top = 12
             y_txt = int(y0 + text_pad_top)
             title_pos = (int(x0 + 4), y_txt)
             font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
             font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-            data_area_top = int(y_txt + 12)
+            data_area_top = int(y_txt + 14)
             _text_w = lambda text, font_obj: int(len(str(text)) * 8)
             try:
                 from PIL import ImageFont
@@ -184,8 +182,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 title_height = _safe_text_height(font_title, title_txt, font_sz)
                 value_height = _safe_text_height(font_val, "+000°", font_val_sz)
                 text_block_height = max(1, title_height, value_height)
-                top_candidate = int(y_txt + text_block_height + 6)
-                data_area_top = max(int(y0 + 6), int(min(int(y0 + h - 6), top_candidate)))
+                top_candidate = int(y_txt + text_block_height + 10)
+                data_area_top = max(int(y0 + 8), int(min(int(y0 + h - 6), top_candidate)))
 
                 def _text_w_local(text: str, font_obj: Any) -> int:
                     if font_obj is None:
@@ -202,7 +200,7 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 _text_w = _text_w_local
             except Exception:
                 pass
-    
+
             # Wie dicht wir sampeln (nicht jeden Frame, damit es schnell bleibt)
             span_n = max(1, int(iR - iL))
     
