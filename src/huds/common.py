@@ -194,8 +194,16 @@ def draw_stripe_grid(
         return
 
     bg_rgba = _coerce_rgba(col_bg)
-    stripe_alpha = max(int(bg_rgba[3]), min(170, int(bg_rgba[3]) + 72))
-    col_dark = _darken_rgba(col_bg, int(darken_delta), min_alpha=int(stripe_alpha))
+    # Note: HUD PNGs are flattened over black before ffmpeg overlay. Very dark,
+    # low-alpha stripes can collapse visually; keep stripe fills visibly distinct.
+    stripe_alpha = max(int(bg_rgba[3]), min(230, int(bg_rgba[3]) + 134))
+    stripe_lift = max(12, min(30, int(darken_delta) + 12))
+    col_dark = (
+        min(255, int(bg_rgba[0]) + int(stripe_lift)),
+        min(255, int(bg_rgba[1]) + int(stripe_lift)),
+        min(255, int(bg_rgba[2]) + int(stripe_lift)),
+        int(stripe_alpha),
+    )
     for i in range(len(ys) - 1):
         if (i % 2) == 0:
             continue

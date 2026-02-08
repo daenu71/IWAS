@@ -2957,10 +2957,11 @@ def _render_hud_scroll_frames_png(
                             if y_b < y_a:
                                 continue
                             if (stripe_i % 2) == 1:
-                                stripe_a = max(int(COL_HUD_BG[3]), min(170, int(COL_HUD_BG[3]) + 72))
+                                # Keep stripe areas visible after HUD-to-black flattening.
+                                stripe_a = max(int(COL_HUD_BG[3]), min(230, int(COL_HUD_BG[3]) + 134))
                                 static_dr_local.rectangle(
                                     [x0s, y_a, x1s, y_b],
-                                    fill=(max(0, COL_HUD_BG[0] - 12), max(0, COL_HUD_BG[1] - 12), max(0, COL_HUD_BG[2] - 12), int(stripe_a)),
+                                    fill=(min(255, int(COL_HUD_BG[0]) + 18), min(255, int(COL_HUD_BG[1]) + 18), min(255, int(COL_HUD_BG[2]) + 18), int(stripe_a)),
                                 )
                         try:
                             sep_a = max(int(COL_HUD_BG[3]), min(220, int(COL_HUD_BG[3]) + 120))
