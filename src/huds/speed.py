@@ -11,37 +11,69 @@ def build_confirmed_max_speed_display(
     speed_frames_u: list[float] | None,
     threshold: float = 5.0,
 ) -> list[float | None]:
-    _ = threshold
     if not speed_frames_u:
         return []
+
+    thr = float(threshold)
+    if (not math.isfinite(thr)) or thr < 0.0:
+        thr = 5.0
 
     debug_raw = (os.environ.get("IRVC_DEBUG_SPEED_MAX") or "").strip().lower()
     debug_enabled = debug_raw not in ("", "0", "false", "off", "no")
 
-    out: list[float | None] = []
-    prev_logged_value: float | None = None
-    for i, v in enumerate(speed_frames_u):
+    vals: list[float] = []
+    for v in speed_frames_u:
         try:
             fv = float(v)
         except Exception:
             fv = 0.0
         if not math.isfinite(fv):
             fv = 0.0
-        current_u = float(fv)
-        out.append(current_u)
+        vals.append(float(fv))
 
-        if debug_enabled and (prev_logged_value is None or current_u != prev_logged_value):
-            print(
-                "[speed-max] i="
-                + str(i)
-                + " raw="
-                + str(v)
-                + " converted_u="
-                + str(current_u)
-                + " displayed_u="
-                + str(current_u)
-            )
-            prev_logged_value = current_u
+    out: list[float | None] = [None] * len(vals)
+    confirmed_max_value: float | None = None
+
+    valley_value = float(vals[0])
+    candidate_peak_value = float(vals[0])
+    candidate_peak_index = 0
+    rise_confirmed = False
+
+    for i, current_u in enumerate(vals):
+        if float(current_u) <= float(valley_value):
+            valley_value = float(current_u)
+            candidate_peak_value = float(current_u)
+            candidate_peak_index = int(i)
+            rise_confirmed = False
+        else:
+            if float(current_u) > float(candidate_peak_value):
+                candidate_peak_value = float(current_u)
+                candidate_peak_index = int(i)
+            if float(candidate_peak_value - valley_value) >= float(thr):
+                rise_confirmed = True
+            if (
+                rise_confirmed
+                and i > candidate_peak_index
+                and float(current_u) <= float(candidate_peak_value - thr)
+            ):
+                confirmed_max_value = float(candidate_peak_value)
+                if debug_enabled:
+                    print(
+                        "[speed-max] i="
+                        + str(i)
+                        + " raw="
+                        + str(speed_frames_u[i])
+                        + " converted_u="
+                        + str(float(current_u))
+                        + " displayed_u="
+                        + str(float(confirmed_max_value))
+                    )
+                valley_value = float(current_u)
+                candidate_peak_value = float(current_u)
+                candidate_peak_index = int(i)
+                rise_confirmed = False
+
+        out[i] = confirmed_max_value
 
     return out
 
