@@ -368,6 +368,9 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                         )
                     )
 
+            # Ensure stable left-to-right drawing order for scroll curves.
+            sample_rows.sort(key=lambda row: int(row[0]))
+
             idxs = [int(row[0]) for row in sample_rows]
             idx_to_t_slow = {int(row[0]): float(row[2]) for row in sample_rows}
             idx_to_fast_idx = {int(row[0]): int(row[3]) for row in sample_rows}
@@ -426,16 +429,47 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                 pts_s_b.append((int(x), int(_y_from_01(sb))))
                 pts_f_t.append((int(x), int(_y_from_01(ft))))
                 pts_f_b.append((int(x), int(_y_from_01(fb))))
-    
-            # Linien zeichnen (Bremse erst, dann Gas)
-            if len(pts_s_b) >= 2:
-                dr.line(pts_s_b, fill=COL_SLOW_BRAKE, width=2)
-            if len(pts_s_t) >= 2:
-                dr.line(pts_s_t, fill=COL_SLOW_THROTTLE, width=2)
-            if len(pts_f_b) >= 2:
-                dr.line(pts_f_b, fill=COL_FAST_BRAKE, width=2)
-            if len(pts_f_t) >= 2:
-                dr.line(pts_f_t, fill=COL_FAST_THROTTLE, width=2)
+
+            def _dense_curve_points(pts_in: list[tuple[int, int]]) -> list[tuple[int, int]]:
+                if not pts_in:
+                    return []
+                out: list[tuple[int, int]] = []
+                x_prev = int(pts_in[0][0])
+                y_prev = int(pts_in[0][1])
+                out.append((x_prev, y_prev))
+                for x_raw, y_raw in pts_in[1:]:
+                    x_cur = int(x_raw)
+                    y_cur = int(y_raw)
+                    if x_cur < x_prev:
+                        # Ignore out-of-order points; curves should move left-to-right.
+                        continue
+                    if x_cur == x_prev:
+                        out[-1] = (int(x_cur), int(y_cur))
+                        y_prev = int(y_cur)
+                        continue
+                    dx = int(x_cur - x_prev)
+                    dy = float(y_cur - y_prev)
+                    for step in range(1, dx + 1):
+                        xi = int(x_prev + step)
+                        yi = int(round(float(y_prev) + (dy * (float(step) / float(dx)))))
+                        if out and int(out[-1][0]) == int(xi):
+                            out[-1] = (int(xi), int(yi))
+                        else:
+                            out.append((int(xi), int(yi)))
+                    x_prev = int(x_cur)
+                    y_prev = int(y_cur)
+                return out
+
+            def _draw_dense_curve(pts_in: list[tuple[int, int]], col: tuple[int, int, int, int]) -> None:
+                pts_dense = _dense_curve_points(pts_in)
+                if len(pts_dense) >= 2:
+                    dr.line(pts_dense, fill=col, width=2)
+
+            # Draw brake first, then throttle.
+            _draw_dense_curve(pts_s_b, COL_SLOW_BRAKE)
+            _draw_dense_curve(pts_s_t, COL_SLOW_THROTTLE)
+            _draw_dense_curve(pts_f_b, COL_FAST_BRAKE)
+            _draw_dense_curve(pts_f_t, COL_FAST_THROTTLE)
     
             # ABS-Balken: scrollende Segmente (LÃ¤nge = Dauer von ABS=1 im Fenster)
             def _abs_val_s(idx0: int) -> float:
