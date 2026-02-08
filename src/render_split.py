@@ -2619,6 +2619,460 @@ def _render_hud_scroll_frames_png(
                         idx_r = len(slow_frame_to_lapdist) - 1
                     return int(idx_r)
 
+                is_throttle_brake = str(hud_key) == "Throttle / Brake"
+                tb_layout: dict[str, Any] = {}
+                tb_map_idx_to_t_slow: dict[int, float] = {}
+                tb_map_idx_to_t_fast: dict[int, float] = {}
+                tb_map_idx_to_fast_idx: dict[int, int] = {}
+                tb_seconds_per_col = 0.0
+                tb_abs_window_s = 0.0
+                tb_fps_safe = 30.0
+                tb_t_slow_scale = 1.0
+                tb_t_fast_scale = 1.0
+                tb_b_slow_scale = 1.0
+                tb_b_fast_scale = 1.0
+                tb_a_slow_scale = 1.0
+                tb_a_fast_scale = 1.0
+                tb_slow_abs_prefix: list[int] = [0]
+                tb_fast_abs_prefix: list[int] = [0]
+
+                if is_throttle_brake:
+                    map_idxs_all_tb = list(getattr(frame_window_mapping, "idxs", []) or [])
+                    map_t_slow_all_tb = list(getattr(frame_window_mapping, "t_slow", []) or [])
+                    map_t_fast_all_tb = list(getattr(frame_window_mapping, "t_fast", []) or [])
+                    map_fast_idx_all_tb = list(getattr(frame_window_mapping, "fast_idx", []) or [])
+                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_slow_all_tb):
+                        for idx_m, ts_m in zip(map_idxs_all_tb, map_t_slow_all_tb):
+                            tb_map_idx_to_t_slow[int(idx_m)] = float(ts_m)
+                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_fast_all_tb):
+                        for idx_m, tf_m in zip(map_idxs_all_tb, map_t_fast_all_tb):
+                            tb_map_idx_to_t_fast[int(idx_m)] = float(tf_m)
+                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_fast_idx_all_tb):
+                        for idx_m, fi_m in zip(map_idxs_all_tb, map_fast_idx_all_tb):
+                            tb_map_idx_to_fast_idx[int(idx_m)] = int(fi_m)
+
+                    tb_fps_safe = float(fps) if (math.isfinite(float(fps)) and float(fps) > 1e-6) else 30.0
+                    tb_abs_window_s = float(max(0, int(hud_pedals_abs_debounce_ms))) / 1000.0
+                    tb_seconds_per_col = float(window_frames) / max(1.0, float(w)) / max(1e-6, float(tb_fps_safe))
+
+                    n_frames_tb = float(max(1, len(slow_frame_to_lapdist) - 1))
+                    try:
+                        if slow_throttle_frames and len(slow_throttle_frames) >= 2:
+                            tb_t_slow_scale = float(len(slow_throttle_frames) - 1) / n_frames_tb
+                        if fast_throttle_frames and len(fast_throttle_frames) >= 2:
+                            tb_t_fast_scale = float(len(fast_throttle_frames) - 1) / n_frames_tb
+                        if slow_brake_frames and len(slow_brake_frames) >= 2:
+                            tb_b_slow_scale = float(len(slow_brake_frames) - 1) / n_frames_tb
+                        if fast_brake_frames and len(fast_brake_frames) >= 2:
+                            tb_b_fast_scale = float(len(fast_brake_frames) - 1) / n_frames_tb
+                        if slow_abs_frames and len(slow_abs_frames) >= 2:
+                            tb_a_slow_scale = float(len(slow_abs_frames) - 1) / n_frames_tb
+                        if fast_abs_frames and len(fast_abs_frames) >= 2:
+                            tb_a_fast_scale = float(len(fast_abs_frames) - 1) / n_frames_tb
+                    except Exception:
+                        pass
+
+                    def _tb_load_font(sz: int):
+                        try:
+                            from PIL import ImageFont
+                        except Exception:
+                            ImageFont = None  # type: ignore
+                        if ImageFont is None:
+                            return None
+                        try:
+                            return ImageFont.truetype("arial.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.truetype("DejaVuSans.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.load_default()
+                        except Exception:
+                            return None
+
+                    try:
+                        tb_headroom = float((os.environ.get("IRVC_PEDAL_HEADROOM") or "").strip() or "1.12")
+                    except Exception:
+                        tb_headroom = 1.12
+                    if tb_headroom < 1.00:
+                        tb_headroom = 1.00
+                    if tb_headroom > 2.00:
+                        tb_headroom = 2.00
+
+                    tb_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                    tb_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                    tb_font_title = _tb_load_font(tb_font_sz)
+                    tb_font_val = _tb_load_font(tb_font_val_sz)
+                    tb_font_axis = _tb_load_font(max(8, int(tb_font_sz - 2)))
+                    tb_font_axis_small = _tb_load_font(max(7, int(tb_font_sz - 3)))
+
+                    tb_y_txt = int(2)
+                    tb_abs_h = int(max(10, min(15, round(float(h) * 0.085))))
+                    tb_abs_gap_y = 2
+                    tb_y_abs0 = int(tb_font_val_sz + 5)
+                    tb_y_abs_s = tb_y_abs0
+                    tb_y_abs_f = tb_y_abs0 + tb_abs_h + tb_abs_gap_y
+                    tb_plot_top = tb_y_abs_f + tb_abs_h + 4
+                    tb_plot_bottom = int(h - 2)
+                    if tb_plot_bottom <= tb_plot_top + 5:
+                        tb_plot_top = int(max(0, int(float(h) * 0.30)))
+                    tb_plot_h = max(10, tb_plot_bottom - tb_plot_top)
+                    tb_mx = int(w // 2)
+                    tb_half_w = float(w) / 2.0
+                    tb_marker_xf = float(tb_mx)
+
+                    def _tb_y_from_01(v01: float) -> int:
+                        v01_c = _clamp(float(v01), 0.0, 1.0)
+                        v_scaled = float(v01_c) / max(1.0, float(tb_headroom))
+                        yy = float(tb_plot_top) + float(tb_plot_h) - (v_scaled * float(tb_plot_h))
+                        return int(round(yy))
+
+                    tb_layout = {
+                        "font_title": tb_font_title,
+                        "font_val": tb_font_val,
+                        "font_axis": tb_font_axis,
+                        "font_axis_small": tb_font_axis_small,
+                        "y_txt": int(tb_y_txt),
+                        "abs_h": int(tb_abs_h),
+                        "y_abs_s": int(tb_y_abs_s),
+                        "y_abs_f": int(tb_y_abs_f),
+                        "plot_top": int(tb_plot_top),
+                        "plot_bottom": int(tb_plot_bottom),
+                        "mx": int(tb_mx),
+                        "marker_xf": float(tb_marker_xf),
+                        "half_w": float(tb_half_w),
+                        "y_from_01": _tb_y_from_01,
+                    }
+
+                    def _tb_sample_linear_time(vals: list[float] | None, t_s: float) -> float:
+                        if not vals:
+                            return 0.0
+                        n = len(vals)
+                        if n <= 1:
+                            return float(vals[0])
+                        pos = _clamp(float(t_s) * float(tb_fps_safe), 0.0, float(n - 1))
+                        i0_t = int(math.floor(pos))
+                        i1_t = min(i0_t + 1, n - 1)
+                        a_t = float(pos - float(i0_t))
+                        v0_t = float(vals[i0_t])
+                        v1_t = float(vals[i1_t])
+                        return float(v0_t + ((v1_t - v0_t) * a_t))
+
+                    def _tb_fast_time_from_slow_idx(idx0: int) -> float:
+                        ii = int(idx0)
+                        if ii < 0:
+                            ii = 0
+                        if slow_frame_to_fast_time_s:
+                            if ii >= len(slow_frame_to_fast_time_s):
+                                ii = len(slow_frame_to_fast_time_s) - 1
+                            return float(slow_frame_to_fast_time_s[ii])
+                        fi_t = int(ii)
+                        if slow_to_fast_frame and fi_t < len(slow_to_fast_frame):
+                            fi_t = int(slow_to_fast_frame[fi_t])
+                            if fi_t < 0:
+                                fi_t = 0
+                        return float(fi_t) / float(tb_fps_safe)
+
+                    def _tb_build_abs_prefix(vals: list[float] | None) -> list[int]:
+                        if not vals:
+                            return [0]
+                        out_pref = [0]
+                        acc_pref = 0
+                        for vv_pref in vals:
+                            acc_pref += 1 if float(vv_pref) >= 0.5 else 0
+                            out_pref.append(acc_pref)
+                        return out_pref
+
+                    tb_slow_abs_prefix = _tb_build_abs_prefix(slow_abs_frames)
+                    tb_fast_abs_prefix = _tb_build_abs_prefix(fast_abs_frames)
+
+                    def _tb_abs_on_majority_time(vals: list[float] | None, pref: list[int], t_s: float) -> float:
+                        if not vals:
+                            return 0.0
+                        n = len(vals)
+                        if n <= 1:
+                            return 1.0 if float(vals[0]) >= 0.5 else 0.0
+                        if tb_abs_window_s <= 1e-9:
+                            p = int(round(_clamp(float(t_s) * float(tb_fps_safe), 0.0, float(n - 1))))
+                            return 1.0 if float(vals[p]) >= 0.5 else 0.0
+                        half_abs = 0.5 * float(tb_abs_window_s)
+                        p0 = int(math.floor((float(t_s) - half_abs) * float(tb_fps_safe)))
+                        p1 = int(math.ceil((float(t_s) + half_abs) * float(tb_fps_safe)))
+                        if p0 < 0:
+                            p0 = 0
+                        if p1 >= n:
+                            p1 = n - 1
+                        if p1 < p0:
+                            p1 = p0
+                        total = int(p1 - p0 + 1)
+                        on_cnt = int(pref[p1 + 1] - pref[p0])
+                        return 1.0 if (on_cnt * 2) > total else 0.0
+
+                    def _tb_sample_legacy(vals: list[float] | None, idx_base: int, scale: float) -> float:
+                        if not vals:
+                            return 0.0
+                        i_legacy = int(round(float(idx_base) * float(scale)))
+                        if i_legacy < 0:
+                            i_legacy = 0
+                        if i_legacy >= len(vals):
+                            i_legacy = len(vals) - 1
+                        try:
+                            return float(vals[i_legacy])
+                        except Exception:
+                            return 0.0
+
+                    def _tb_sample_column(x_col: int) -> dict[str, Any]:
+                        xi = int(x_col)
+                        if xi < 0:
+                            xi = 0
+                        if xi >= int(w):
+                            xi = int(w) - 1
+
+                        frac = (float(xi) - float(tb_layout["marker_xf"])) / max(1.0, float(tb_layout["half_w"]))
+                        frac = _clamp(float(frac), -1.0, 1.0)
+                        if frac <= 0.0:
+                            off_f = float(frac) * float(before_f)
+                        else:
+                            off_f = float(frac) * float(after_f)
+
+                        idx_slow = int(round(float(i) + float(off_f)))
+                        if idx_slow < int(iL):
+                            idx_slow = int(iL)
+                        if idx_slow > int(iR):
+                            idx_slow = int(iR)
+                        if idx_slow < 0:
+                            idx_slow = 0
+                        if idx_slow >= len(slow_frame_to_lapdist):
+                            idx_slow = len(slow_frame_to_lapdist) - 1
+
+                        t_slow = float(tb_map_idx_to_t_slow.get(int(idx_slow), float(idx_slow) / float(tb_fps_safe)))
+                        t_fast = float(tb_map_idx_to_t_fast.get(int(idx_slow), _tb_fast_time_from_slow_idx(int(idx_slow))))
+                        fi_map = int(tb_map_idx_to_fast_idx.get(int(idx_slow), int(idx_slow)))
+                        if fi_map < 0:
+                            fi_map = 0
+                        if slow_to_fast_frame and int(idx_slow) < len(slow_to_fast_frame):
+                            try:
+                                fi_map = int(slow_to_fast_frame[int(idx_slow)])
+                                if fi_map < 0:
+                                    fi_map = 0
+                            except Exception:
+                                pass
+
+                        if hud_pedals_sample_mode == "time":
+                            s_t = _tb_sample_linear_time(slow_throttle_frames, float(t_slow))
+                            s_b = _tb_sample_linear_time(slow_brake_frames, float(t_slow))
+                            f_t = _tb_sample_linear_time(fast_throttle_frames, float(t_fast))
+                            f_b = _tb_sample_linear_time(fast_brake_frames, float(t_fast))
+                            abs_s_raw = _tb_abs_on_majority_time(slow_abs_frames, tb_slow_abs_prefix, float(t_slow))
+                            abs_f_raw = _tb_abs_on_majority_time(fast_abs_frames, tb_fast_abs_prefix, float(t_fast))
+                        else:
+                            s_t = _tb_sample_legacy(slow_throttle_frames, int(idx_slow), float(tb_t_slow_scale))
+                            s_b = _tb_sample_legacy(slow_brake_frames, int(idx_slow), float(tb_b_slow_scale))
+                            f_t = _tb_sample_legacy(fast_throttle_frames, int(fi_map), float(tb_t_fast_scale))
+                            f_b = _tb_sample_legacy(fast_brake_frames, int(fi_map), float(tb_b_fast_scale))
+                            abs_s_raw = _tb_sample_legacy(slow_abs_frames, int(idx_slow), float(tb_a_slow_scale))
+                            abs_f_raw = _tb_sample_legacy(fast_abs_frames, int(fi_map), float(tb_a_fast_scale))
+
+                        y_s_t = int(tb_layout["y_from_01"](float(s_t)))
+                        y_s_b = int(tb_layout["y_from_01"](float(s_b)))
+                        y_f_t = int(tb_layout["y_from_01"](float(f_t)))
+                        y_f_b = int(tb_layout["y_from_01"](float(f_b)))
+                        return {
+                            "x": int(xi),
+                            "slow_idx": int(idx_slow),
+                            "s_t": float(s_t),
+                            "s_b": float(s_b),
+                            "f_t": float(f_t),
+                            "f_b": float(f_b),
+                            "y_s_t": int(y_s_t),
+                            "y_s_b": int(y_s_b),
+                            "y_f_t": int(y_f_t),
+                            "y_f_b": int(y_f_b),
+                            "abs_s_raw_on": bool(float(abs_s_raw) >= 0.5),
+                            "abs_f_raw_on": bool(float(abs_f_raw) >= 0.5),
+                        }
+
+                    def _tb_apply_abs_debounce(tb_state_local: dict[str, Any], raw_s_on: bool, raw_f_on: bool) -> tuple[bool, bool]:
+                        if float(tb_abs_window_s) <= 1e-9:
+                            tb_state_local["tb_abs_s_on"] = bool(raw_s_on)
+                            tb_state_local["tb_abs_f_on"] = bool(raw_f_on)
+                            tb_state_local["tb_abs_s_on_count"] = 0
+                            tb_state_local["tb_abs_s_off_count"] = 0
+                            tb_state_local["tb_abs_f_on_count"] = 0
+                            tb_state_local["tb_abs_f_off_count"] = 0
+                            return bool(raw_s_on), bool(raw_f_on)
+
+                        debounce_cols = int(round(float(tb_abs_window_s) / max(1e-6, float(tb_seconds_per_col))))
+                        if debounce_cols < 1:
+                            debounce_cols = 1
+                        if debounce_cols > 64:
+                            debounce_cols = 64
+
+                        s_on_now = bool(tb_state_local.get("tb_abs_s_on", False))
+                        s_on_count = int(tb_state_local.get("tb_abs_s_on_count", 0))
+                        s_off_count = int(tb_state_local.get("tb_abs_s_off_count", 0))
+                        if raw_s_on:
+                            s_on_count += 1
+                            s_off_count = 0
+                        else:
+                            s_off_count += 1
+                            s_on_count = 0
+                        if (not s_on_now) and s_on_count >= debounce_cols:
+                            s_on_now = True
+                        if s_on_now and s_off_count >= debounce_cols:
+                            s_on_now = False
+                        tb_state_local["tb_abs_s_on"] = bool(s_on_now)
+                        tb_state_local["tb_abs_s_on_count"] = int(s_on_count)
+                        tb_state_local["tb_abs_s_off_count"] = int(s_off_count)
+
+                        f_on_now = bool(tb_state_local.get("tb_abs_f_on", False))
+                        f_on_count = int(tb_state_local.get("tb_abs_f_on_count", 0))
+                        f_off_count = int(tb_state_local.get("tb_abs_f_off_count", 0))
+                        if raw_f_on:
+                            f_on_count += 1
+                            f_off_count = 0
+                        else:
+                            f_off_count += 1
+                            f_on_count = 0
+                        if (not f_on_now) and f_on_count >= debounce_cols:
+                            f_on_now = True
+                        if f_on_now and f_off_count >= debounce_cols:
+                            f_on_now = False
+                        tb_state_local["tb_abs_f_on"] = bool(f_on_now)
+                        tb_state_local["tb_abs_f_on_count"] = int(f_on_count)
+                        tb_state_local["tb_abs_f_off_count"] = int(f_off_count)
+                        return bool(s_on_now), bool(f_on_now)
+
+                    def _tb_text_w(dr_any: Any, text: str, font_obj: Any) -> int:
+                        try:
+                            bb = dr_any.textbbox((0, 0), str(text), font=font_obj)
+                            return int(bb[2] - bb[0])
+                        except Exception:
+                            try:
+                                return int(dr_any.textlength(str(text), font=font_obj))
+                            except Exception:
+                                return int(len(str(text)) * 8)
+
+                    def _tb_render_static_layer() -> Any:
+                        static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        static_dr_local = ImageDraw.Draw(static_img_local)
+                        static_dr_local.rectangle([0, 0, int(w) - 1, int(h) - 1], fill=COL_HUD_BG)
+
+                        y_grid_top = int(tb_layout["y_from_01"](1.0))
+                        y_grid_bot = int(tb_layout["y_from_01"](0.0))
+                        y_bounds = sorted(
+                            list(
+                                {
+                                    int(tb_layout["y_from_01"](0.0)),
+                                    int(tb_layout["y_from_01"](0.2)),
+                                    int(tb_layout["y_from_01"](0.4)),
+                                    int(tb_layout["y_from_01"](0.6)),
+                                    int(tb_layout["y_from_01"](0.8)),
+                                    int(tb_layout["y_from_01"](1.0)),
+                                }
+                            )
+                        )
+                        x0s = 0
+                        x1s = int(w) - 1
+                        y0s = int(min(y_grid_top, y_grid_bot))
+                        y1s = int(max(y_grid_top, y_grid_bot))
+                        for stripe_i in range(len(y_bounds) - 1):
+                            y_a = int(y_bounds[stripe_i])
+                            y_b = int(y_bounds[stripe_i + 1]) - 1
+                            if y_b < y_a:
+                                continue
+                            if (stripe_i % 2) == 1:
+                                static_dr_local.rectangle(
+                                    [x0s, y_a, x1s, y_b],
+                                    fill=(max(0, COL_HUD_BG[0] - 12), max(0, COL_HUD_BG[1] - 12), max(0, COL_HUD_BG[2] - 12), COL_HUD_BG[3]),
+                                )
+
+                        axis_labels = [
+                            (int(tb_layout["y_from_01"](0.2)), "20"),
+                            (int(tb_layout["y_from_01"](0.4)), "40"),
+                            (int(tb_layout["y_from_01"](0.6)), "60"),
+                            (int(tb_layout["y_from_01"](0.8)), "80"),
+                        ]
+                        for y_lab, txt_lab in axis_labels:
+                            try:
+                                static_dr_local.text((6, int(y_lab) - 6), str(txt_lab), fill=COL_WHITE, font=tb_layout.get("font_axis"))
+                            except Exception:
+                                pass
+
+                        try:
+                            static_dr_local.text((4, int(tb_layout["y_txt"])), "Throttle / Brake", fill=COL_WHITE, font=tb_layout.get("font_title"))
+                        except Exception:
+                            pass
+                        mx_s = int(tb_layout["mx"])
+                        static_dr_local.rectangle([mx_s, 0, mx_s + 1, int(h)], fill=(255, 255, 255, 230))
+                        return static_img_local
+
+                    def _tb_render_dynamic_full() -> tuple[Any, list[dict[str, Any]], dict[str, Any]]:
+                        dyn_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        dyn_dr_local = ImageDraw.Draw(dyn_img_local)
+                        tb_cols_local: list[dict[str, Any]] = []
+                        tb_abs_state_local: dict[str, Any] = {
+                            "tb_abs_s_on": False,
+                            "tb_abs_f_on": False,
+                            "tb_abs_s_on_count": 0,
+                            "tb_abs_s_off_count": 0,
+                            "tb_abs_f_on_count": 0,
+                            "tb_abs_f_off_count": 0,
+                        }
+                        prev_col: dict[str, Any] | None = None
+                        for xi_full in range(int(w)):
+                            col_now = _tb_sample_column(int(xi_full))
+                            abs_s_on, abs_f_on = _tb_apply_abs_debounce(
+                                tb_abs_state_local,
+                                bool(col_now["abs_s_raw_on"]),
+                                bool(col_now["abs_f_raw_on"]),
+                            )
+                            col_now["abs_s_on"] = bool(abs_s_on)
+                            col_now["abs_f_on"] = bool(abs_f_on)
+                            if prev_col is not None:
+                                x_prev = int(prev_col["x"])
+                                x_cur = int(col_now["x"])
+                                dyn_dr_local.line([(x_prev, int(prev_col["y_s_b"])), (x_cur, int(col_now["y_s_b"]))], fill=COL_SLOW_DARKRED, width=2)
+                                dyn_dr_local.line([(x_prev, int(prev_col["y_s_t"])), (x_cur, int(col_now["y_s_t"]))], fill=COL_SLOW_BRIGHTRED, width=2)
+                                dyn_dr_local.line([(x_prev, int(prev_col["y_f_b"])), (x_cur, int(col_now["y_f_b"]))], fill=COL_FAST_DARKBLUE, width=2)
+                                dyn_dr_local.line([(x_prev, int(prev_col["y_f_t"])), (x_cur, int(col_now["y_f_t"]))], fill=COL_FAST_BRIGHTBLUE, width=2)
+                            if bool(col_now["abs_s_on"]):
+                                y0_abs_s = int(tb_layout["y_abs_s"])
+                                y1_abs_s = int(tb_layout["y_abs_s"]) + int(tb_layout["abs_h"]) - 1
+                                dyn_dr_local.line([(int(col_now["x"]), y0_abs_s), (int(col_now["x"]), y1_abs_s)], fill=COL_SLOW_DARKRED, width=1)
+                            if bool(col_now["abs_f_on"]):
+                                y0_abs_f = int(tb_layout["y_abs_f"])
+                                y1_abs_f = int(tb_layout["y_abs_f"]) + int(tb_layout["abs_h"]) - 1
+                                dyn_dr_local.line([(int(col_now["x"]), y0_abs_f), (int(col_now["x"]), y1_abs_f)], fill=COL_FAST_DARKBLUE, width=1)
+                            tb_cols_local.append(col_now)
+                            prev_col = col_now
+                        return dyn_img_local, tb_cols_local, tb_abs_state_local
+
+                    def _tb_draw_values_overlay(main_dr_local: Any, base_x: int, base_y: int) -> None:
+                        cur_col = _tb_sample_column(int(tb_layout["mx"]))
+                        s_txt = f"T{int(round(_clamp(float(cur_col['s_t']), 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(float(cur_col['s_b']), 0.0, 1.0) * 100.0)):03d}%"
+                        f_txt = f"T{int(round(_clamp(float(cur_col['f_t']), 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(float(cur_col['f_b']), 0.0, 1.0) * 100.0)):03d}%"
+                        gap_txt = 12
+                        mx_txt = int(base_x) + int(tb_layout["mx"])
+                        f_w_txt = _tb_text_w(main_dr_local, f_txt, tb_layout.get("font_val"))
+                        f_x_txt = int(mx_txt - gap_txt - f_w_txt)
+                        s_x_txt = int(mx_txt + gap_txt)
+                        if f_x_txt < int(base_x + 2):
+                            f_x_txt = int(base_x + 2)
+                        if s_x_txt > int(base_x + int(w) - 2):
+                            s_x_txt = int(base_x + int(w) - 2)
+                        y_txt_abs = int(base_y) + int(tb_layout["y_txt"])
+                        try:
+                            main_dr_local.text((int(f_x_txt), int(y_txt_abs)), f_txt, fill=COL_SLOW_DARKRED, font=tb_layout.get("font_val"))
+                        except Exception:
+                            pass
+                        try:
+                            main_dr_local.text((int(s_x_txt), int(y_txt_abs)), s_txt, fill=COL_FAST_DARKBLUE, font=tb_layout.get("font_val"))
+                        except Exception:
+                            pass
+
                 def _render_scroll_hud_full(
                     scroll_pos_px_local: float,
                     shift_int_local: int,
@@ -2840,22 +3294,45 @@ def _render_hud_scroll_frames_png(
                         reset_now = True
 
                 if first_frame or reset_now:
-                    static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
-                    dynamic_layer = _render_scroll_hud_full(
-                        scroll_pos_px_local=0.0,
-                        shift_int_local=0,
-                        right_edge_cols_local=max(1, int(w)),
-                    )
-                    right_sample_now = _right_edge_sample_idx()
-                    scroll_state_by_hud[hud_state_key] = {
-                        "static_layer": static_layer,
-                        "dynamic_layer": dynamic_layer,
-                        "scroll_pos_px": 0.0,
-                        "last_i": int(i),
-                        "last_right_sample": int(right_sample_now),
-                        "window_frames": int(window_frames),
-                    }
-                    img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                    if is_throttle_brake:
+                        static_layer = _tb_render_static_layer()
+                        dynamic_layer, tb_cols_fill, tb_abs_state_fill = _tb_render_dynamic_full()
+                        right_sample_now = int(tb_cols_fill[-1]["slow_idx"]) if tb_cols_fill else _right_edge_sample_idx()
+                        scroll_state_by_hud[hud_state_key] = {
+                            "static_layer": static_layer,
+                            "dynamic_layer": dynamic_layer,
+                            "scroll_pos_px": 0.0,
+                            "last_i": int(i),
+                            "last_right_sample": int(right_sample_now),
+                            "window_frames": int(window_frames),
+                            "tb_cols": tb_cols_fill,
+                            "tb_abs_s_on": bool(tb_abs_state_fill.get("tb_abs_s_on", False)),
+                            "tb_abs_f_on": bool(tb_abs_state_fill.get("tb_abs_f_on", False)),
+                            "tb_abs_s_on_count": int(tb_abs_state_fill.get("tb_abs_s_on_count", 0)),
+                            "tb_abs_s_off_count": int(tb_abs_state_fill.get("tb_abs_s_off_count", 0)),
+                            "tb_abs_f_on_count": int(tb_abs_state_fill.get("tb_abs_f_on_count", 0)),
+                            "tb_abs_f_off_count": int(tb_abs_state_fill.get("tb_abs_f_off_count", 0)),
+                        }
+                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
+                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                        _tb_draw_values_overlay(dr, int(x0), int(y0))
+                    else:
+                        static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        dynamic_layer = _render_scroll_hud_full(
+                            scroll_pos_px_local=0.0,
+                            shift_int_local=0,
+                            right_edge_cols_local=max(1, int(w)),
+                        )
+                        right_sample_now = _right_edge_sample_idx()
+                        scroll_state_by_hud[hud_state_key] = {
+                            "static_layer": static_layer,
+                            "dynamic_layer": dynamic_layer,
+                            "scroll_pos_px": 0.0,
+                            "last_i": int(i),
+                            "last_right_sample": int(right_sample_now),
+                            "window_frames": int(window_frames),
+                        }
+                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
                     continue
 
                 scroll_pos_px = float(state.get("scroll_pos_px", 0.0))
@@ -2872,12 +3349,6 @@ def _render_hud_scroll_frames_png(
                 if right_edge_cols > int(w):
                     right_edge_cols = int(w)
 
-                hud_full_now = _render_scroll_hud_full(
-                    scroll_pos_px_local=scroll_pos_px,
-                    shift_int_local=int(shift_int),
-                    right_edge_cols_local=int(right_edge_cols),
-                )
-
                 dynamic_prev = state.get("dynamic_layer")
                 if dynamic_prev is None:
                     dynamic_prev = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
@@ -2889,19 +3360,101 @@ def _render_hud_scroll_frames_png(
                         dynamic_next.paste(preserved, (0, 0))
                     except Exception:
                         pass
-                try:
-                    edge_strip = hud_full_now.crop((int(w) - int(right_edge_cols), 0, int(w), int(h)))
-                    dynamic_next.paste(edge_strip, (int(w) - int(right_edge_cols), 0))
-                except Exception:
-                    dynamic_next = hud_full_now
+                if is_throttle_brake:
+                    tb_cols_next = list(state.get("tb_cols") or [])
+                    if shift_px > 0:
+                        tb_cols_next = tb_cols_next[int(shift_px):]
+                    if len(tb_cols_next) > int(w):
+                        tb_cols_next = tb_cols_next[-int(w):]
 
-                right_sample_now = _right_edge_sample_idx()
-                state["dynamic_layer"] = dynamic_next
-                state["scroll_pos_px"] = float(scroll_pos_px)
-                state["last_i"] = int(i)
-                state["last_right_sample"] = int(right_sample_now)
-                state["window_frames"] = int(window_frames)
-                img.paste(hud_full_now, (int(x0), int(y0)), hud_full_now)
+                    tb_abs_state_inc: dict[str, Any] = {
+                        "tb_abs_s_on": bool(state.get("tb_abs_s_on", False)),
+                        "tb_abs_f_on": bool(state.get("tb_abs_f_on", False)),
+                        "tb_abs_s_on_count": int(state.get("tb_abs_s_on_count", 0)),
+                        "tb_abs_s_off_count": int(state.get("tb_abs_s_off_count", 0)),
+                        "tb_abs_f_on_count": int(state.get("tb_abs_f_on_count", 0)),
+                        "tb_abs_f_off_count": int(state.get("tb_abs_f_off_count", 0)),
+                    }
+                    tb_dr_next = ImageDraw.Draw(dynamic_next)
+                    prev_col_inc = tb_cols_next[-1] if tb_cols_next else None
+
+                    for c_inc in range(int(right_edge_cols)):
+                        dest_x = int(w) - int(right_edge_cols) + int(c_inc)
+                        if dest_x < 0:
+                            dest_x = 0
+                        if dest_x >= int(w):
+                            dest_x = int(w) - 1
+
+                        dynamic_next.paste((0, 0, 0, 0), (int(dest_x), 0, int(dest_x) + 1, int(h)))
+                        col_now_inc = _tb_sample_column(int(dest_x))
+                        abs_s_on_inc, abs_f_on_inc = _tb_apply_abs_debounce(
+                            tb_abs_state_inc,
+                            bool(col_now_inc["abs_s_raw_on"]),
+                            bool(col_now_inc["abs_f_raw_on"]),
+                        )
+                        col_now_inc["abs_s_on"] = bool(abs_s_on_inc)
+                        col_now_inc["abs_f_on"] = bool(abs_f_on_inc)
+
+                        if prev_col_inc is not None:
+                            x_prev_inc = int(prev_col_inc["x"])
+                            x_cur_inc = int(col_now_inc["x"])
+                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_s_b"])), (x_cur_inc, int(col_now_inc["y_s_b"]))], fill=COL_SLOW_DARKRED, width=2)
+                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_s_t"])), (x_cur_inc, int(col_now_inc["y_s_t"]))], fill=COL_SLOW_BRIGHTRED, width=2)
+                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_f_b"])), (x_cur_inc, int(col_now_inc["y_f_b"]))], fill=COL_FAST_DARKBLUE, width=2)
+                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_f_t"])), (x_cur_inc, int(col_now_inc["y_f_t"]))], fill=COL_FAST_BRIGHTBLUE, width=2)
+
+                        if bool(col_now_inc["abs_s_on"]):
+                            y0_abs_s_inc = int(tb_layout["y_abs_s"])
+                            y1_abs_s_inc = int(tb_layout["y_abs_s"]) + int(tb_layout["abs_h"]) - 1
+                            tb_dr_next.line([(int(dest_x), y0_abs_s_inc), (int(dest_x), y1_abs_s_inc)], fill=COL_SLOW_DARKRED, width=1)
+                        if bool(col_now_inc["abs_f_on"]):
+                            y0_abs_f_inc = int(tb_layout["y_abs_f"])
+                            y1_abs_f_inc = int(tb_layout["y_abs_f"]) + int(tb_layout["abs_h"]) - 1
+                            tb_dr_next.line([(int(dest_x), y0_abs_f_inc), (int(dest_x), y1_abs_f_inc)], fill=COL_FAST_DARKBLUE, width=1)
+
+                        tb_cols_next.append(col_now_inc)
+                        if len(tb_cols_next) > int(w):
+                            tb_cols_next = tb_cols_next[-int(w):]
+                        prev_col_inc = col_now_inc
+
+                    right_sample_now = int(tb_cols_next[-1]["slow_idx"]) if tb_cols_next else _right_edge_sample_idx()
+                    state["dynamic_layer"] = dynamic_next
+                    state["scroll_pos_px"] = float(scroll_pos_px)
+                    state["last_i"] = int(i)
+                    state["last_right_sample"] = int(right_sample_now)
+                    state["window_frames"] = int(window_frames)
+                    state["tb_cols"] = tb_cols_next
+                    state["tb_abs_s_on"] = bool(tb_abs_state_inc.get("tb_abs_s_on", False))
+                    state["tb_abs_f_on"] = bool(tb_abs_state_inc.get("tb_abs_f_on", False))
+                    state["tb_abs_s_on_count"] = int(tb_abs_state_inc.get("tb_abs_s_on_count", 0))
+                    state["tb_abs_s_off_count"] = int(tb_abs_state_inc.get("tb_abs_s_off_count", 0))
+                    state["tb_abs_f_on_count"] = int(tb_abs_state_inc.get("tb_abs_f_on_count", 0))
+                    state["tb_abs_f_off_count"] = int(tb_abs_state_inc.get("tb_abs_f_off_count", 0))
+
+                    static_now = state.get("static_layer")
+                    if static_now is not None:
+                        img.paste(static_now, (int(x0), int(y0)), static_now)
+                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
+                    _tb_draw_values_overlay(dr, int(x0), int(y0))
+                else:
+                    hud_full_now = _render_scroll_hud_full(
+                        scroll_pos_px_local=scroll_pos_px,
+                        shift_int_local=int(shift_int),
+                        right_edge_cols_local=int(right_edge_cols),
+                    )
+                    try:
+                        edge_strip = hud_full_now.crop((int(w) - int(right_edge_cols), 0, int(w), int(h)))
+                        dynamic_next.paste(edge_strip, (int(w) - int(right_edge_cols), 0))
+                    except Exception:
+                        dynamic_next = hud_full_now
+
+                    right_sample_now = _right_edge_sample_idx()
+                    state["dynamic_layer"] = dynamic_next
+                    state["scroll_pos_px"] = float(scroll_pos_px)
+                    state["last_i"] = int(i)
+                    state["last_right_sample"] = int(right_sample_now)
+                    state["window_frames"] = int(window_frames)
+                    img.paste(hud_full_now, (int(x0), int(y0)), hud_full_now)
             except Exception:
                 continue
 
