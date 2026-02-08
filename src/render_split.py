@@ -4463,7 +4463,8 @@ def _render_hud_scroll_frames_png(
                     if is_throttle_brake:
                         static_layer = _tb_render_static_layer()
                         dynamic_layer, tb_cols_fill, tb_abs_state_fill = _tb_render_dynamic_full()
-                        right_sample_now = int(tb_cols_fill[-1]["slow_idx"]) if tb_cols_fill else _right_edge_sample_idx()
+                        tb_last_col_fill = tb_cols_fill[-1] if tb_cols_fill else _tb_sample_column(int(w) - 1)
+                        right_sample_now = int(tb_last_col_fill["slow_idx"]) if tb_last_col_fill is not None else _right_edge_sample_idx()
                         scroll_state_by_hud[hud_state_key] = {
                             "static_layer": static_layer,
                             "dynamic_layer": dynamic_layer,
@@ -4472,6 +4473,12 @@ def _render_hud_scroll_frames_png(
                             "last_right_sample": int(right_sample_now),
                             "window_frames": int(window_frames),
                             "tb_cols": tb_cols_fill,
+                            "last_y": (
+                                int(tb_last_col_fill["y_s_b"]),
+                                int(tb_last_col_fill["y_s_t"]),
+                                int(tb_last_col_fill["y_f_b"]),
+                                int(tb_last_col_fill["y_f_t"]),
+                            ),
                             "tb_abs_s_on": bool(tb_abs_state_fill.get("tb_abs_s_on", False)),
                             "tb_abs_f_on": bool(tb_abs_state_fill.get("tb_abs_f_on", False)),
                             "tb_abs_s_on_count": int(tb_abs_state_fill.get("tb_abs_s_on_count", 0)),
@@ -4607,6 +4614,12 @@ def _render_hud_scroll_frames_png(
                         tb_cols_next = tb_cols_next[int(shift_px):]
                     if len(tb_cols_next) > int(w):
                         tb_cols_next = tb_cols_next[-int(w):]
+                    if tb_cols_next:
+                        for x_rebase, col_rebase in enumerate(tb_cols_next):
+                            try:
+                                col_rebase["x"] = int(x_rebase)
+                            except Exception:
+                                pass
 
                     tb_abs_state_inc: dict[str, Any] = {
                         "tb_abs_s_on": bool(state.get("tb_abs_s_on", False)),
@@ -4617,7 +4630,43 @@ def _render_hud_scroll_frames_png(
                         "tb_abs_f_off_count": int(state.get("tb_abs_f_off_count", 0)),
                     }
                     tb_dr_next = ImageDraw.Draw(dynamic_next)
-                    prev_col_inc = tb_cols_next[-1] if tb_cols_next else None
+                    prev_x_inc: int | None = None
+                    prev_y_s_b_inc: int | None = None
+                    prev_y_s_t_inc: int | None = None
+                    prev_y_f_b_inc: int | None = None
+                    prev_y_f_t_inc: int | None = None
+                    if int(right_edge_cols) > 0:
+                        first_dest_x = int(w) - int(right_edge_cols)
+                        if first_dest_x < 0:
+                            first_dest_x = 0
+                        if first_dest_x > 0:
+                            prev_x_inc = int(first_dest_x) - 1
+                            if shift_px > 0:
+                                last_y_state = state.get("last_y")
+                                if isinstance(last_y_state, (list, tuple)) and len(last_y_state) >= 4:
+                                    try:
+                                        prev_y_s_b_inc = int(last_y_state[0])
+                                        prev_y_s_t_inc = int(last_y_state[1])
+                                        prev_y_f_b_inc = int(last_y_state[2])
+                                        prev_y_f_t_inc = int(last_y_state[3])
+                                    except Exception:
+                                        prev_y_s_b_inc = None
+                                        prev_y_s_t_inc = None
+                                        prev_y_f_b_inc = None
+                                        prev_y_f_t_inc = None
+                            if (
+                                prev_y_s_b_inc is None
+                                or prev_y_s_t_inc is None
+                                or prev_y_f_b_inc is None
+                                or prev_y_f_t_inc is None
+                            ):
+                                col_prev_left = _tb_sample_column(int(prev_x_inc))
+                                prev_y_s_b_inc = int(col_prev_left["y_s_b"])
+                                prev_y_s_t_inc = int(col_prev_left["y_s_t"])
+                                prev_y_f_b_inc = int(col_prev_left["y_f_b"])
+                                prev_y_f_t_inc = int(col_prev_left["y_f_t"])
+
+                    last_col_inc: dict[str, Any] | None = None
 
                     for c_inc in range(int(right_edge_cols)):
                         dest_x = int(w) - int(right_edge_cols) + int(c_inc)
@@ -4636,13 +4685,14 @@ def _render_hud_scroll_frames_png(
                         col_now_inc["abs_s_on"] = bool(abs_s_on_inc)
                         col_now_inc["abs_f_on"] = bool(abs_f_on_inc)
 
-                        if prev_col_inc is not None:
-                            x_prev_inc = int(prev_col_inc["x"])
-                            x_cur_inc = int(col_now_inc["x"])
-                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_s_b"])), (x_cur_inc, int(col_now_inc["y_s_b"]))], fill=COL_SLOW_DARKRED, width=2)
-                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_s_t"])), (x_cur_inc, int(col_now_inc["y_s_t"]))], fill=COL_SLOW_BRIGHTRED, width=2)
-                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_f_b"])), (x_cur_inc, int(col_now_inc["y_f_b"]))], fill=COL_FAST_DARKBLUE, width=2)
-                            tb_dr_next.line([(x_prev_inc, int(prev_col_inc["y_f_t"])), (x_cur_inc, int(col_now_inc["y_f_t"]))], fill=COL_FAST_BRIGHTBLUE, width=2)
+                        if prev_x_inc is not None and prev_y_s_b_inc is not None:
+                            tb_dr_next.line([(int(prev_x_inc), int(prev_y_s_b_inc)), (int(dest_x), int(col_now_inc["y_s_b"]))], fill=COL_SLOW_DARKRED, width=2)
+                        if prev_x_inc is not None and prev_y_s_t_inc is not None:
+                            tb_dr_next.line([(int(prev_x_inc), int(prev_y_s_t_inc)), (int(dest_x), int(col_now_inc["y_s_t"]))], fill=COL_SLOW_BRIGHTRED, width=2)
+                        if prev_x_inc is not None and prev_y_f_b_inc is not None:
+                            tb_dr_next.line([(int(prev_x_inc), int(prev_y_f_b_inc)), (int(dest_x), int(col_now_inc["y_f_b"]))], fill=COL_FAST_DARKBLUE, width=2)
+                        if prev_x_inc is not None and prev_y_f_t_inc is not None:
+                            tb_dr_next.line([(int(prev_x_inc), int(prev_y_f_t_inc)), (int(dest_x), int(col_now_inc["y_f_t"]))], fill=COL_FAST_BRIGHTBLUE, width=2)
 
                         if bool(col_now_inc["abs_s_on"]):
                             y0_abs_s_inc = int(tb_layout["y_abs_s"])
@@ -4656,15 +4706,28 @@ def _render_hud_scroll_frames_png(
                         tb_cols_next.append(col_now_inc)
                         if len(tb_cols_next) > int(w):
                             tb_cols_next = tb_cols_next[-int(w):]
-                        prev_col_inc = col_now_inc
+                        prev_x_inc = int(dest_x)
+                        prev_y_s_b_inc = int(col_now_inc["y_s_b"])
+                        prev_y_s_t_inc = int(col_now_inc["y_s_t"])
+                        prev_y_f_b_inc = int(col_now_inc["y_f_b"])
+                        prev_y_f_t_inc = int(col_now_inc["y_f_t"])
+                        last_col_inc = col_now_inc
 
-                    right_sample_now = int(tb_cols_next[-1]["slow_idx"]) if tb_cols_next else _right_edge_sample_idx()
+                    if last_col_inc is None:
+                        last_col_inc = _tb_sample_column(int(w) - 1)
+                    right_sample_now = int(last_col_inc["slow_idx"]) if last_col_inc is not None else _right_edge_sample_idx()
                     state["dynamic_layer"] = dynamic_next
                     state["scroll_pos_px"] = float(scroll_pos_px)
                     state["last_i"] = int(i)
                     state["last_right_sample"] = int(right_sample_now)
                     state["window_frames"] = int(window_frames)
                     state["tb_cols"] = tb_cols_next
+                    state["last_y"] = (
+                        int(last_col_inc["y_s_b"]),
+                        int(last_col_inc["y_s_t"]),
+                        int(last_col_inc["y_f_b"]),
+                        int(last_col_inc["y_f_t"]),
+                    )
                     state["tb_abs_s_on"] = bool(tb_abs_state_inc.get("tb_abs_s_on", False))
                     state["tb_abs_f_on"] = bool(tb_abs_state_inc.get("tb_abs_f_on", False))
                     state["tb_abs_s_on_count"] = int(tb_abs_state_inc.get("tb_abs_s_on_count", 0))
