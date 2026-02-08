@@ -14,6 +14,7 @@ from huds.common import (
     format_int_or_1dp,
     should_suppress_boundary_label,
     value_boundaries_to_y,
+    _text_size,
 )
 
 
@@ -63,6 +64,7 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             font_axis_small = None
             font_title = None
             font_val = None
+            data_area_top = int(y0 + 10)
 
             # --- Headroom nur oben (positiv) ---
             # Default: 1.20 (20% Headroom oben). Unten kein Headroom.
@@ -102,8 +104,10 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                         yy_v = mid_y - (sn_v * amp_neg)
                     return int(round(yy_v))
 
-                y_top_i = int(y0)
+                y_top_i = int(max(int(data_area_top), int(y0 + 1)))
                 y_bot_i = int(y0 + h - 1)
+                if y_top_i >= y_bot_i:
+                    y_top_i = max(int(y0 + 1), y_bot_i - 1)
                 sn_top = (mid_y - float(y_top_i)) / max(1e-6, amp_pos)
                 sn_bot = (mid_y - float(y_bot_i)) / max(1e-6, amp_neg)
                 val_top = float(sn_top * deg_scale)
@@ -134,18 +138,19 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             # 0-Lenkung Mittellinie (Linie spaeter zeichnen).
             y_mid = int(round(mid_y))
     
-            # Titel oben links + Werte am Marker (grÃ¶ÃŸer, gleiche HÃ¶he, stabil formatiert)
+            text_pad_top = 4
+            y_txt = int(y0 + text_pad_top)
+            title_pos = (int(x0 + 4), y_txt)
+            font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+            font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+            data_area_top = int(y_txt + 12)
+            _text_w = lambda text, font_obj: int(len(str(text)) * 8)
             try:
-                try:
-                    from PIL import ImageFont
-                except Exception:
-                    ImageFont = None  # type: ignore
-    
-                # SchriftgrÃ¶ÃŸen: bewusst kleiner und ruhiger
-                # Titel etwas kleiner als Werte
-                font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-    
+                from PIL import ImageFont
+            except Exception:
+                ImageFont = None  # type: ignore
+
+            try:
                 def _load_font(sz: int):
                     if ImageFont is None:
                         return None
@@ -161,15 +166,31 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                         return ImageFont.load_default()
                     except Exception:
                         return None
-    
+
                 font_title = _load_font(font_sz)
                 font_val = _load_font(font_val_sz)
                 font_axis = _load_font(max(8, int(font_sz - 2)))
                 font_axis_small = _load_font(max(7, int(font_sz - 3)))
-    
-                def _text_w(text: str, font_obj):
+
+                def _safe_text_height(font_obj: Any, sample: str, fallback: float) -> int:
+                    if font_obj is None:
+                        return max(1, int(round(float(fallback))))
                     try:
-                        # Pillow >= 8: textbbox vorhanden
+                        _, height = _text_size(dr, sample, font_obj)
+                        return max(1, int(height))
+                    except Exception:
+                        return max(1, int(round(float(fallback))))
+
+                title_height = _safe_text_height(font_title, title_txt, font_sz)
+                value_height = _safe_text_height(font_val, "+000°", font_val_sz)
+                text_block_height = max(1, title_height, value_height)
+                top_candidate = int(y_txt + text_block_height + 6)
+                data_area_top = max(int(y0 + 6), int(min(int(y0 + h - 6), top_candidate)))
+
+                def _text_w_local(text: str, font_obj: Any) -> int:
+                    if font_obj is None:
+                        return int(len(text) * 8)
+                    try:
                         bb = dr.textbbox((0, 0), text, font=font_obj)
                         return int(bb[2] - bb[0])
                     except Exception:
@@ -177,59 +198,8 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                             return int(dr.textlength(text, font=font_obj))
                         except Exception:
                             return int(len(text) * 8)
-    
-                y_txt = int(y0 + 4)  # mehr Luft nach oben
-                title_pos = (int(x0 + 4), y_txt)
-    
-                # Werte holen (Radiant -> Grad)
-                sv_cur = 0.0
-                if slow_steer_frames:
-                    si_cur = int(round(float(i) * float(steer_slow_scale)))
-                    if si_cur < 0:
-                        si_cur = 0
-                    if si_cur >= len(slow_steer_frames):
-                        si_cur = len(slow_steer_frames) - 1
-                    sv_cur = float(slow_steer_frames[si_cur])
-    
-                fi_cur = int(i)
-                if slow_to_fast_frame and int(i) < len(slow_to_fast_frame):
-                    fi_cur = int(slow_to_fast_frame[int(i)])
-                    if fi_cur < 0:
-                        fi_cur = 0
-    
-                fv_cur = 0.0
-                if fast_steer_frames:
-                    fi_csv_cur = int(round(float(fi_cur) * float(steer_fast_scale)))
-                    if fi_csv_cur < 0:
-                        fi_csv_cur = 0
-                    if fi_csv_cur >= len(fast_steer_frames):
-                        fi_csv_cur = len(fast_steer_frames) - 1
-                    fv_cur = float(fast_steer_frames[fi_csv_cur])
-    
-                sdeg = int(round(float(sv_cur) * 180.0 / math.pi))
-                fdeg = int(round(float(fv_cur) * 180.0 / math.pi))
-    
-                # Stabil: immer Vorzeichen + 3 Ziffern -> kein Springen
-                # Beispiel: +075Â°, -147Â°
-                s_txt = f"{sdeg:+04d}Â°"
-                f_txt = f"{fdeg:+04d}Â°"
-    
-                mx = int(x0 + (w // 2))
-                gap = 12  # ~1 Ziffer Abstand zum Marker
-    
-                # Rot nÃ¤her an den Marker (links), Blau rechts
-                f_w = _text_w(f_txt, font_val)
-                f_x = int(mx - gap - f_w)
-                s_x = int(mx + gap)
-    
-                # Clamp in die Box
-                if f_x < int(x0 + 2):
-                    f_x = int(x0 + 2)
-                if s_x > int(x0 + w - 2):
-                    s_x = int(x0 + w - 2)
-    
-                fast_val_draw = (f_x, y_txt, f_txt)
-                slow_val_draw = (s_x, y_txt, s_txt)
+
+                _text_w = _text_w_local
             except Exception:
                 pass
     
@@ -452,18 +422,61 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
 
             axis_labels = filter_axis_labels_by_position(
                 axis_labels,
-                int(y0 + 4),
+                int(data_area_top),
                 int(y0 + h - 5),
                 zero_y=int(round(mid_y)),
                 pad_px=2,
             )
+
+            try:
+                sv_cur = 0.0
+                if slow_steer_frames:
+                    si_cur = int(round(float(i) * float(steer_slow_scale)))
+                    si_cur = max(0, min(si_cur, len(slow_steer_frames) - 1))
+                    sv_cur = float(slow_steer_frames[si_cur])
+
+                fi_cur = int(i)
+                if slow_to_fast_frame and int(i) < len(slow_to_fast_frame):
+                    fi_cur = int(slow_to_fast_frame[int(i)])
+                    if fi_cur < 0:
+                        fi_cur = 0
+
+                fv_cur = 0.0
+                if fast_steer_frames:
+                    fi_csv_cur = int(round(float(fi_cur) * float(steer_fast_scale)))
+                    fi_csv_cur = max(0, min(fi_csv_cur, len(fast_steer_frames) - 1))
+                    fv_cur = float(fast_steer_frames[fi_csv_cur])
+
+                sdeg = int(round(float(sv_cur) * 180.0 / math.pi))
+                fdeg = int(round(float(fv_cur) * 180.0 / math.pi))
+
+                s_txt = f"{sdeg:+04d}Â°"
+                f_txt = f"{fdeg:+04d}Â°"
+
+                mx = int(x0 + (w // 2))
+                gap = 12
+
+                f_w = _text_w(f_txt, font_val)
+                f_x = int(mx - gap - f_w)
+                s_x = int(mx + gap)
+
+                if f_x < int(x0 + 2):
+                    f_x = int(x0 + 2)
+                if s_x > int(x0 + w - 2):
+                    s_x = int(x0 + w - 2)
+
+                fast_val_draw = (f_x, y_txt, f_txt)
+                slow_val_draw = (s_x, y_txt, s_txt)
+            except Exception:
+                fast_val_draw = None
+                slow_val_draw = None
 
             # Story 10: Text zuletzt (Y-Achse, Titel, Werte).
             draw_left_axis_labels(
                 dr,
                 int(x0),
                 int(w),
-                int(y0 + 4),
+                int(data_area_top),
                 int(y0 + h - 5),
                 axis_labels,
                 font_axis,
