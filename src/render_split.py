@@ -2631,6 +2631,7 @@ def _render_hud_scroll_frames_png(
                 is_steering = str(hud_key) == "Steering"
                 is_delta = str(hud_key) == "Delta"
                 is_line_delta = str(hud_key) == "Line Delta"
+                is_under_oversteer = str(hud_key) == "Under-/Oversteer"
                 tb_layout: dict[str, Any] = {}
                 tb_map_idx_to_t_slow: dict[int, float] = {}
                 tb_map_idx_to_t_fast: dict[int, float] = {}
@@ -3811,6 +3812,288 @@ def _render_hud_scroll_frames_png(
                         except Exception:
                             pass
 
+                if is_under_oversteer:
+                    def _uo_load_font(sz: int):
+                        try:
+                            from PIL import ImageFont
+                        except Exception:
+                            ImageFont = None  # type: ignore
+                        if ImageFont is None:
+                            return None
+                        try:
+                            return ImageFont.truetype("arial.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.truetype("DejaVuSans.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.load_default()
+                        except Exception:
+                            return None
+
+                    uo_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                    uo_font_axis_sz = max(8, int(uo_font_sz - 2))
+                    uo_font_axis_small_sz = max(7, int(uo_font_sz - 3))
+                    uo_top_pad = int(round(max(14.0, float(uo_font_sz) + 8.0)))
+                    uo_plot_y0 = int(uo_top_pad)
+                    uo_plot_y1 = int(h - 2)
+                    if uo_plot_y1 <= uo_plot_y0 + 4:
+                        uo_plot_y0 = int(2)
+                        uo_plot_y1 = int(h - 2)
+
+                    uo_mx = int(w // 2)
+                    uo_marker_xf = float(uo_mx)
+                    uo_half_w = float(max(1, int(w) - 1)) / 2.0
+                    uo_layout = {
+                        "font_title": _uo_load_font(uo_font_sz),
+                        "font_axis": _uo_load_font(uo_font_axis_sz),
+                        "font_axis_small": _uo_load_font(uo_font_axis_small_sz),
+                        "label_x": int(4),
+                        "label_top_y": int(2),
+                        "label_bottom_y": int(h - uo_font_sz - 2),
+                        "mx": int(uo_mx),
+                        "marker_xf": float(uo_marker_xf),
+                        "half_w": float(uo_half_w),
+                        "plot_y0": int(uo_plot_y0),
+                        "plot_y1": int(uo_plot_y1),
+                    }
+
+                    uo_slow_vals = under_oversteer_slow_frames if isinstance(under_oversteer_slow_frames, list) else []
+                    uo_fast_vals = under_oversteer_fast_frames if isinstance(under_oversteer_fast_frames, list) else []
+                    uo_n_slow = len(uo_slow_vals)
+                    uo_n_fast = len(uo_fast_vals)
+
+                    uo_y_abs = 0.0
+                    try:
+                        uo_y_abs = abs(float(under_oversteer_y_abs))
+                    except Exception:
+                        uo_y_abs = 0.0
+                    if (not math.isfinite(uo_y_abs)) or uo_y_abs < 1e-6:
+                        uo_y_abs = 1.0
+                    uo_y_min = -float(uo_y_abs)
+                    uo_y_max = float(uo_y_abs)
+                    uo_y_den = float(uo_y_max - uo_y_min)
+                    if uo_y_den <= 1e-12:
+                        uo_y_den = 1.0
+
+                    def _uo_y_from_val(v: float) -> int:
+                        vv = float(v)
+                        if vv < uo_y_min:
+                            vv = uo_y_min
+                        if vv > uo_y_max:
+                            vv = uo_y_max
+                        frac = (vv - uo_y_min) / float(uo_y_den)
+                        yy = float(uo_layout["plot_y1"]) - (frac * float(int(uo_layout["plot_y1"]) - int(uo_layout["plot_y0"])))
+                        return int(round(yy))
+
+                    def _uo_slow_idx_for_column(x_col: int) -> int:
+                        xi = int(x_col)
+                        if xi < 0:
+                            xi = 0
+                        if xi >= int(w):
+                            xi = int(w) - 1
+
+                        frac = (float(xi) - float(uo_layout["marker_xf"])) / max(1.0, float(uo_layout["half_w"]))
+                        frac = _clamp(float(frac), -1.0, 1.0)
+                        if frac <= 0.0:
+                            off_f = float(frac) * float(before_f)
+                        else:
+                            off_f = float(frac) * float(after_f)
+
+                        idx_slow = int(round(float(i) + float(off_f)))
+                        if idx_slow < int(iL):
+                            idx_slow = int(iL)
+                        if idx_slow > int(iR):
+                            idx_slow = int(iR)
+                        if idx_slow < 0:
+                            idx_slow = 0
+                        if idx_slow >= len(slow_frame_to_lapdist):
+                            idx_slow = len(slow_frame_to_lapdist) - 1
+                        return int(idx_slow)
+
+                    def _uo_fast_idx_for_slow_idx(idx0: int) -> int:
+                        if uo_n_fast <= 0:
+                            return 0
+                        idx_fast = int(idx0)
+                        if idx_fast < 0:
+                            idx_fast = 0
+                        if idx_fast >= uo_n_fast:
+                            idx_fast = uo_n_fast - 1
+                        return int(idx_fast)
+
+                    def _uo_sample_slow_value(idx0: int) -> float:
+                        if uo_n_slow <= 0:
+                            return 0.0
+                        ii = int(idx0)
+                        if ii < 0:
+                            ii = 0
+                        if ii >= uo_n_slow:
+                            ii = uo_n_slow - 1
+                        try:
+                            vv = float(uo_slow_vals[ii])
+                        except Exception:
+                            vv = 0.0
+                        if not math.isfinite(vv):
+                            vv = 0.0
+                        return float(vv)
+
+                    def _uo_sample_fast_value(idx0: int) -> float:
+                        if uo_n_fast <= 0:
+                            return 0.0
+                        ii = int(idx0)
+                        if ii < 0:
+                            ii = 0
+                        if ii >= uo_n_fast:
+                            ii = uo_n_fast - 1
+                        try:
+                            vv = float(uo_fast_vals[ii])
+                        except Exception:
+                            vv = 0.0
+                        if not math.isfinite(vv):
+                            vv = 0.0
+                        return float(vv)
+
+                    def _uo_sample_column(x_col: int) -> dict[str, Any]:
+                        xi = int(x_col)
+                        if xi < 0:
+                            xi = 0
+                        if xi >= int(w):
+                            xi = int(w) - 1
+
+                        idx_slow = _uo_slow_idx_for_column(int(xi))
+                        idx_fast = _uo_fast_idx_for_slow_idx(int(idx_slow))
+                        val_slow = float(_uo_sample_slow_value(int(idx_slow)))
+                        val_fast = float(_uo_sample_fast_value(int(idx_fast)))
+                        y_slow = int(_uo_y_from_val(float(val_slow)))
+                        y_fast = int(_uo_y_from_val(float(val_fast)))
+                        return {
+                            "x": int(xi),
+                            "slow_idx": int(idx_slow),
+                            "fast_idx": int(idx_fast),
+                            "slow_val": float(val_slow),
+                            "fast_val": float(val_fast),
+                            "y_s": int(y_slow),
+                            "y_f": int(y_fast),
+                        }
+
+                    def _uo_render_static_layer() -> Any:
+                        static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        static_dr_local = ImageDraw.Draw(static_img_local)
+                        static_dr_local.rectangle([0, 0, int(w) - 1, int(h) - 1], fill=COL_HUD_BG)
+
+                        axis_labels: list[tuple[int, str]] = []
+                        try:
+                            tick_ref_max = max(abs(float(uo_y_min)), abs(float(uo_y_max)))
+                            step = choose_tick_step(0.0, tick_ref_max, min_segments=2, max_segments=5, target_segments=5)
+                            if step is not None:
+                                val_bounds = build_value_boundaries(uo_y_min, uo_y_max, float(step), anchor="top")
+                                y_bounds = value_boundaries_to_y(
+                                    val_bounds,
+                                    _uo_y_from_val,
+                                    int(uo_layout["plot_y0"]),
+                                    int(uo_layout["plot_y1"]),
+                                )
+                                draw_stripe_grid(
+                                    static_dr_local,
+                                    int(0),
+                                    int(w),
+                                    int(uo_layout["plot_y0"]),
+                                    int(uo_layout["plot_y1"]),
+                                    y_bounds,
+                                    col_bg=COL_HUD_BG,
+                                    darken_delta=6,
+                                )
+                                for vv in val_bounds:
+                                    if should_suppress_boundary_label(float(vv), uo_y_min, uo_y_max, suppress_zero=True):
+                                        continue
+                                    axis_labels.append(
+                                        (
+                                            int(_uo_y_from_val(float(vv))),
+                                            format_value_for_step(float(vv), float(step), min_decimals=0),
+                                        )
+                                    )
+                        except Exception:
+                            pass
+
+                        y_zero = int(_uo_y_from_val(0.0))
+                        axis_labels = filter_axis_labels_by_position(
+                            axis_labels,
+                            int(uo_layout["plot_y0"]),
+                            int(uo_layout["plot_y1"]),
+                            zero_y=int(y_zero),
+                            pad_px=2,
+                        )
+                        draw_left_axis_labels(
+                            static_dr_local,
+                            int(0),
+                            int(w),
+                            int(uo_layout["plot_y0"]),
+                            int(uo_layout["plot_y1"]),
+                            axis_labels,
+                            uo_layout.get("font_axis"),
+                            col_text=COL_WHITE,
+                            x_pad=6,
+                            fallback_font_obj=uo_layout.get("font_axis_small"),
+                        )
+                        try:
+                            static_dr_local.text(
+                                (int(uo_layout["label_x"]), int(uo_layout["label_top_y"])),
+                                "Oversteer",
+                                fill=COL_WHITE,
+                                font=uo_layout.get("font_title"),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            static_dr_local.text(
+                                (int(uo_layout["label_x"]), int(uo_layout["label_bottom_y"])),
+                                "Understeer",
+                                fill=COL_WHITE,
+                                font=uo_layout.get("font_title"),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            static_dr_local.line([(0, int(y_zero)), (int(w) - 1, int(y_zero))], fill=COL_WHITE, width=1)
+                        except Exception:
+                            pass
+                        try:
+                            mx_s = int(uo_layout["mx"])
+                            static_dr_local.rectangle([mx_s, 0, mx_s + 1, int(h)], fill=(255, 255, 255, 230))
+                        except Exception:
+                            pass
+                        return static_img_local
+
+                    def _uo_render_dynamic_full() -> tuple[Any, list[dict[str, Any]]]:
+                        dyn_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        dyn_dr_local = ImageDraw.Draw(dyn_img_local)
+                        uo_cols_local: list[dict[str, Any]] = []
+                        prev_col: dict[str, Any] | None = None
+                        for xi_full in range(int(w)):
+                            col_now = _uo_sample_column(int(xi_full))
+                            if prev_col is not None:
+                                try:
+                                    dyn_dr_local.line(
+                                        [(int(prev_col["x"]), int(prev_col["y_s"])), (int(col_now["x"]), int(col_now["y_s"]))],
+                                        fill=COL_SLOW_DARKRED,
+                                        width=2,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    dyn_dr_local.line(
+                                        [(int(prev_col["x"]), int(prev_col["y_f"])), (int(col_now["x"]), int(col_now["y_f"]))],
+                                        fill=COL_FAST_DARKBLUE,
+                                        width=2,
+                                    )
+                                except Exception:
+                                    pass
+                            uo_cols_local.append(col_now)
+                            prev_col = col_now
+                        return dyn_img_local, uo_cols_local
+
                 def _render_scroll_hud_full(
                     scroll_pos_px_local: float,
                     shift_int_local: int,
@@ -4109,6 +4392,23 @@ def _render_hud_scroll_frames_png(
                         img.paste(static_layer, (int(x0), int(y0)), static_layer)
                         img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
                         _ld_draw_values_overlay(dr, int(x0), int(y0))
+                    elif is_under_oversteer:
+                        static_layer = _uo_render_static_layer()
+                        dynamic_layer, uo_cols_fill = _uo_render_dynamic_full()
+                        uo_last_col_fill = uo_cols_fill[-1] if uo_cols_fill else _uo_sample_column(int(w) - 1)
+                        right_sample_now = int(uo_last_col_fill["slow_idx"]) if uo_last_col_fill is not None else _right_edge_sample_idx()
+                        scroll_state_by_hud[hud_state_key] = {
+                            "static_layer": static_layer,
+                            "dynamic_layer": dynamic_layer,
+                            "scroll_pos_px": 0.0,
+                            "last_i": int(i),
+                            "last_right_sample": int(right_sample_now),
+                            "window_frames": int(window_frames),
+                            "last_y": (int(uo_last_col_fill["y_s"]), int(uo_last_col_fill["y_f"])),
+                            "uo_last_fast_idx": int(uo_last_col_fill["fast_idx"]),
+                        }
+                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
+                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
                     else:
                         static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         dynamic_layer = _render_scroll_hud_full(
@@ -4437,6 +4737,82 @@ def _render_hud_scroll_frames_png(
                         img.paste(static_now, (int(x0), int(y0)), static_now)
                     img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
                     _ld_draw_values_overlay(dr, int(x0), int(y0))
+                elif is_under_oversteer:
+                    uo_dr_next = ImageDraw.Draw(dynamic_next)
+
+                    prev_x_inc: int | None = None
+                    prev_y_s_inc: int | None = None
+                    prev_y_f_inc: int | None = None
+                    if int(right_edge_cols) > 0:
+                        first_dest_x = int(w) - int(right_edge_cols)
+                        if first_dest_x < 0:
+                            first_dest_x = 0
+                        if first_dest_x > 0:
+                            prev_x_inc = int(first_dest_x) - 1
+                            if shift_px > 0:
+                                last_y_state = state.get("last_y")
+                                if isinstance(last_y_state, (list, tuple)) and len(last_y_state) >= 2:
+                                    try:
+                                        prev_y_s_inc = int(last_y_state[0])
+                                        prev_y_f_inc = int(last_y_state[1])
+                                    except Exception:
+                                        prev_y_s_inc = None
+                                        prev_y_f_inc = None
+                            if prev_y_s_inc is None or prev_y_f_inc is None:
+                                col_prev_left = _uo_sample_column(int(prev_x_inc))
+                                prev_y_s_inc = int(col_prev_left["y_s"])
+                                prev_y_f_inc = int(col_prev_left["y_f"])
+
+                    last_col_inc: dict[str, Any] | None = None
+                    for c_inc in range(int(right_edge_cols)):
+                        dest_x = int(w) - int(right_edge_cols) + int(c_inc)
+                        if dest_x < 0:
+                            dest_x = 0
+                        if dest_x >= int(w):
+                            dest_x = int(w) - 1
+
+                        dynamic_next.paste((0, 0, 0, 0), (int(dest_x), 0, int(dest_x) + 1, int(h)))
+                        col_now_inc = _uo_sample_column(int(dest_x))
+
+                        if prev_x_inc is not None and prev_y_s_inc is not None:
+                            try:
+                                uo_dr_next.line(
+                                    [(int(prev_x_inc), int(prev_y_s_inc)), (int(dest_x), int(col_now_inc["y_s"]))],
+                                    fill=COL_SLOW_DARKRED,
+                                    width=2,
+                                )
+                            except Exception:
+                                pass
+                        if prev_x_inc is not None and prev_y_f_inc is not None:
+                            try:
+                                uo_dr_next.line(
+                                    [(int(prev_x_inc), int(prev_y_f_inc)), (int(dest_x), int(col_now_inc["y_f"]))],
+                                    fill=COL_FAST_DARKBLUE,
+                                    width=2,
+                                )
+                            except Exception:
+                                pass
+
+                        prev_x_inc = int(dest_x)
+                        prev_y_s_inc = int(col_now_inc["y_s"])
+                        prev_y_f_inc = int(col_now_inc["y_f"])
+                        last_col_inc = col_now_inc
+
+                    if last_col_inc is None:
+                        last_col_inc = _uo_sample_column(int(w) - 1)
+                    right_sample_now = int(last_col_inc["slow_idx"]) if last_col_inc is not None else _right_edge_sample_idx()
+                    state["dynamic_layer"] = dynamic_next
+                    state["scroll_pos_px"] = float(scroll_pos_px)
+                    state["last_i"] = int(i)
+                    state["last_right_sample"] = int(right_sample_now)
+                    state["window_frames"] = int(window_frames)
+                    state["last_y"] = (int(last_col_inc["y_s"]), int(last_col_inc["y_f"]))
+                    state["uo_last_fast_idx"] = int(last_col_inc["fast_idx"])
+
+                    static_now = state.get("static_layer")
+                    if static_now is not None:
+                        img.paste(static_now, (int(x0), int(y0)), static_now)
+                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
                 else:
                     hud_full_now = _render_scroll_hud_full(
                         scroll_pos_px_local=scroll_pos_px,
