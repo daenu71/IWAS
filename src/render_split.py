@@ -2620,6 +2620,7 @@ def _render_hud_scroll_frames_png(
                     return int(idx_r)
 
                 is_throttle_brake = str(hud_key) == "Throttle / Brake"
+                is_steering = str(hud_key) == "Steering"
                 tb_layout: dict[str, Any] = {}
                 tb_map_idx_to_t_slow: dict[int, float] = {}
                 tb_map_idx_to_t_fast: dict[int, float] = {}
@@ -3073,6 +3074,218 @@ def _render_hud_scroll_frames_png(
                         except Exception:
                             pass
 
+                if is_steering:
+                    st_map_idx_to_fast_idx: dict[int, int] = {}
+                    map_idxs_all_st = list(getattr(frame_window_mapping, "idxs", []) or [])
+                    map_fast_idx_all_st = list(getattr(frame_window_mapping, "fast_idx", []) or [])
+                    if map_idxs_all_st and len(map_idxs_all_st) == len(map_fast_idx_all_st):
+                        for idx_m_st, fi_m_st in zip(map_idxs_all_st, map_fast_idx_all_st):
+                            st_map_idx_to_fast_idx[int(idx_m_st)] = int(fi_m_st)
+
+                    try:
+                        st_headroom = float((os.environ.get("IRVC_STEER_HEADROOM") or "").strip() or "1.20")
+                    except Exception:
+                        st_headroom = 1.20
+                    if st_headroom < 1.00:
+                        st_headroom = 1.00
+                    if st_headroom > 2.00:
+                        st_headroom = 2.00
+
+                    st_mid_y = float(h) / 2.0
+                    st_amp_base = max(2.0, (float(h) / 2.0) - 2.0)
+                    st_amp_neg = st_amp_base
+                    st_amp_pos = st_amp_base / max(1.0, float(st_headroom))
+                    st_mx = int(w // 2)
+                    st_marker_xf = float(st_mx)
+                    st_half_w = float(max(1, int(w) - 1)) / 2.0
+
+                    def _st_load_font(sz: int):
+                        try:
+                            from PIL import ImageFont
+                        except Exception:
+                            ImageFont = None  # type: ignore
+                        if ImageFont is None:
+                            return None
+                        try:
+                            return ImageFont.truetype("arial.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.truetype("DejaVuSans.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.load_default()
+                        except Exception:
+                            return None
+
+                    st_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                    st_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                    st_layout = {
+                        "font_title": _st_load_font(st_font_sz),
+                        "font_val": _st_load_font(st_font_val_sz),
+                        "y_txt": int(4),
+                        "mx": int(st_mx),
+                        "y_mid": int(round(st_mid_y)),
+                        "marker_xf": float(st_marker_xf),
+                        "half_w": float(st_half_w),
+                    }
+
+                    def _st_y_from_norm(sn: float) -> int:
+                        sn_c = _clamp(float(sn), -1.0, 1.0)
+                        if sn_c >= 0.0:
+                            yy = float(st_mid_y) - (float(sn_c) * float(st_amp_pos))
+                        else:
+                            yy = float(st_mid_y) - (float(sn_c) * float(st_amp_neg))
+                        return int(round(yy))
+
+                    def _st_fast_idx_from_slow_idx(idx0: int) -> int:
+                        ii = int(idx0)
+                        if ii < 0:
+                            ii = 0
+                        has_map = int(ii) in st_map_idx_to_fast_idx
+                        fi_map = int(st_map_idx_to_fast_idx.get(int(ii), int(ii)))
+                        if fi_map < 0:
+                            fi_map = 0
+                        if (not has_map) and slow_to_fast_frame and int(ii) < len(slow_to_fast_frame):
+                            try:
+                                fi_map = int(slow_to_fast_frame[int(ii)])
+                                if fi_map < 0:
+                                    fi_map = 0
+                            except Exception:
+                                pass
+                        return int(fi_map)
+
+                    def _st_sample_legacy(vals: list[float] | None, idx_base: int, scale: float) -> float:
+                        if not vals:
+                            return 0.0
+                        i_legacy = int(round(float(idx_base) * float(scale)))
+                        if i_legacy < 0:
+                            i_legacy = 0
+                        if i_legacy >= len(vals):
+                            i_legacy = len(vals) - 1
+                        try:
+                            return float(vals[i_legacy])
+                        except Exception:
+                            return 0.0
+
+                    def _st_sample_column(x_col: int) -> dict[str, Any]:
+                        xi = int(x_col)
+                        if xi < 0:
+                            xi = 0
+                        if xi >= int(w):
+                            xi = int(w) - 1
+
+                        frac = (float(xi) - float(st_layout["marker_xf"])) / max(1.0, float(st_layout["half_w"]))
+                        frac = _clamp(float(frac), -1.0, 1.0)
+                        if frac <= 0.0:
+                            off_f = float(frac) * float(before_f)
+                        else:
+                            off_f = float(frac) * float(after_f)
+
+                        idx_slow = int(round(float(i) + float(off_f)))
+                        if idx_slow < int(iL):
+                            idx_slow = int(iL)
+                        if idx_slow > int(iR):
+                            idx_slow = int(iR)
+                        if idx_slow < 0:
+                            idx_slow = 0
+                        if idx_slow >= len(slow_frame_to_lapdist):
+                            idx_slow = len(slow_frame_to_lapdist) - 1
+
+                        fi_map = _st_fast_idx_from_slow_idx(int(idx_slow))
+                        sv = _st_sample_legacy(slow_steer_frames, int(idx_slow), float(steer_slow_scale))
+                        fv = _st_sample_legacy(fast_steer_frames, int(fi_map), float(steer_fast_scale))
+
+                        sn = _clamp(float(sv) / max(1e-6, float(steer_abs_max)), -1.0, 1.0)
+                        fn = _clamp(float(fv) / max(1e-6, float(steer_abs_max)), -1.0, 1.0)
+                        y_s = _st_y_from_norm(float(sn))
+                        y_f = _st_y_from_norm(float(fn))
+                        return {
+                            "x": int(xi),
+                            "slow_idx": int(idx_slow),
+                            "fast_idx": int(fi_map),
+                            "s": float(sv),
+                            "f": float(fv),
+                            "y_s": int(y_s),
+                            "y_f": int(y_f),
+                        }
+
+                    def _st_text_w(dr_any: Any, text: str, font_obj: Any) -> int:
+                        try:
+                            bb = dr_any.textbbox((0, 0), str(text), font=font_obj)
+                            return int(bb[2] - bb[0])
+                        except Exception:
+                            try:
+                                return int(dr_any.textlength(str(text), font=font_obj))
+                            except Exception:
+                                return int(len(str(text)) * 8)
+
+                    def _st_render_static_layer() -> Any:
+                        static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        static_dr_local = ImageDraw.Draw(static_img_local)
+                        static_dr_local.rectangle([0, 0, int(w) - 1, int(h) - 1], fill=COL_HUD_BG)
+                        try:
+                            static_dr_local.line(
+                                [(0, int(st_layout["y_mid"])), (int(w) - 1, int(st_layout["y_mid"]))],
+                                fill=(COL_WHITE[0], COL_WHITE[1], COL_WHITE[2], 180),
+                                width=1,
+                            )
+                        except Exception:
+                            pass
+                        mx_s = int(st_layout["mx"])
+                        static_dr_local.rectangle([mx_s, 0, mx_s + 1, int(h)], fill=(255, 255, 255, 230))
+                        try:
+                            static_dr_local.text((4, int(st_layout["y_txt"])), "Steering wheel angle", fill=COL_WHITE, font=st_layout.get("font_title"))
+                        except Exception:
+                            pass
+                        return static_img_local
+
+                    def _st_render_dynamic_full() -> tuple[Any, list[dict[str, Any]]]:
+                        dyn_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        dyn_dr_local = ImageDraw.Draw(dyn_img_local)
+                        st_cols_local: list[dict[str, Any]] = []
+                        prev_col: dict[str, Any] | None = None
+                        for xi_full in range(int(w)):
+                            col_now = _st_sample_column(int(xi_full))
+                            if prev_col is not None:
+                                x_prev = int(prev_col["x"])
+                                x_cur = int(col_now["x"])
+                                dyn_dr_local.line([(x_prev, int(prev_col["y_s"])), (x_cur, int(col_now["y_s"]))], fill=COL_SLOW_DARKRED, width=2)
+                                dyn_dr_local.line([(x_prev, int(prev_col["y_f"])), (x_cur, int(col_now["y_f"]))], fill=COL_FAST_DARKBLUE, width=2)
+                            st_cols_local.append(col_now)
+                            prev_col = col_now
+                        return dyn_img_local, st_cols_local
+
+                    def _st_draw_values_overlay(main_dr_local: Any, base_x: int, base_y: int) -> None:
+                        sv_cur = _st_sample_legacy(slow_steer_frames, int(i), float(steer_slow_scale))
+                        fi_cur = _st_fast_idx_from_slow_idx(int(i))
+                        fv_cur = _st_sample_legacy(fast_steer_frames, int(fi_cur), float(steer_fast_scale))
+
+                        sdeg = int(round(float(sv_cur) * 180.0 / math.pi))
+                        fdeg = int(round(float(fv_cur) * 180.0 / math.pi))
+                        s_txt = f"{sdeg:+04d} deg"
+                        f_txt = f"{fdeg:+04d} deg"
+
+                        gap_txt = 12
+                        mx_txt = int(base_x) + int(st_layout["mx"])
+                        f_w_txt = _st_text_w(main_dr_local, f_txt, st_layout.get("font_val"))
+                        f_x_txt = int(mx_txt - gap_txt - f_w_txt)
+                        s_x_txt = int(mx_txt + gap_txt)
+                        if f_x_txt < int(base_x + 2):
+                            f_x_txt = int(base_x + 2)
+                        if s_x_txt > int(base_x + int(w) - 2):
+                            s_x_txt = int(base_x + int(w) - 2)
+                        y_txt_abs = int(base_y) + int(st_layout["y_txt"])
+                        try:
+                            main_dr_local.text((int(f_x_txt), int(y_txt_abs)), f_txt, fill=(255, 0, 0, 255), font=st_layout.get("font_val"))
+                        except Exception:
+                            pass
+                        try:
+                            main_dr_local.text((int(s_x_txt), int(y_txt_abs)), s_txt, fill=(0, 120, 255, 255), font=st_layout.get("font_val"))
+                        except Exception:
+                            pass
+
                 def _render_scroll_hud_full(
                     scroll_pos_px_local: float,
                     shift_int_local: int,
@@ -3316,6 +3529,24 @@ def _render_hud_scroll_frames_png(
                         img.paste(static_layer, (int(x0), int(y0)), static_layer)
                         img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
                         _tb_draw_values_overlay(dr, int(x0), int(y0))
+                    elif is_steering:
+                        static_layer = _st_render_static_layer()
+                        dynamic_layer, st_cols_fill = _st_render_dynamic_full()
+                        st_last_col_fill = st_cols_fill[-1] if st_cols_fill else _st_sample_column(int(w) - 1)
+                        right_sample_now = int(st_last_col_fill["slow_idx"]) if st_last_col_fill is not None else _right_edge_sample_idx()
+                        scroll_state_by_hud[hud_state_key] = {
+                            "static_layer": static_layer,
+                            "dynamic_layer": dynamic_layer,
+                            "scroll_pos_px": 0.0,
+                            "last_i": int(i),
+                            "last_right_sample": int(right_sample_now),
+                            "window_frames": int(window_frames),
+                            "last_y": (int(st_last_col_fill["y_s"]), int(st_last_col_fill["y_f"])),
+                            "st_last_fast_idx": int(st_last_col_fill["fast_idx"]),
+                        }
+                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
+                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                        _st_draw_values_overlay(dr, int(x0), int(y0))
                     else:
                         static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         dynamic_layer = _render_scroll_hud_full(
@@ -3436,6 +3667,77 @@ def _render_hud_scroll_frames_png(
                         img.paste(static_now, (int(x0), int(y0)), static_now)
                     img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
                     _tb_draw_values_overlay(dr, int(x0), int(y0))
+                elif is_steering:
+                    st_dr_next = ImageDraw.Draw(dynamic_next)
+
+                    prev_x_inc: int | None = None
+                    prev_y_s_inc: int | None = None
+                    prev_y_f_inc: int | None = None
+                    if int(right_edge_cols) > 0:
+                        first_dest_x = int(w) - int(right_edge_cols)
+                        if first_dest_x < 0:
+                            first_dest_x = 0
+                        if first_dest_x > 0:
+                            prev_x_inc = int(first_dest_x) - 1
+                            if shift_px > 0:
+                                last_y_state = state.get("last_y")
+                                if isinstance(last_y_state, (list, tuple)) and len(last_y_state) >= 2:
+                                    try:
+                                        prev_y_s_inc = int(last_y_state[0])
+                                        prev_y_f_inc = int(last_y_state[1])
+                                    except Exception:
+                                        prev_y_s_inc = None
+                                        prev_y_f_inc = None
+                            if prev_y_s_inc is None or prev_y_f_inc is None:
+                                col_prev_left = _st_sample_column(int(prev_x_inc))
+                                prev_y_s_inc = int(col_prev_left["y_s"])
+                                prev_y_f_inc = int(col_prev_left["y_f"])
+
+                    last_col_inc: dict[str, Any] | None = None
+                    for c_inc in range(int(right_edge_cols)):
+                        dest_x = int(w) - int(right_edge_cols) + int(c_inc)
+                        if dest_x < 0:
+                            dest_x = 0
+                        if dest_x >= int(w):
+                            dest_x = int(w) - 1
+
+                        dynamic_next.paste((0, 0, 0, 0), (int(dest_x), 0, int(dest_x) + 1, int(h)))
+                        col_now_inc = _st_sample_column(int(dest_x))
+
+                        if prev_x_inc is not None and prev_y_s_inc is not None:
+                            st_dr_next.line(
+                                [(int(prev_x_inc), int(prev_y_s_inc)), (int(dest_x), int(col_now_inc["y_s"]))],
+                                fill=COL_SLOW_DARKRED,
+                                width=2,
+                            )
+                        if prev_x_inc is not None and prev_y_f_inc is not None:
+                            st_dr_next.line(
+                                [(int(prev_x_inc), int(prev_y_f_inc)), (int(dest_x), int(col_now_inc["y_f"]))],
+                                fill=COL_FAST_DARKBLUE,
+                                width=2,
+                            )
+
+                        prev_x_inc = int(dest_x)
+                        prev_y_s_inc = int(col_now_inc["y_s"])
+                        prev_y_f_inc = int(col_now_inc["y_f"])
+                        last_col_inc = col_now_inc
+
+                    if last_col_inc is None:
+                        last_col_inc = _st_sample_column(int(w) - 1)
+                    right_sample_now = int(last_col_inc["slow_idx"]) if last_col_inc is not None else _right_edge_sample_idx()
+                    state["dynamic_layer"] = dynamic_next
+                    state["scroll_pos_px"] = float(scroll_pos_px)
+                    state["last_i"] = int(i)
+                    state["last_right_sample"] = int(right_sample_now)
+                    state["window_frames"] = int(window_frames)
+                    state["last_y"] = (int(last_col_inc["y_s"]), int(last_col_inc["y_f"]))
+                    state["st_last_fast_idx"] = int(last_col_inc["fast_idx"])
+
+                    static_now = state.get("static_layer")
+                    if static_now is not None:
+                        img.paste(static_now, (int(x0), int(y0)), static_now)
+                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
+                    _st_draw_values_overlay(dr, int(x0), int(y0))
                 else:
                     hud_full_now = _render_scroll_hud_full(
                         scroll_pos_px_local=scroll_pos_px,
