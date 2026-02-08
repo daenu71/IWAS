@@ -124,10 +124,14 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 bb = dr.textbbox((0, 0), txt, font=font_obj)
                 tw = float(bb[2] - bb[0])
                 th = float(bb[3] - bb[1])
+                bx0 = float(bb[0])
+                by0 = float(bb[1])
             except Exception:
                 tw_i, th_i = _text_wh(txt, font_obj)
                 tw = float(tw_i)
                 th = float(th_i)
+                bx0 = 0.0
+                by0 = 0.0
 
             inner_y0 = float(y0_cell + max(0, int(pad_y)))
             inner_y1 = float(y1_cell - max(0, int(pad_y)))
@@ -136,8 +140,8 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 inner_y0 = mid
                 inner_y1 = mid
 
-            tx = ((float(x0_cell) + float(x1_cell)) - tw) * 0.5
-            ty = (inner_y0 + inner_y1 - th) * 0.5
+            tx = (((float(x0_cell) + float(x1_cell)) - tw) * 0.5) - bx0
+            ty = (((inner_y0 + inner_y1) - th) * 0.5) - by0
             dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
 
         header_labels = ("Gear", "RPM", "Max. RPM")
@@ -174,22 +178,28 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
         fit_w = int(max(8, round(col_w) - (2 * cell_pad_x)))
 
         font_title = _load_font(18)
-        header_text_h = _text_wh("Max. RPM", font_title)[1]
-        header_pad_top = 1
-        header_pad_bottom = 1
+        try:
+            header_bbox = dr.textbbox((0, 0), "Max. RPM", font=font_title)
+            header_text_h = int(header_bbox[3] - header_bbox[1])
+        except Exception:
+            header_text_h = _text_wh("Max. RPM", font_title)[1]
+        header_pad_top = 2
+        header_pad_bottom = 3
         header_row_h = int(header_text_h + header_pad_top + header_pad_bottom)
-        header_row_cap = int(max(1, math.floor(float(table_h) * 0.35)))
+        header_row_h = int(max(header_row_h, header_text_h + 4))
+        header_row_cap = int(max(1, math.floor(float(table_h) * 0.40)))
         if header_row_h > header_row_cap:
             header_row_h = int(header_row_cap)
         if table_h > 1:
             header_row_h = int(max(1, min(header_row_h, table_h - 1)))
         else:
             header_row_h = 1
-        value_row_h = int(max(1, table_h - header_row_h))
-
-        row_sep = int(table_top + header_row_h - 1)
-        if row_sep > table_bottom:
-            row_sep = int(table_bottom)
+        row_sep = int(table_top + header_row_h)
+        if row_sep >= table_bottom:
+            row_sep = int(table_bottom - 1)
+        if row_sep < table_top:
+            row_sep = int(table_top)
+        value_row_h = int(max(1, table_bottom - row_sep))
 
         header_text_top = int(table_top)
         header_text_bottom = int(row_sep - 1)
