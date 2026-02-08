@@ -485,6 +485,27 @@ def main() -> None:
     log.kv("hud_speed_units", str(hud_speed_units))
     log.kv("hud_speed_update_hz", str(hud_speed_update_hz))
 
+    hud_pedals_sample_mode = "time"
+    hud_pedals_abs_debounce_ms = 60
+    try:
+        hp = ui.get("hud_pedals") if isinstance(ui, dict) else None
+        if isinstance(hp, dict):
+            sm = str(hp.get("sample_mode") or "time").strip().lower()
+            if sm in ("time", "legacy"):
+                hud_pedals_sample_mode = sm
+
+            ms = int(float(hp.get("abs_debounce_ms") or 60))
+            if ms < 0:
+                ms = 0
+            if ms > 500:
+                ms = 500
+            hud_pedals_abs_debounce_ms = ms
+    except Exception:
+        pass
+
+    log.kv("hud_pedals_sample_mode", str(hud_pedals_sample_mode))
+    log.kv("hud_pedals_abs_debounce_ms", str(hud_pedals_abs_debounce_ms))
+
     if slow_csv and fast_csv:
         render_split_screen_sync(
             slow=slow_video,
@@ -510,6 +531,8 @@ def main() -> None:
             hud_curve_points_overrides=hud_pts_overrides,
             hud_speed_units=str(hud_speed_units),
             hud_speed_update_hz=int(hud_speed_update_hz),
+            hud_pedals_sample_mode=str(hud_pedals_sample_mode),
+            hud_pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
             under_oversteer_curve_center=float(under_oversteer_curve_center),
             log_file=log.log_file,
         )
@@ -536,6 +559,8 @@ def main() -> None:
             hud_curve_points_overrides=hud_pts_overrides,
             hud_speed_units=str(hud_speed_units),
             hud_speed_update_hz=int(hud_speed_update_hz),
+            hud_pedals_sample_mode=str(hud_pedals_sample_mode),
+            hud_pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
             log_file=log.log_file,
         )
     log.msg("render done")

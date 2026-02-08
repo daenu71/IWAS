@@ -207,6 +207,8 @@ class HudRenderSettings:
     gear_rpm_update_hz: int = 60
     curve_points_default: int = 180
     curve_points_overrides: Any | None = None
+    pedals_sample_mode: str = "time"
+    pedals_abs_debounce_ms: int = 60
 
 
 @dataclass(frozen=True)
@@ -1808,6 +1810,17 @@ def _render_hud_scroll_frames_png(
     hud_gear_rpm_update_hz = int(ctx.settings.gear_rpm_update_hz)
     hud_curve_points_default = int(ctx.settings.curve_points_default)
     hud_curve_points_overrides = ctx.settings.curve_points_overrides
+    hud_pedals_sample_mode = str(getattr(ctx.settings, "pedals_sample_mode", "time") or "time").strip().lower()
+    if hud_pedals_sample_mode not in ("time", "legacy"):
+        hud_pedals_sample_mode = "time"
+    try:
+        hud_pedals_abs_debounce_ms = int(getattr(ctx.settings, "pedals_abs_debounce_ms", 60))
+    except Exception:
+        hud_pedals_abs_debounce_ms = 60
+    if hud_pedals_abs_debounce_ms < 0:
+        hud_pedals_abs_debounce_ms = 0
+    if hud_pedals_abs_debounce_ms > 500:
+        hud_pedals_abs_debounce_ms = 500
 
     log_file = ctx.log_file
     _ = hud_name
@@ -2481,16 +2494,20 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "fps": fps,
                         "_idx_to_x": _idx_to_x,
                         "_clamp": _clamp,
                         "slow_frame_to_lapdist": slow_frame_to_lapdist,
                         "slow_to_fast_frame": slow_to_fast_frame,
+                        "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
                         "slow_throttle_frames": slow_throttle_frames,
                         "fast_throttle_frames": fast_throttle_frames,
                         "slow_brake_frames": slow_brake_frames,
                         "fast_brake_frames": fast_brake_frames,
                         "slow_abs_frames": slow_abs_frames,
                         "fast_abs_frames": fast_abs_frames,
+                        "hud_pedals_sample_mode": hud_pedals_sample_mode,
+                        "hud_pedals_abs_debounce_ms": hud_pedals_abs_debounce_ms,
                         "hud_curve_points_default": hud_curve_points_default,
                         "hud_curve_points_overrides": hud_curve_points_overrides,
                         "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
@@ -2740,6 +2757,8 @@ def render_split_screen(
     hud_speed_units: str = "kmh",
     hud_speed_update_hz: int = 60,
     hud_gear_rpm_update_hz: int = 60,
+    hud_pedals_sample_mode: str = "time",
+    hud_pedals_abs_debounce_ms: int = 60,
     log_file: "Path | None" = None,
 ) -> None:
     # 1) Config reading
@@ -2850,6 +2869,8 @@ def render_split_screen_sync(
     hud_speed_units: str = "kmh",
     hud_speed_update_hz: int = 60,
     hud_gear_rpm_update_hz: int = 60,
+    hud_pedals_sample_mode: str = "time",
+    hud_pedals_abs_debounce_ms: int = 60,
     under_oversteer_curve_center: float = 0.0,
     log_file: "Path | None" = None,
 ) -> None:
@@ -2880,6 +2901,18 @@ def render_split_screen_sync(
     except Exception:
         under_oversteer_curve_center = 0.0
     under_oversteer_curve_center = float(_clamp(float(under_oversteer_curve_center), -50.0, 50.0))
+
+    hud_pedals_sample_mode = str(hud_pedals_sample_mode or "time").strip().lower()
+    if hud_pedals_sample_mode not in ("time", "legacy"):
+        hud_pedals_sample_mode = "time"
+    try:
+        hud_pedals_abs_debounce_ms = int(hud_pedals_abs_debounce_ms)
+    except Exception:
+        hud_pedals_abs_debounce_ms = 60
+    if hud_pedals_abs_debounce_ms < 0:
+        hud_pedals_abs_debounce_ms = 0
+    if hud_pedals_abs_debounce_ms > 500:
+        hud_pedals_abs_debounce_ms = 500
 
     preset = f"{ms.width}x{ms.height}"
     if preset_w > 0 and preset_h > 0:
@@ -3171,6 +3204,8 @@ def render_split_screen_sync(
                 gear_rpm_update_hz=int(hud_gear_rpm_update_hz),
                 curve_points_default=int(hud_curve_points_default),
                 curve_points_overrides=hud_curve_points_overrides,
+                pedals_sample_mode=str(hud_pedals_sample_mode),
+                pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
             ),
             log_file=log_file,
         )

@@ -249,6 +249,7 @@ class RenderPayload:
     hud_speed: dict[str, Any] = field(default_factory=lambda: {"units": "kmh", "update_hz": 60})
     hud_curve_points: dict[str, Any] = field(default_factory=lambda: {"default": 180, "overrides": {}})
     hud_gear_rpm: dict[str, Any] = field(default_factory=lambda: {"update_hz": 60})
+    hud_pedals: dict[str, Any] = field(default_factory=lambda: {"sample_mode": "time", "abs_debounce_ms": 60})
     png_view_key: str = ""
     png_view_state: dict[str, Any] = field(default_factory=lambda: {"L": {}, "R": {}})
     hud_layout_data: dict[str, Any] = field(default_factory=dict)
@@ -274,6 +275,7 @@ class RenderPayload:
             "hud_speed": self.hud_speed,
             "hud_curve_points": self.hud_curve_points,
             "hud_gear_rpm": self.hud_gear_rpm,
+            "hud_pedals": self.hud_pedals,
             "png_view_key": self.png_view_key,
             "png_view_state": self.png_view_state,
             "hud_layout_data": self.hud_layout_data,

@@ -75,6 +75,16 @@ def build_payload(
     if speed_update_hz > 60:
         speed_update_hz = 60
 
+    pedals_sample_mode = str(persistence.cfg_get("video_compare", "hud_pedals_sample_mode", "time")).strip().lower()
+    if pedals_sample_mode not in ("time", "legacy"):
+        pedals_sample_mode = "time"
+
+    pedals_abs_debounce_ms = persistence._cfg_int("video_compare", "hud_pedals_abs_debounce_ms", 60)
+    if pedals_abs_debounce_ms < 0:
+        pedals_abs_debounce_ms = 0
+    if pedals_abs_debounce_ms > 500:
+        pedals_abs_debounce_ms = 500
+
     hud_win_default_before = persistence._cfg_float("video_compare", "hud_window_default_before_s", 10.0)
     hud_win_default_after = persistence._cfg_float("video_compare", "hud_window_default_after_s", 10.0)
 
@@ -151,6 +161,10 @@ def build_payload(
         "hud_gear_rpm": {
             "update_hz": int(gear_rpm_update_hz),
         },
+        "hud_pedals": {
+            "sample_mode": str(pedals_sample_mode),
+            "abs_debounce_ms": int(pedals_abs_debounce_ms),
+        },
         "png_view_key": "",
         "png_view_state": {"L": {}, "R": {}},
         "hud_layout_data": app_model.hud_layout.hud_layout_data,
@@ -170,6 +184,7 @@ def build_payload(
         hud_speed=payload.get("hud_speed", {}),
         hud_curve_points=payload.get("hud_curve_points", {}),
         hud_gear_rpm=payload.get("hud_gear_rpm", {}),
+        hud_pedals=payload.get("hud_pedals", {}),
         png_view_key=payload.get("png_view_key", ""),
         png_view_state=payload.get("png_view_state", {"L": {}, "R": {}}),
         hud_layout_data=payload.get("hud_layout_data", {}),

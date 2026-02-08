@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import math
 from typing import Any
 
 from huds.common import (
@@ -17,16 +18,20 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
     i = int(ctx["i"])
     iL = int(ctx["iL"])
     iR = int(ctx["iR"])
+    fps = float(ctx.get("fps", 30.0) or 30.0)
     _idx_to_x = ctx["_idx_to_x"]
     _clamp = ctx["_clamp"]
     slow_frame_to_lapdist = ctx["slow_frame_to_lapdist"]
     slow_to_fast_frame = ctx["slow_to_fast_frame"]
+    slow_frame_to_fast_time_s = ctx.get("slow_frame_to_fast_time_s")
     slow_throttle_frames = ctx["slow_throttle_frames"]
     fast_throttle_frames = ctx["fast_throttle_frames"]
     slow_brake_frames = ctx["slow_brake_frames"]
     fast_brake_frames = ctx["fast_brake_frames"]
     slow_abs_frames = ctx["slow_abs_frames"]
     fast_abs_frames = ctx["fast_abs_frames"]
+    hud_pedals_sample_mode = str(ctx.get("hud_pedals_sample_mode", "time") or "time").strip().lower()
+    hud_pedals_abs_debounce_ms = int(ctx.get("hud_pedals_abs_debounce_ms", 60) or 60)
     hud_curve_points_default = int(ctx["hud_curve_points_default"])
     hud_curve_points_overrides = ctx["hud_curve_points_overrides"]
     COL_SLOW_DARKRED = ctx["COL_SLOW_DARKRED"]
@@ -95,7 +100,17 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
             # Titel + Werte auf gleicher HÃ¶he (ruhig, kein Springen)
             y_txt = int(y0 + 2)
     
-            # Skalen (CSV ~60Hz -> Video-Frames)
+            if hud_pedals_sample_mode not in ("time", "legacy"):
+                hud_pedals_sample_mode = "time"
+            if hud_pedals_abs_debounce_ms < 0:
+                hud_pedals_abs_debounce_ms = 0
+            if hud_pedals_abs_debounce_ms > 500:
+                hud_pedals_abs_debounce_ms = 500
+
+            fps_safe = float(fps) if (math.isfinite(float(fps)) and float(fps) > 1e-6) else 30.0
+            abs_window_s = float(hud_pedals_abs_debounce_ms) / 1000.0
+
+            # Legacy Skalen (CSV -> Video-Frame-Index).
             n_frames = float(max(1, len(slow_frame_to_lapdist) - 1))
             t_slow_scale = 1.0
             t_fast_scale = 1.0
@@ -118,44 +133,116 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                     a_fast_scale = float(len(fast_abs_frames) - 1) / n_frames
             except Exception:
                 pass
+
+            def _sample_linear_time(vals: list[float] | None, t_s: float) -> float:
+                if not vals:
+                    return 0.0
+                n = len(vals)
+                if n <= 1:
+                    return float(vals[0])
+                pos = _clamp(float(t_s) * float(fps_safe), 0.0, float(n - 1))
+                i0 = int(math.floor(pos))
+                i1 = min(i0 + 1, n - 1)
+                a = float(pos - float(i0))
+                v0 = float(vals[i0])
+                v1 = float(vals[i1])
+                return float(v0 + ((v1 - v0) * a))
+
+            def _fast_time_from_slow_idx(idx0: int) -> float:
+                ii = int(idx0)
+                if ii < 0:
+                    ii = 0
+                if slow_frame_to_fast_time_s:
+                    if ii >= len(slow_frame_to_fast_time_s):
+                        ii = len(slow_frame_to_fast_time_s) - 1
+                    return float(slow_frame_to_fast_time_s[ii])
+                fi = int(ii)
+                if slow_to_fast_frame and fi < len(slow_to_fast_frame):
+                    fi = int(slow_to_fast_frame[fi])
+                    if fi < 0:
+                        fi = 0
+                return float(fi) / float(fps_safe)
+
+            def _build_abs_prefix(vals: list[float] | None) -> list[int]:
+                if not vals:
+                    return [0]
+                out = [0]
+                acc = 0
+                for vv in vals:
+                    acc += 1 if float(vv) >= 0.5 else 0
+                    out.append(acc)
+                return out
+
+            slow_abs_prefix = _build_abs_prefix(slow_abs_frames)
+            fast_abs_prefix = _build_abs_prefix(fast_abs_frames)
+
+            def _abs_on_majority_time(vals: list[float] | None, pref: list[int], t_s: float) -> float:
+                if not vals:
+                    return 0.0
+                n = len(vals)
+                if n <= 1:
+                    return 1.0 if float(vals[0]) >= 0.5 else 0.0
+                if abs_window_s <= 1e-9:
+                    p = int(round(_clamp(float(t_s) * float(fps_safe), 0.0, float(n - 1))))
+                    return 1.0 if float(vals[p]) >= 0.5 else 0.0
+                half = 0.5 * float(abs_window_s)
+                p0 = int(math.floor((float(t_s) - half) * float(fps_safe)))
+                p1 = int(math.ceil((float(t_s) + half) * float(fps_safe)))
+                if p0 < 0:
+                    p0 = 0
+                if p1 >= n:
+                    p1 = n - 1
+                if p1 < p0:
+                    p1 = p0
+                total = int(p1 - p0 + 1)
+                on_cnt = int(pref[p1 + 1] - pref[p0])
+                return 1.0 if (on_cnt * 2) > total else 0.0
     
             # Aktuelle Werte (am Marker)
             mx0 = int(x0 + (w // 2))
             gap = 12
     
-            # Slow Index (am Marker)
-            ti_cur = int(round(float(i) * float(t_slow_scale)))
-            bi_cur = int(round(float(i) * float(b_slow_scale)))
-            if slow_throttle_frames:
-                ti_cur = max(0, min(ti_cur, len(slow_throttle_frames) - 1))
-                t_s = float(slow_throttle_frames[ti_cur])
+            if hud_pedals_sample_mode == "time":
+                t_cur_slow = float(i) / float(fps_safe)
+                t_cur_fast = _fast_time_from_slow_idx(int(i))
+                t_s = _sample_linear_time(slow_throttle_frames, t_cur_slow)
+                b_s = _sample_linear_time(slow_brake_frames, t_cur_slow)
+                t_f = _sample_linear_time(fast_throttle_frames, t_cur_fast)
+                b_f = _sample_linear_time(fast_brake_frames, t_cur_fast)
             else:
-                t_s = 0.0
-            if slow_brake_frames:
-                bi_cur = max(0, min(bi_cur, len(slow_brake_frames) - 1))
-                b_s = float(slow_brake_frames[bi_cur])
-            else:
-                b_s = 0.0
-    
-            # Fast Index (am Marker)
-            fi_cur = int(i)
-            if slow_to_fast_frame and int(i) < len(slow_to_fast_frame):
-                fi_cur = int(slow_to_fast_frame[int(i)])
-                if fi_cur < 0:
-                    fi_cur = 0
-    
-            tf_cur = int(round(float(fi_cur) * float(t_fast_scale)))
-            bf_cur = int(round(float(fi_cur) * float(b_fast_scale)))
-            if fast_throttle_frames:
-                tf_cur = max(0, min(tf_cur, len(fast_throttle_frames) - 1))
-                t_f = float(fast_throttle_frames[tf_cur])
-            else:
-                t_f = 0.0
-            if fast_brake_frames:
-                bf_cur = max(0, min(bf_cur, len(fast_brake_frames) - 1))
-                b_f = float(fast_brake_frames[bf_cur])
-            else:
-                b_f = 0.0
+                # Slow Index (am Marker)
+                ti_cur = int(round(float(i) * float(t_slow_scale)))
+                bi_cur = int(round(float(i) * float(b_slow_scale)))
+                if slow_throttle_frames:
+                    ti_cur = max(0, min(ti_cur, len(slow_throttle_frames) - 1))
+                    t_s = float(slow_throttle_frames[ti_cur])
+                else:
+                    t_s = 0.0
+                if slow_brake_frames:
+                    bi_cur = max(0, min(bi_cur, len(slow_brake_frames) - 1))
+                    b_s = float(slow_brake_frames[bi_cur])
+                else:
+                    b_s = 0.0
+
+                # Fast Index (am Marker)
+                fi_cur = int(i)
+                if slow_to_fast_frame and int(i) < len(slow_to_fast_frame):
+                    fi_cur = int(slow_to_fast_frame[int(i)])
+                    if fi_cur < 0:
+                        fi_cur = 0
+
+                tf_cur = int(round(float(fi_cur) * float(t_fast_scale)))
+                bf_cur = int(round(float(fi_cur) * float(b_fast_scale)))
+                if fast_throttle_frames:
+                    tf_cur = max(0, min(tf_cur, len(fast_throttle_frames) - 1))
+                    t_f = float(fast_throttle_frames[tf_cur])
+                else:
+                    t_f = 0.0
+                if fast_brake_frames:
+                    bf_cur = max(0, min(bf_cur, len(fast_brake_frames) - 1))
+                    b_f = float(fast_brake_frames[bf_cur])
+                else:
+                    b_f = 0.0
     
             # Format: immer 3 Stellen, kein Springen
             s_txt = f"T{int(round(_clamp(t_s, 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(b_s, 0.0, 1.0) * 100.0)):03d}%"
@@ -263,47 +350,54 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                 if idx < int(iL) or idx > int(iR):
                     continue
     
-                x = _idx_to_x(int(idx))
-    
-                # Slow
-                if slow_throttle_frames:
-                    si = int(round(float(idx) * float(t_slow_scale)))
-                    si = max(0, min(si, len(slow_throttle_frames) - 1))
-                    st = float(slow_throttle_frames[si])
+                x = int(round(_idx_to_x(int(idx))))
+
+                if hud_pedals_sample_mode == "time":
+                    t_slow = float(idx) / float(fps_safe)
+                    t_fast = _fast_time_from_slow_idx(int(idx))
+                    st = _sample_linear_time(slow_throttle_frames, t_slow)
+                    sb = _sample_linear_time(slow_brake_frames, t_slow)
+                    ft = _sample_linear_time(fast_throttle_frames, t_fast)
+                    fb = _sample_linear_time(fast_brake_frames, t_fast)
                 else:
-                    st = 0.0
-                if slow_brake_frames:
-                    si = int(round(float(idx) * float(b_slow_scale)))
-                    si = max(0, min(si, len(slow_brake_frames) - 1))
-                    sb = float(slow_brake_frames[si])
-                else:
-                    sb = 0.0
-    
-                pts_s_t.append((x, _y_from_01(st)))
-                pts_s_b.append((x, _y_from_01(sb)))
-    
-                # Fast: idx -> frame_map -> fast idx
-                fi = int(idx)
-                if slow_to_fast_frame and fi < len(slow_to_fast_frame):
-                    fi = int(slow_to_fast_frame[fi])
-                    if fi < 0:
-                        fi = 0
-    
-                if fast_throttle_frames:
-                    fci = int(round(float(fi) * float(t_fast_scale)))
-                    fci = max(0, min(fci, len(fast_throttle_frames) - 1))
-                    ft = float(fast_throttle_frames[fci])
-                else:
-                    ft = 0.0
-                if fast_brake_frames:
-                    fci = int(round(float(fi) * float(b_fast_scale)))
-                    fci = max(0, min(fci, len(fast_brake_frames) - 1))
-                    fb = float(fast_brake_frames[fci])
-                else:
-                    fb = 0.0
-    
-                pts_f_t.append((x, _y_from_01(ft)))
-                pts_f_b.append((x, _y_from_01(fb)))
+                    # Slow
+                    if slow_throttle_frames:
+                        si = int(round(float(idx) * float(t_slow_scale)))
+                        si = max(0, min(si, len(slow_throttle_frames) - 1))
+                        st = float(slow_throttle_frames[si])
+                    else:
+                        st = 0.0
+                    if slow_brake_frames:
+                        si = int(round(float(idx) * float(b_slow_scale)))
+                        si = max(0, min(si, len(slow_brake_frames) - 1))
+                        sb = float(slow_brake_frames[si])
+                    else:
+                        sb = 0.0
+
+                    # Fast: idx -> frame_map -> fast idx
+                    fi = int(idx)
+                    if slow_to_fast_frame and fi < len(slow_to_fast_frame):
+                        fi = int(slow_to_fast_frame[fi])
+                        if fi < 0:
+                            fi = 0
+
+                    if fast_throttle_frames:
+                        fci = int(round(float(fi) * float(t_fast_scale)))
+                        fci = max(0, min(fci, len(fast_throttle_frames) - 1))
+                        ft = float(fast_throttle_frames[fci])
+                    else:
+                        ft = 0.0
+                    if fast_brake_frames:
+                        fci = int(round(float(fi) * float(b_fast_scale)))
+                        fci = max(0, min(fci, len(fast_brake_frames) - 1))
+                        fb = float(fast_brake_frames[fci])
+                    else:
+                        fb = 0.0
+
+                pts_s_t.append((int(x), int(_y_from_01(st))))
+                pts_s_b.append((int(x), int(_y_from_01(sb))))
+                pts_f_t.append((int(x), int(_y_from_01(ft))))
+                pts_f_b.append((int(x), int(_y_from_01(fb))))
     
             # Linien zeichnen (Bremse erst, dann Gas)
             if len(pts_s_b) >= 2:
@@ -317,13 +411,19 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
     
             # ABS-Balken: scrollende Segmente (LÃ¤nge = Dauer von ABS=1 im Fenster)
             def _abs_val_s(idx0: int) -> float:
+                if hud_pedals_sample_mode == "time":
+                    t_slow = float(idx0) / float(fps_safe)
+                    return _abs_on_majority_time(slow_abs_frames, slow_abs_prefix, t_slow)
                 if not slow_abs_frames:
                     return 0.0
                 si = int(round(float(idx0) * float(a_slow_scale)))
                 si = max(0, min(si, len(slow_abs_frames) - 1))
                 return float(slow_abs_frames[si])
-    
+
             def _abs_val_f(idx0: int) -> float:
+                if hud_pedals_sample_mode == "time":
+                    t_fast = _fast_time_from_slow_idx(int(idx0))
+                    return _abs_on_majority_time(fast_abs_frames, fast_abs_prefix, t_fast)
                 if not fast_abs_frames:
                     return 0.0
                 fi = int(idx0)
@@ -342,7 +442,7 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                 for idx2 in idxs:
                     if idx2 < int(iL) or idx2 > int(iR):
                         continue
-                    x2 = _x_from_idx(idx2)
+                    x2 = int(round(_x_from_idx(idx2)))
                     v2 = val_fn(idx2)
                     on = (v2 >= 0.5)
                     if on and (not in_seg):
