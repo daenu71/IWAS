@@ -2486,7 +2486,7 @@ def _render_hud_scroll_frames_png(
 
     # Story 2.2: Persistenter Subpixel-Scrollzustand pro Scroll-HUD-Instanz.
     # Key basiert auf HUD-Key + Box-Geometrie innerhalb der HUD-Spalte.
-    scroll_state_by_hud: dict[str, dict[str, float]] = {}
+    scroll_state_by_hud: dict[str, dict[str, Any]] = {}
 
     for j in range(frames):
 
@@ -2607,11 +2607,256 @@ def _render_hud_scroll_frames_png(
                 hud_width_px = max(1, int(w))
                 shift_px_per_frame = float(hud_width_px) / float(window_frames)
 
+                # Fenster in Frames (Zeit-Achse): stabiler als LapDist-Spannen
+                iL = max(0, i - int(before_f))
+                iR = min(len(slow_frame_to_lapdist) - 1, i + int(after_f))
+
+                def _right_edge_sample_idx() -> int:
+                    idx_r = int(iR)
+                    if idx_r < 0:
+                        idx_r = 0
+                    if idx_r >= len(slow_frame_to_lapdist):
+                        idx_r = len(slow_frame_to_lapdist) - 1
+                    return int(idx_r)
+
+                def _render_scroll_hud_full(
+                    scroll_pos_px_local: float,
+                    shift_int_local: int,
+                    right_edge_cols_local: int,
+                ):
+                    hud_img = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                    hud_dr = ImageDraw.Draw(hud_img)
+                    x0_local = 0
+                    y0_local = 0
+                    center_x_local = int(x0_local + (int(w) // 2))
+                    half_w_local = float(int(w) - 1) / 2.0
+
+                    def _idx_to_x_local(idx0: int) -> int:
+                        di = int(idx0) - int(i)
+                        if di < 0:
+                            denom = max(1, int(before_f))
+                            frac = float(di) / float(denom)
+                        else:
+                            denom = max(1, int(after_f))
+                            frac = float(di) / float(denom)
+                        x = int(round(float(center_x_local) + (frac * half_w_local)))
+                        if x < int(x0_local):
+                            x = int(x0_local)
+                        if x > int(x0_local + int(w) - tick_w):
+                            x = int(x0_local + int(w) - tick_w)
+                        return x
+
+                    hud_dr.rectangle(
+                        [int(x0_local), int(y0_local), int(x0_local + int(w) - 1), int(y0_local + int(h) - 1)],
+                        fill=COL_HUD_BG,
+                    )
+                    mx_local = int(center_x_local)
+                    hud_dr.rectangle([mx_local, y0_local, mx_local + 1, y0_local + int(h)], fill=(255, 255, 255, 230))
+
+                    def _hud_throttle_brake() -> None:
+                        throttle_brake_ctx = {
+                            "hud_key": hud_key,
+                            "i": i,
+                            "iL": iL,
+                            "iR": iR,
+                            "window_frames": window_frames,
+                            "shift_px_per_frame": shift_px_per_frame,
+                            "scroll_pos_px": scroll_pos_px_local,
+                            "scroll_shift_int": shift_int_local,
+                            "right_edge_cols": right_edge_cols_local,
+                            "frame_window_mapping": frame_window_mapping,
+                            "fps": fps,
+                            "_idx_to_x": _idx_to_x_local,
+                            "_clamp": _clamp,
+                            "slow_frame_to_lapdist": slow_frame_to_lapdist,
+                            "slow_to_fast_frame": slow_to_fast_frame,
+                            "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
+                            "slow_throttle_frames": slow_throttle_frames,
+                            "fast_throttle_frames": fast_throttle_frames,
+                            "slow_brake_frames": slow_brake_frames,
+                            "fast_brake_frames": fast_brake_frames,
+                            "slow_abs_frames": slow_abs_frames,
+                            "fast_abs_frames": fast_abs_frames,
+                            "hud_pedals_sample_mode": hud_pedals_sample_mode,
+                            "hud_pedals_abs_debounce_ms": hud_pedals_abs_debounce_ms,
+                            "hud_curve_points_default": hud_curve_points_default,
+                            "hud_curve_points_overrides": hud_curve_points_overrides,
+                            "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                            "COL_SLOW_BRIGHTRED": COL_SLOW_BRIGHTRED,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                            "COL_FAST_BRIGHTBLUE": COL_FAST_BRIGHTBLUE,
+                            "COL_WHITE": COL_WHITE,
+                        }
+                        render_throttle_brake(throttle_brake_ctx, (x0_local, y0_local, int(w), int(h)), hud_dr)
+
+                    def _hud_delta() -> None:
+                        delta_ctx = {
+                            "hud_key": hud_key,
+                            "fps": fps,
+                            "i": i,
+                            "iL": iL,
+                            "iR": iR,
+                            "window_frames": window_frames,
+                            "shift_px_per_frame": shift_px_per_frame,
+                            "scroll_pos_px": scroll_pos_px_local,
+                            "scroll_shift_int": shift_int_local,
+                            "right_edge_cols": right_edge_cols_local,
+                            "frame_window_mapping": frame_window_mapping,
+                            "mx": mx_local,
+                            "_idx_to_x": _idx_to_x_local,
+                            "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
+                            "delta_has_neg": delta_has_neg,
+                            "delta_pos_max": delta_pos_max,
+                            "delta_neg_min": delta_neg_min,
+                            "hud_curve_points_default": hud_curve_points_default,
+                            "hud_curve_points_overrides": hud_curve_points_overrides,
+                            "hud_dbg": hud_dbg,
+                            "_log_print": _log_print,
+                            "log_file": log_file,
+                            "COL_WHITE": COL_WHITE,
+                            "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        }
+                        render_delta(delta_ctx, (x0_local, y0_local, int(w), int(h)), hud_dr)
+
+                    def _hud_steering() -> None:
+                        steering_ctx = {
+                            "hud_key": hud_key,
+                            "i": i,
+                            "iL": iL,
+                            "iR": iR,
+                            "window_frames": window_frames,
+                            "shift_px_per_frame": shift_px_per_frame,
+                            "scroll_pos_px": scroll_pos_px_local,
+                            "scroll_shift_int": shift_int_local,
+                            "right_edge_cols": right_edge_cols_local,
+                            "frame_window_mapping": frame_window_mapping,
+                            "slow_to_fast_frame": slow_to_fast_frame,
+                            "slow_steer_frames": slow_steer_frames,
+                            "fast_steer_frames": fast_steer_frames,
+                            "steer_slow_scale": steer_slow_scale,
+                            "steer_fast_scale": steer_fast_scale,
+                            "steer_abs_max": steer_abs_max,
+                            "hud_curve_points_default": hud_curve_points_default,
+                            "hud_curve_points_overrides": hud_curve_points_overrides,
+                            "hud_windows": hud_windows,
+                            "before_s_h": before_s_h,
+                            "after_s_h": after_s_h,
+                            "default_before_s": default_before_s,
+                            "default_after_s": default_after_s,
+                            "hud_dbg": hud_dbg,
+                            "_clamp": _clamp,
+                            "_idx_to_x": _idx_to_x_local,
+                            "_log_print": _log_print,
+                            "_wrap_delta_05": _wrap_delta_05,
+                            "slow_frame_to_lapdist": slow_frame_to_lapdist,
+                            "log_file": log_file,
+                            "COL_WHITE": COL_WHITE,
+                            "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        }
+                        render_steering(steering_ctx, (x0_local, y0_local, int(w), int(h)), hud_dr)
+
+                    def _hud_speed() -> None:
+                        pass
+
+                    def _hud_gear_rpm() -> None:
+                        pass
+
+                    def _hud_line_delta() -> None:
+                        line_delta_ctx = {
+                            "hud_key": hud_key,
+                            "i": i,
+                            "before_f": before_f,
+                            "after_f": after_f,
+                            "window_frames": window_frames,
+                            "shift_px_per_frame": shift_px_per_frame,
+                            "scroll_pos_px": scroll_pos_px_local,
+                            "scroll_shift_int": shift_int_local,
+                            "right_edge_cols": right_edge_cols_local,
+                            "frame_window_mapping": frame_window_mapping,
+                            "line_delta_m_frames": line_delta_m_frames,
+                            "line_delta_y_abs_m": line_delta_y_abs_m,
+                            "COL_WHITE": COL_WHITE,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        }
+                        render_line_delta(line_delta_ctx, (x0_local, y0_local, int(w), int(h)), hud_dr)
+
+                    def _hud_under_oversteer() -> None:
+                        under_oversteer_ctx = {
+                            "hud_key": hud_key,
+                            "i": i,
+                            "before_f": before_f,
+                            "after_f": after_f,
+                            "window_frames": window_frames,
+                            "shift_px_per_frame": shift_px_per_frame,
+                            "scroll_pos_px": scroll_pos_px_local,
+                            "scroll_shift_int": shift_int_local,
+                            "right_edge_cols": right_edge_cols_local,
+                            "frame_window_mapping": frame_window_mapping,
+                            "under_oversteer_slow_frames": under_oversteer_slow_frames,
+                            "under_oversteer_fast_frames": under_oversteer_fast_frames,
+                            "under_oversteer_y_abs": under_oversteer_y_abs,
+                            "COL_WHITE": COL_WHITE,
+                            "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
+                            "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
+                        }
+                        render_under_oversteer(under_oversteer_ctx, (x0_local, y0_local, int(w), int(h)), hud_dr)
+
+                    hud_renderers_local = {
+                        "Speed": _hud_speed,
+                        "Throttle / Brake": _hud_throttle_brake,
+                        "Steering": _hud_steering,
+                        "Delta": _hud_delta,
+                        "Gear & RPM": _hud_gear_rpm,
+                        "Line Delta": _hud_line_delta,
+                        "Under-/Oversteer": _hud_under_oversteer,
+                    }
+                    fn_hud_local = hud_renderers_local.get(hud_key)
+                    if fn_hud_local is not None:
+                        fn_hud_local()
+                    return hud_img
+
                 hud_state_key = f"{str(hud_key)}|{int(x0)}|{int(y0)}|{int(w)}|{int(h)}"
                 state = scroll_state_by_hud.get(hud_state_key)
-                if state is None:
-                    state = {"scroll_pos_px": 0.0}
-                    scroll_state_by_hud[hud_state_key] = state
+                first_frame = (
+                    state is None
+                    or state.get("static_layer") is None
+                    or state.get("dynamic_layer") is None
+                )
+                reset_now = False
+                if state is not None:
+                    try:
+                        last_i_state = state.get("last_i")
+                        if last_i_state is not None and int(i) != (int(last_i_state) + 1):
+                            reset_now = True
+                    except Exception:
+                        reset_now = True
+                    try:
+                        last_window_frames = state.get("window_frames")
+                        if last_window_frames is not None and int(last_window_frames) != int(window_frames):
+                            reset_now = True
+                    except Exception:
+                        reset_now = True
+
+                if first_frame or reset_now:
+                    static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                    dynamic_layer = _render_scroll_hud_full(
+                        scroll_pos_px_local=0.0,
+                        shift_int_local=0,
+                        right_edge_cols_local=max(1, int(w)),
+                    )
+                    right_sample_now = _right_edge_sample_idx()
+                    scroll_state_by_hud[hud_state_key] = {
+                        "static_layer": static_layer,
+                        "dynamic_layer": dynamic_layer,
+                        "scroll_pos_px": 0.0,
+                        "last_i": int(i),
+                        "last_right_sample": int(right_sample_now),
+                        "window_frames": int(window_frames),
+                    }
+                    img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                    continue
 
                 scroll_pos_px = float(state.get("scroll_pos_px", 0.0))
                 scroll_pos_px += float(shift_px_per_frame)
@@ -2619,7 +2864,6 @@ def _render_hud_scroll_frames_png(
                 if scroll_pos_px >= 1.0:
                     shift_int = int(math.floor(scroll_pos_px))
                     scroll_pos_px -= float(shift_int)
-                state["scroll_pos_px"] = float(scroll_pos_px)
 
                 # Deterministische Regel fuer rechte Randspalten:
                 # - mit Shift: genau shift_int neue Spalten
@@ -2628,205 +2872,36 @@ def _render_hud_scroll_frames_png(
                 if right_edge_cols > int(w):
                     right_edge_cols = int(w)
 
-                # Fenster in Frames (Zeit-Achse): stabiler als LapDist-Spannen
-                iL = max(0, i - int(before_f))
-                iR = min(len(slow_frame_to_lapdist) - 1, i + int(after_f))
-
-                center_x = int(x0 + (w // 2))
-                half_w = float(w - 1) / 2.0  # Pixel bis zum Rand (links/rechts)
-
-                def _idx_to_x(idx0: int) -> int:
-                    # X basiert auf Frame-Offset (Zeit), nicht auf LapDistPct (Strecke)
-                    di = int(idx0) - int(i)
-                    if di < 0:
-                        denom = max(1, int(before_f))
-                        frac = float(di) / float(denom)  # -1 .. 0
-                    else:
-                        denom = max(1, int(after_f))
-                        frac = float(di) / float(denom)  # 0 .. +1
-
-                    x = int(round(float(center_x) + (frac * half_w)))
-
-                    if x < x0:
-                        x = x0
-                    if x > x0 + w - tick_w:
-                        x = x0 + w - tick_w
-                    return x
-
-                # HUD-BG + Marker (pro HUD-Box)
-                dr.rectangle(
-                    [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
-                    fill=COL_HUD_BG,
+                hud_full_now = _render_scroll_hud_full(
+                    scroll_pos_px_local=scroll_pos_px,
+                    shift_int_local=int(shift_int),
+                    right_edge_cols_local=int(right_edge_cols),
                 )
-                mx = int(center_x)
-                dr.rectangle([mx, y0, mx + 1, y0 + h], fill=(255, 255, 255, 230))
 
-                # Vertikale Tick-/Debug-Striche entfernt.
-                # Der Marker (mx) bleibt bestehen und zeigt den aktuellen Zeitpunkt.
-                pass
+                dynamic_prev = state.get("dynamic_layer")
+                if dynamic_prev is None:
+                    dynamic_prev = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                dynamic_next = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                shift_px = int(shift_int)
+                if shift_px < int(w):
+                    try:
+                        preserved = dynamic_prev.crop((int(shift_px), 0, int(w), int(h)))
+                        dynamic_next.paste(preserved, (0, 0))
+                    except Exception:
+                        pass
+                try:
+                    edge_strip = hud_full_now.crop((int(w) - int(right_edge_cols), 0, int(w), int(h)))
+                    dynamic_next.paste(edge_strip, (int(w) - int(right_edge_cols), 0))
+                except Exception:
+                    dynamic_next = hud_full_now
 
-                def _hud_throttle_brake() -> None:
-                    throttle_brake_ctx = {
-                        "hud_key": hud_key,
-                        "i": i,
-                        "iL": iL,
-                        "iR": iR,
-                        "window_frames": window_frames,
-                        "shift_px_per_frame": shift_px_per_frame,
-                        "scroll_pos_px": scroll_pos_px,
-                        "scroll_shift_int": shift_int,
-                        "right_edge_cols": right_edge_cols,
-                        "frame_window_mapping": frame_window_mapping,
-                        "fps": fps,
-                        "_idx_to_x": _idx_to_x,
-                        "_clamp": _clamp,
-                        "slow_frame_to_lapdist": slow_frame_to_lapdist,
-                        "slow_to_fast_frame": slow_to_fast_frame,
-                        "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
-                        "slow_throttle_frames": slow_throttle_frames,
-                        "fast_throttle_frames": fast_throttle_frames,
-                        "slow_brake_frames": slow_brake_frames,
-                        "fast_brake_frames": fast_brake_frames,
-                        "slow_abs_frames": slow_abs_frames,
-                        "fast_abs_frames": fast_abs_frames,
-                        "hud_pedals_sample_mode": hud_pedals_sample_mode,
-                        "hud_pedals_abs_debounce_ms": hud_pedals_abs_debounce_ms,
-                        "hud_curve_points_default": hud_curve_points_default,
-                        "hud_curve_points_overrides": hud_curve_points_overrides,
-                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
-                        "COL_SLOW_BRIGHTRED": COL_SLOW_BRIGHTRED,
-                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
-                        "COL_FAST_BRIGHTBLUE": COL_FAST_BRIGHTBLUE,
-                        "COL_WHITE": COL_WHITE,
-                    }
-                    render_throttle_brake(throttle_brake_ctx, (x0, y0, w, h), dr)
-
-                def _hud_delta() -> None:
-                    delta_ctx = {
-                        "hud_key": hud_key,
-                        "fps": fps,
-                        "i": i,
-                        "iL": iL,
-                        "iR": iR,
-                        "window_frames": window_frames,
-                        "shift_px_per_frame": shift_px_per_frame,
-                        "scroll_pos_px": scroll_pos_px,
-                        "scroll_shift_int": shift_int,
-                        "right_edge_cols": right_edge_cols,
-                        "frame_window_mapping": frame_window_mapping,
-                        "mx": mx,
-                        "_idx_to_x": _idx_to_x,
-                        "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
-                        "delta_has_neg": delta_has_neg,
-                        "delta_pos_max": delta_pos_max,
-                        "delta_neg_min": delta_neg_min,
-                        "hud_curve_points_default": hud_curve_points_default,
-                        "hud_curve_points_overrides": hud_curve_points_overrides,
-                        "hud_dbg": hud_dbg,
-                        "_log_print": _log_print,
-                        "log_file": log_file,
-                        "COL_WHITE": COL_WHITE,
-                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
-                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
-                    }
-                    render_delta(delta_ctx, (x0, y0, w, h), dr)
-
-                def _hud_steering() -> None:
-                    steering_ctx = {
-                        "hud_key": hud_key,
-                        "i": i,
-                        "iL": iL,
-                        "iR": iR,
-                        "window_frames": window_frames,
-                        "shift_px_per_frame": shift_px_per_frame,
-                        "scroll_pos_px": scroll_pos_px,
-                        "scroll_shift_int": shift_int,
-                        "right_edge_cols": right_edge_cols,
-                        "frame_window_mapping": frame_window_mapping,
-                        "slow_to_fast_frame": slow_to_fast_frame,
-                        "slow_steer_frames": slow_steer_frames,
-                        "fast_steer_frames": fast_steer_frames,
-                        "steer_slow_scale": steer_slow_scale,
-                        "steer_fast_scale": steer_fast_scale,
-                        "steer_abs_max": steer_abs_max,
-                        "hud_curve_points_default": hud_curve_points_default,
-                        "hud_curve_points_overrides": hud_curve_points_overrides,
-                        "hud_windows": hud_windows,
-                        "before_s_h": before_s_h,
-                        "after_s_h": after_s_h,
-                        "default_before_s": default_before_s,
-                        "default_after_s": default_after_s,
-                        "hud_dbg": hud_dbg,
-                        "_clamp": _clamp,
-                        "_idx_to_x": _idx_to_x,
-                        "_log_print": _log_print,
-                        "_wrap_delta_05": _wrap_delta_05,
-                        "slow_frame_to_lapdist": slow_frame_to_lapdist,
-                        "log_file": log_file,
-                        "COL_WHITE": COL_WHITE,
-                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
-                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
-                    }
-                    render_steering(steering_ctx, (x0, y0, w, h), dr)
-
-                def _hud_speed() -> None:
-                    pass
-
-                def _hud_gear_rpm() -> None:
-                    pass
-
-                def _hud_line_delta() -> None:
-                    line_delta_ctx = {
-                        "hud_key": hud_key,
-                        "i": i,
-                        "before_f": before_f,
-                        "after_f": after_f,
-                        "window_frames": window_frames,
-                        "shift_px_per_frame": shift_px_per_frame,
-                        "scroll_pos_px": scroll_pos_px,
-                        "scroll_shift_int": shift_int,
-                        "right_edge_cols": right_edge_cols,
-                        "frame_window_mapping": frame_window_mapping,
-                        "line_delta_m_frames": line_delta_m_frames,
-                        "line_delta_y_abs_m": line_delta_y_abs_m,
-                        "COL_WHITE": COL_WHITE,
-                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
-                    }
-                    render_line_delta(line_delta_ctx, (x0, y0, w, h), dr)
-
-                def _hud_under_oversteer() -> None:
-                    under_oversteer_ctx = {
-                        "hud_key": hud_key,
-                        "i": i,
-                        "before_f": before_f,
-                        "after_f": after_f,
-                        "window_frames": window_frames,
-                        "shift_px_per_frame": shift_px_per_frame,
-                        "scroll_pos_px": scroll_pos_px,
-                        "scroll_shift_int": shift_int,
-                        "right_edge_cols": right_edge_cols,
-                        "frame_window_mapping": frame_window_mapping,
-                        "under_oversteer_slow_frames": under_oversteer_slow_frames,
-                        "under_oversteer_fast_frames": under_oversteer_fast_frames,
-                        "under_oversteer_y_abs": under_oversteer_y_abs,
-                        "COL_WHITE": COL_WHITE,
-                        "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
-                        "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
-                    }
-                    render_under_oversteer(under_oversteer_ctx, (x0, y0, w, h), dr)
-
-                hud_renderers = {
-                    "Speed": _hud_speed,
-                    "Throttle / Brake": _hud_throttle_brake,
-                    "Steering": _hud_steering,
-                    "Delta": _hud_delta,
-                    "Gear & RPM": _hud_gear_rpm,
-                    "Line Delta": _hud_line_delta,
-                    "Under-/Oversteer": _hud_under_oversteer,
-                }
-                fn_hud = hud_renderers.get(hud_key)
-                if fn_hud is not None:
-                    fn_hud()
+                right_sample_now = _right_edge_sample_idx()
+                state["dynamic_layer"] = dynamic_next
+                state["scroll_pos_px"] = float(scroll_pos_px)
+                state["last_i"] = int(i)
+                state["last_right_sample"] = int(right_sample_now)
+                state["window_frames"] = int(window_frames)
+                img.paste(hud_full_now, (int(x0), int(y0)), hud_full_now)
             except Exception:
                 continue
 
