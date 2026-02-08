@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Any
 
 from huds.common import COL_HUD_BG, draw_hud_background
@@ -10,56 +11,37 @@ def build_confirmed_max_speed_display(
     speed_frames_u: list[float] | None,
     threshold: float = 5.0,
 ) -> list[float | None]:
+    _ = threshold
     if not speed_frames_u:
         return []
 
-    n = len(speed_frames_u)
-    thr = float(threshold)
-    if (not math.isfinite(thr)) or thr < 0.0:
-        thr = 5.0
+    debug_raw = (os.environ.get("IRVC_DEBUG_SPEED_MAX") or "").strip().lower()
+    debug_enabled = debug_raw not in ("", "0", "false", "off", "no")
 
-    vals: list[float] = []
-    for v in speed_frames_u:
+    out: list[float | None] = []
+    prev_logged_value: float | None = None
+    for i, v in enumerate(speed_frames_u):
         try:
             fv = float(v)
         except Exception:
             fv = 0.0
         if not math.isfinite(fv):
             fv = 0.0
-        vals.append(float(fv))
+        current_u = float(fv)
+        out.append(current_u)
 
-    out: list[float | None] = [None] * n
-    confirmed_max_value: float | None = None
-
-    candidate_peak_value = float(vals[0])
-    candidate_peak_index = 0
-    min_since_candidate_start = float(vals[0])
-    candidate_has_past_dip = False
-
-    for i, v in enumerate(vals):
-        out[i] = confirmed_max_value
-
-        if float(v) > float(candidate_peak_value):
-            candidate_peak_value = float(v)
-            candidate_peak_index = int(i)
-            candidate_has_past_dip = bool(float(min_since_candidate_start) <= float(candidate_peak_value - thr))
-        elif (
-            i > candidate_peak_index
-            and candidate_has_past_dip
-            and float(v) <= float(candidate_peak_value - thr)
-        ):
-            confirmed_max_value = float(candidate_peak_value)
-            for k in range(int(candidate_peak_index), i + 1):
-                out[k] = confirmed_max_value
-
-            candidate_peak_value = float(v)
-            candidate_peak_index = int(i)
-            min_since_candidate_start = float(v)
-            candidate_has_past_dip = False
-            continue
-
-        if float(v) < float(min_since_candidate_start):
-            min_since_candidate_start = float(v)
+        if debug_enabled and (prev_logged_value is None or current_u != prev_logged_value):
+            print(
+                "[speed-max] i="
+                + str(i)
+                + " raw="
+                + str(v)
+                + " converted_u="
+                + str(current_u)
+                + " displayed_u="
+                + str(current_u)
+            )
+            prev_logged_value = current_u
 
     return out
 
