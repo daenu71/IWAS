@@ -2,14 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from huds.common import (
-    COL_HUD_BG,
-    build_value_boundaries,
-    choose_tick_step,
-    draw_hud_background,
-    draw_stripe_grid,
-    value_boundaries_to_y,
-)
+from huds.common import COL_HUD_BG, draw_hud_background
 
 
 def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
@@ -68,24 +61,6 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
         frac = (vv - v_min) / den
         yy = float(y0 + h - 1) - (frac * float(max(1, h - 1)))
         return int(round(yy))
-
-    try:
-        step = choose_tick_step(v_min, v_max, min_segments=2, max_segments=5, target_segments=5)
-        if step is not None:
-            val_bounds = build_value_boundaries(v_min, v_max, float(step), anchor="bottom")
-            y_bounds = value_boundaries_to_y(val_bounds, _y_from_speed, int(y0), int(y0 + h - 1))
-            draw_stripe_grid(
-                dr,
-                int(x0),
-                int(w),
-                int(y0),
-                int(y0 + h - 1),
-                y_bounds,
-                col_bg=COL_HUD_BG,
-                darken_delta=6,
-            )
-    except Exception:
-        pass
 
     # Fonts (ähnlich wie Throttle / Brake)
     try:
