@@ -29,36 +29,37 @@ def build_confirmed_max_speed_display(
         vals.append(float(fv))
 
     out: list[float | None] = [None] * n
-    last_confirmed_peak_value: float | None = None
+    confirmed_max_value: float | None = None
 
     candidate_peak_value = float(vals[0])
     candidate_peak_index = 0
-    baseline_min = float(vals[0])
-    pre_rise_ok = False
+    min_since_candidate_start = float(vals[0])
+    candidate_has_past_dip = False
 
     for i, v in enumerate(vals):
-        out[i] = last_confirmed_peak_value
-
-        post_drop_ok = (i > candidate_peak_index) and (float(v) <= float(candidate_peak_value - thr))
-        if pre_rise_ok and post_drop_ok:
-            last_confirmed_peak_value = float(candidate_peak_value)
-            for k in range(int(candidate_peak_index), i + 1):
-                out[k] = last_confirmed_peak_value
-
-            candidate_peak_value = float(v)
-            candidate_peak_index = int(i)
-            baseline_min = float(v)
-            pre_rise_ok = False
-            continue
-
-        if float(v) < float(baseline_min):
-            baseline_min = float(v)
+        out[i] = confirmed_max_value
 
         if float(v) > float(candidate_peak_value):
             candidate_peak_value = float(v)
             candidate_peak_index = int(i)
+            candidate_has_past_dip = bool(float(min_since_candidate_start) <= float(candidate_peak_value - thr))
+        elif (
+            i > candidate_peak_index
+            and candidate_has_past_dip
+            and float(v) <= float(candidate_peak_value - thr)
+        ):
+            confirmed_max_value = float(candidate_peak_value)
+            for k in range(int(candidate_peak_index), i + 1):
+                out[k] = confirmed_max_value
 
-        pre_rise_ok = (float(candidate_peak_value - baseline_min) >= float(thr))
+            candidate_peak_value = float(v)
+            candidate_peak_index = int(i)
+            min_since_candidate_start = float(v)
+            candidate_has_past_dip = False
+            continue
+
+        if float(v) < float(min_since_candidate_start):
+            min_since_candidate_start = float(v)
 
     return out
 
