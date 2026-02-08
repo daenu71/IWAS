@@ -196,14 +196,14 @@ def draw_stripe_grid(
     bg_rgba = _coerce_rgba(col_bg)
     # Note: HUD PNGs are flattened over black before ffmpeg overlay. Very dark,
     # low-alpha stripes can collapse visually; keep stripe fills visibly distinct.
-    stripe_alpha = max(int(bg_rgba[3]), min(230, int(bg_rgba[3]) + 134))
-    stripe_lift = max(12, min(30, int(darken_delta) + 12))
-    col_dark = (
-        min(255, int(bg_rgba[0]) + int(stripe_lift)),
-        min(255, int(bg_rgba[1]) + int(stripe_lift)),
-        min(255, int(bg_rgba[2]) + int(stripe_lift)),
-        int(stripe_alpha),
+    stripe_alpha = max(int(bg_rgba[3]), min(210, int(bg_rgba[3]) + 70))
+    stripe_lift = max(6, min(16, int(darken_delta) + 6))
+    lifted = (
+        min(255, int(bg_rgba[0]) + stripe_lift),
+        min(255, int(bg_rgba[1]) + stripe_lift),
+        min(255, int(bg_rgba[2]) + stripe_lift),
     )
+    col_dark = (*lifted, int(stripe_alpha))
     for i in range(len(ys) - 1):
         if (i % 2) == 0:
             continue
@@ -216,17 +216,11 @@ def draw_stripe_grid(
         except Exception:
             pass
 
-    # Bright separators survive limited-range/YUV encoding better than very dark tones.
-    r_bg, g_bg, b_bg, _a_bg = bg_rgba
-    line_col = (
-        min(255, int(r_bg) + 56),
-        min(255, int(g_bg) + 56),
-        min(255, int(b_bg) + 56),
-        max(196, int(stripe_alpha)),
-    )
+    # Keep separators in the same lifted hue so they stay aligned with the
+    # softened stripes even after the PNG is flattened over black.
     for y_line in ys[1:-1]:
         try:
-            dr.line([(int(x0), int(y_line)), (x1, int(y_line))], fill=line_col, width=1)
+            dr.line([(int(x0), int(y_line)), (x1, int(y_line))], fill=col_dark, width=1)
         except Exception:
             pass
 

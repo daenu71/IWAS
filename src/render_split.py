@@ -2951,30 +2951,29 @@ def _render_hud_scroll_frames_png(
                         x1s = int(w) - 1
                         y0s = int(min(y_grid_top, y_grid_bot))
                         y1s = int(max(y_grid_top, y_grid_bot))
-                        for stripe_i in range(len(y_bounds) - 1):
-                            y_a = int(y_bounds[stripe_i])
-                            y_b = int(y_bounds[stripe_i + 1]) - 1
-                            if y_b < y_a:
-                                continue
-                            if (stripe_i % 2) == 1:
-                                # Keep stripe areas visible after HUD-to-black flattening.
-                                stripe_a = max(int(COL_HUD_BG[3]), min(230, int(COL_HUD_BG[3]) + 134))
-                                static_dr_local.rectangle(
-                                    [x0s, y_a, x1s, y_b],
-                                    fill=(min(255, int(COL_HUD_BG[0]) + 18), min(255, int(COL_HUD_BG[1]) + 18), min(255, int(COL_HUD_BG[2]) + 18), int(stripe_a)),
-                                )
-                        try:
-                            sep_a = max(int(COL_HUD_BG[3]), min(220, int(COL_HUD_BG[3]) + 120))
-                            sep_col = (
-                                min(255, int(COL_HUD_BG[0]) + 56),
-                                min(255, int(COL_HUD_BG[1]) + 56),
-                                min(255, int(COL_HUD_BG[2]) + 56),
-                                int(sep_a),
+                        stripe_color = None
+                        if len(y_bounds) > 1:
+                            stripe_alpha = max(int(COL_HUD_BG[3]), min(210, int(COL_HUD_BG[3]) + 70))
+                            stripe_lift = 10
+                            stripe_rgb = (
+                                min(255, int(COL_HUD_BG[0]) + stripe_lift),
+                                min(255, int(COL_HUD_BG[1]) + stripe_lift),
+                                min(255, int(COL_HUD_BG[2]) + stripe_lift),
                             )
-                            for y_sep in y_bounds[1:-1]:
-                                static_dr_local.line([(x0s, int(y_sep)), (x1s, int(y_sep))], fill=sep_col, width=1)
-                        except Exception:
-                            pass
+                            stripe_color = (*stripe_rgb, int(stripe_alpha))
+                            for stripe_i in range(len(y_bounds) - 1):
+                                y_a = int(y_bounds[stripe_i])
+                                y_b = int(y_bounds[stripe_i + 1]) - 1
+                                if y_b < y_a:
+                                    continue
+                                if (stripe_i % 2) == 1:
+                                    static_dr_local.rectangle([x0s, y_a, x1s, y_b], fill=stripe_color)
+                        if stripe_color is not None:
+                            try:
+                                for y_sep in y_bounds[1:-1]:
+                                    static_dr_local.line([(x0s, int(y_sep)), (x1s, int(y_sep))], fill=stripe_color, width=1)
+                            except Exception:
+                                pass
 
                         axis_labels = [
                             (int(tb_layout["y_from_01"](0.2)), "20"),
