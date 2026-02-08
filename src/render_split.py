@@ -2112,7 +2112,7 @@ def _render_hud_scroll_frames_png(
         _log_print("[hudpy] keine gÃ¼ltige Scroll-HUD-Box (w/h/x/y) gefunden", log_file)
         return None
 
-    # Parameter (Story 2): Default aus INI + Overrides pro HUD
+    # Story 4.2: Scroll-HUD Fenster kommen nur aus globalen Defaults.
     default_before_s = max(1e-6, float(before_s))
     default_after_s = max(1e-6, float(after_s))
 
@@ -2133,54 +2133,15 @@ def _render_hud_scroll_frames_png(
     except Exception:
         env_after_s = None
 
-    # pro HUD: before_s/after_s sammeln
-    hud_params: dict[str, dict[str, float]] = {}
-    ovs = hud_windows if isinstance(hud_windows, dict) else None
-    for name, _x0, _y0, _w, _h in hud_items:
-        b = float(default_before_s)
-        a = float(default_after_s)
-        try:
-            if ovs and isinstance(ovs.get(name), dict):
-                o = ovs.get(name) or {}
-                if o.get("before_s") is not None:
-                    b = float(o.get("before_s"))
-                if o.get("after_s") is not None:
-                    a = float(o.get("after_s"))
-        except Exception:
-            pass
+    effective_before_s = float(default_before_s)
+    effective_after_s = float(default_after_s)
+    if env_before_s is not None:
+        effective_before_s = float(env_before_s)
+    if env_after_s is not None:
+        effective_after_s = float(env_after_s)
 
-        if env_before_s is not None:
-            b = float(env_before_s)
-        if env_after_s is not None:
-            a = float(env_after_s)
-
-        hud_params[str(name)] = {"before_s": max(1e-6, float(b)), "after_s": max(1e-6, float(a))}
-
-    def _resolve_hud_window_seconds(hud_name_local: str) -> tuple[float, float]:
-        b2 = float(default_before_s)
-        a2 = float(default_after_s)
-        try:
-            if isinstance(hud_windows, dict) and isinstance(hud_windows.get(hud_name_local), dict):
-                o2 = hud_windows.get(hud_name_local) or {}
-                if o2.get("before_s") is not None:
-                    b2 = float(o2.get("before_s"))
-                if o2.get("after_s") is not None:
-                    a2 = float(o2.get("after_s"))
-        except Exception:
-            pass
-        try:
-            p2 = hud_params.get(hud_name_local) or {}
-            if p2.get("before_s") is not None:
-                b2 = float(p2.get("before_s"))
-            if p2.get("after_s") is not None:
-                a2 = float(p2.get("after_s"))
-        except Exception:
-            pass
-        if env_before_s is not None:
-            b2 = float(env_before_s)
-        if env_after_s is not None:
-            a2 = float(env_after_s)
-        return max(1e-6, float(b2)), max(1e-6, float(a2))
+    def _resolve_hud_window_seconds(_hud_name_local: str) -> tuple[float, float]:
+        return max(1e-6, float(effective_before_s)), max(1e-6, float(effective_after_s))
 
     try:
         step = float((os.environ.get("IRVC_HUD_TICK_STEP") or "").strip() or "0.01")
@@ -5375,8 +5336,14 @@ def render_split_screen_sync(
                 log_file=log_file,
             )
 
-        # Overrides normalisieren
-        ovs = hud_window_overrides if isinstance(hud_window_overrides, dict) else None
+        # Story 4.2: per-HUD Overrides sind inaktiv; alle Scroll-HUDs nutzen globales Fenster.
+        global_before_s = max(1e-6, float(before_default_s))
+        global_after_s = max(1e-6, float(after_default_s))
+        # Story 2.2: Scroll-HUD Fenster intern symmetrisch halten.
+        # Damit ist die Pixel-Scrollrate links/rechts eindeutig.
+        global_sym_s = max(float(global_before_s), float(global_after_s))
+        global_before_s = float(global_sym_s)
+        global_after_s = float(global_sym_s)
 
         # Fenster-Dict fÃ¼r Renderer: {hud_name: {"before_s": x, "after_s": y}}
         hud_windows: dict[str, dict[str, float]] = {}
@@ -5391,37 +5358,22 @@ def render_split_screen_sync(
             if hud_name not in _SCROLL_HUD_NAMES:
                 continue
 
-            b = float(before_default_s)
-            a = float(after_default_s)
+            b = float(global_before_s)
+            a = float(global_after_s)
             
             # DEBUG: Zeigt, welche Sekundenwerte pro HUD wirklich verwendet werden
             # (damit wir sehen, warum Steering bei dir auf 0.1/0.1 steht)
             try:
                 if (os.environ.get("RVA_HUD_STEER_DEBUG_FRAME") or "").strip() != "":
                     _log_print(
-                        f"[hudpy][dbg-win] hud={hud_name} base_before={before_default_s} base_after={after_default_s} ovs_keys={(list(ovs.keys()) if isinstance(ovs, dict) else [])}",
+                        f"[hudpy][dbg-win] hud={hud_name} base_before={before_default_s} base_after={after_default_s} effective_before={global_before_s} effective_after={global_after_s}",
                         log_file,
                     )
             except Exception:
                 pass
 
-            try:
-                if ovs and isinstance(ovs.get(hud_name), dict):
-                    o = ovs.get(hud_name) or {}
-                    if o.get("before_s") is not None:
-                        b = float(o.get("before_s"))
-                    if o.get("after_s") is not None:
-                        a = float(o.get("after_s"))
-            except Exception:
-                pass
-
-            # Story 2.2: Scroll-HUD Fenster intern symmetrisch halten.
-            # Damit ist die Pixel-Scrollrate links/rechts eindeutig.
             b = max(1e-6, float(b))
             a = max(1e-6, float(a))
-            sym_s = max(float(b), float(a))
-            b = float(sym_s)
-            a = float(sym_s)
                  
             # DEBUG: finaler Wert, der gleich in hud_windows geschrieben wird
             try:

@@ -88,25 +88,8 @@ def build_payload(
     hud_win_default_before = persistence._cfg_float("video_compare", "hud_window_default_before_s", 10.0)
     hud_win_default_after = persistence._cfg_float("video_compare", "hud_window_default_after_s", 10.0)
 
+    # Story 4.2: per-HUD window INI overrides are ignored; only global defaults are active.
     hud_win_overrides: dict[str, dict[str, float]] = {}
-
-    def _add_override(hud_name: str, ini_prefix: str) -> None:
-        b = persistence._cfg_float_opt("video_compare", f"hud_window_{ini_prefix}_before_s")
-        a = persistence._cfg_float_opt("video_compare", f"hud_window_{ini_prefix}_after_s")
-        if b is None and a is None:
-            return
-        d: dict[str, float] = {}
-        if b is not None:
-            d["before_s"] = float(b)
-        if a is not None:
-            d["after_s"] = float(a)
-        hud_win_overrides[hud_name] = d
-
-    _add_override("Throttle / Brake", "throttle_brake")
-    _add_override("Steering", "steering")
-    _add_override("Delta", "delta")
-    _add_override("Line Delta", "line_delta")
-    _add_override("Under-/Oversteer", "under_oversteer")
 
     hud_pts_default = persistence._cfg_int("video_compare", "hud_curve_points_default", 180)
     under_oversteer_curve_center = persistence._cfg_float("video_compare", "under_oversteer_curve_center", 0.0)

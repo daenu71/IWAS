@@ -411,7 +411,6 @@ def main() -> None:
     hud_win = ui.get("hud_window") if isinstance(ui, dict) else None
     hud_win_default_before = 10.0
     hud_win_default_after = 10.0
-    hud_win_overrides = None
     under_oversteer_curve_center = 0.0
 
     try:
@@ -419,8 +418,6 @@ def main() -> None:
             hud_win_default_before = float(hud_win.get("default_before_s") or 10.0)
             hud_win_default_after = float(hud_win.get("default_after_s") or 10.0)
             under_oversteer_curve_center = float(hud_win.get("under_oversteer_curve_center") or 0.0)
-            ovs = hud_win.get("overrides")
-            hud_win_overrides = ovs if isinstance(ovs, dict) else None
     except Exception:
         pass
     if under_oversteer_curve_center < -50.0:
@@ -525,7 +522,7 @@ def main() -> None:
             hud_boxes=hud_boxes,
             hud_window_default_before_s=float(hud_win_default_before),
             hud_window_default_after_s=float(hud_win_default_after),
-            hud_window_overrides=hud_win_overrides,
+            hud_window_overrides=None,
             hud_gear_rpm_update_hz=int(hud_gear_rpm_update_hz),
             hud_curve_points_default=int(hud_pts_default),
             hud_curve_points_overrides=hud_pts_overrides,
@@ -553,7 +550,7 @@ def main() -> None:
             hud_boxes=hud_boxes,
             hud_window_default_before_s=float(hud_win_default_before),
             hud_window_default_after_s=float(hud_win_default_after),
-            hud_window_overrides=hud_win_overrides,
+            hud_window_overrides=None,
             hud_gear_rpm_update_hz=int(hud_gear_rpm_update_hz),
             hud_curve_points_default=int(hud_pts_default),
             hud_curve_points_overrides=hud_pts_overrides,
