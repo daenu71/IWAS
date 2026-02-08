@@ -6,9 +6,6 @@ from typing import Any
 from huds.common import COL_HUD_BG, draw_hud_background
 
 
-_RPM_PEAK_CACHE: dict[int, tuple[int, list[int]]] = {}
-
-
 def _safe_int(arr: Any, idx: int) -> int:
     if not arr or idx < 0 or idx >= len(arr):
         return 0
@@ -19,37 +16,6 @@ def _safe_int(arr: Any, idx: int) -> int:
     if not math.isfinite(v):
         return 0
     return int(v)
-
-
-def _monotonic_peak_upto(arr: Any, idx: int) -> int:
-    if not arr or idx < 0:
-        return 0
-    n = min(int(idx) + 1, int(len(arr)))
-    if n <= 0:
-        return 0
-
-    key = int(id(arr))
-    cached = _RPM_PEAK_CACHE.get(key)
-    if cached is None or cached[0] != int(len(arr)):
-        peaks: list[int] = []
-        peak = 0
-        for j in range(int(len(arr))):
-            v = _safe_int(arr, j)
-            if j == 0:
-                peak = int(v)
-            else:
-                peak = int(max(peak, v))
-            peaks.append(int(peak))
-        _RPM_PEAK_CACHE[key] = (int(len(arr)), peaks)
-        cached = _RPM_PEAK_CACHE.get(key)
-
-    if cached is None:
-        return 0
-    peaks_cached = cached[1]
-    if not peaks_cached:
-        return 0
-    out_idx = int(min(n - 1, len(peaks_cached) - 1))
-    return int(peaks_cached[out_idx])
 
 
 def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
@@ -77,8 +43,6 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
     fg = _safe_int(fast_gear_h, fi)
     sr = _safe_int(slow_rpm_h, i)
     fr = _safe_int(fast_rpm_h, fi)
-    smax = _monotonic_peak_upto(slow_rpm_h, i)
-    fmax = _monotonic_peak_upto(fast_rpm_h, fi)
 
     try:
         try:
@@ -144,9 +108,9 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             ty = (((inner_y0 + inner_y1) - th) * 0.5) - by0
             dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
 
-        header_labels = ("Gear", "RPM", "Max. RPM")
-        slow_values = (str(sg), str(sr), str(smax))
-        fast_values = (str(fg), str(fr), str(fmax))
+        header_labels = ("Gear", "RPM")
+        slow_values = (str(sg), str(sr))
+        fast_values = (str(fg), str(fr))
 
         outer_pad_x = int(max(4, min(10, round(float(w) * 0.02))))
         outer_pad_y = int(max(4, min(10, round(float(h) * 0.08))))
@@ -172,17 +136,17 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
             table_bottom = int(table_top + 1)
 
         table_h = int(max(2, table_bottom - table_top + 1))
-        col_w = float(table_w) / 3.0
+        col_w = float(table_w) / 2.0
         cell_pad_y = int(max(1, min(4, round(float(h) * 0.01))))
         cell_pad_x = int(max(2, min(8, round(col_w * 0.08))))
         fit_w = int(max(8, round(col_w) - (2 * cell_pad_x)))
 
         font_title = _load_font(18)
         try:
-            header_bbox = dr.textbbox((0, 0), "Max. RPM", font=font_title)
+            header_bbox = dr.textbbox((0, 0), "Gear", font=font_title)
             header_text_h = int(header_bbox[3] - header_bbox[1])
         except Exception:
-            header_text_h = _text_wh("Max. RPM", font_title)[1]
+            header_text_h = _text_wh("Gear", font_title)[1]
         header_pad_top = 2
         header_pad_bottom = 3
         header_row_h = int(header_text_h + header_pad_top + header_pad_bottom)
@@ -215,7 +179,7 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
         value_pad_bottom = cell_pad_y
         value_fit_h = int(max(1, value_row_h - (value_pad_top + value_pad_bottom)))
 
-        probe_values = ["9999", str(sg), str(sr), str(smax), str(fg), str(fr), str(fmax)]
+        probe_values = ["9999", str(sg), str(sr), str(fg), str(fr)]
         max_font = int(max(10, min(120, value_fit_h)))
         min_font = 10
         font_val = _load_font(min_font)
@@ -244,10 +208,9 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
         def _draw_table_grid(table_x: int) -> tuple[list[int], list[int]]:
             table_left = int(table_x)
             table_right = int(table_x + table_w - 1)
-            c1 = int(table_x + round(float(table_w) / 3.0))
-            c2 = int(table_x + round((2.0 * float(table_w)) / 3.0))
+            c1 = int(table_x + round(float(table_w) / 2.0))
 
-            x_lines = [table_left, c1, c2, table_right]
+            x_lines = [table_left, c1, table_right]
             dedup_x: list[int] = []
             for x in x_lines:
                 if not dedup_x or x != dedup_x[-1]:
@@ -264,14 +227,13 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 dr.line([(int(table_left), int(y)), (int(table_right), int(y))], fill=grid_col, width=1)
             return dedup_x, dedup_y
 
-        def _draw_table(table_x: int, vals: tuple[str, str, str], col: Any) -> None:
+        def _draw_table(table_x: int, vals: tuple[str, str], col: Any) -> None:
             x_lines, _ = _draw_table_grid(table_x)
-            if len(x_lines) < 4:
+            if len(x_lines) < 3:
                 return
             cell_x_ranges = [
                 (x_lines[0], x_lines[1]),
                 (x_lines[1], x_lines[2]),
-                (x_lines[2], x_lines[3]),
             ]
 
             header_cell_pad_y = int(max(1, cell_pad_y - 1))
@@ -309,7 +271,7 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
         xR = int(x0 + (w // 2) + 6)
         y1 = int(y0 + 6)
         y2 = int(y0 + 26)
-        dr.text((xL, y1), "Gear | RPM | Max. RPM", fill=col_slow_darkred)
-        dr.text((xR, y1), "Gear | RPM | Max. RPM", fill=col_fast_darkblue)
-        dr.text((xL, y2), f"{sg} | {sr} | {smax}", fill=col_slow_darkred)
-        dr.text((xR, y2), f"{fg} | {fr} | {fmax}", fill=col_fast_darkblue)
+        dr.text((xL, y1), "Gear | RPM", fill=col_slow_darkred)
+        dr.text((xR, y1), "Gear | RPM", fill=col_fast_darkblue)
+        dr.text((xL, y2), f"{sg} | {sr}", fill=col_slow_darkred)
+        dr.text((xR, y2), f"{fg} | {fr}", fill=col_fast_darkblue)
