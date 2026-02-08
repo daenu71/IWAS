@@ -25,6 +25,9 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
     i = int(ctx.get("i", 0))
     before_f = max(1, int(ctx.get("before_f", 1)))
     after_f = max(1, int(ctx.get("after_f", 1)))
+    frame_window_mapping = ctx.get("frame_window_mapping")
+    map_idxs_all = list(getattr(frame_window_mapping, "idxs", []) or [])
+    map_offsets_all = list(getattr(frame_window_mapping, "offsets", []) or [])
     line_delta_m_frames = ctx.get("line_delta_m_frames")
     line_delta_y_abs_m = ctx.get("line_delta_y_abs_m")
     COL_WHITE = ctx.get("COL_WHITE", (255, 255, 255, 255))
@@ -88,21 +91,44 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
         cur_idx = n_vals - 1
 
     window: list[tuple[int, float]] = []
-    for ofs in range(-before_f, after_f + 1):
-        idx = int(i + ofs)
-        if idx < 0:
-            idx = 0
-        if n_vals > 0 and idx >= n_vals:
-            idx = n_vals - 1
-        v = 0.0
-        if n_vals > 0:
-            try:
-                v = float(vals[idx])
-            except Exception:
-                v = 0.0
-        if not math.isfinite(v):
+    if map_idxs_all and len(map_idxs_all) == len(map_offsets_all):
+        for idx_m, ofs_m in zip(map_idxs_all, map_offsets_all):
+            ofs = int(ofs_m)
+            if ofs < -int(before_f) or ofs > int(after_f):
+                continue
+            idx = int(idx_m)
+            if idx < 0:
+                idx = 0
+            if n_vals > 0 and idx >= n_vals:
+                idx = n_vals - 1
             v = 0.0
-        window.append((int(ofs), float(v)))
+            if n_vals > 0:
+                try:
+                    v = float(vals[idx])
+                except Exception:
+                    v = 0.0
+            if not math.isfinite(v):
+                v = 0.0
+            window.append((int(ofs), float(v)))
+    else:
+        for idx, ofs in (
+            (int(i - before_f), int(-before_f)),
+            (int(i), 0),
+            (int(i + after_f), int(after_f)),
+        ):
+            if idx < 0:
+                idx = 0
+            if n_vals > 0 and idx >= n_vals:
+                idx = n_vals - 1
+            v = 0.0
+            if n_vals > 0:
+                try:
+                    v = float(vals[idx])
+                except Exception:
+                    v = 0.0
+            if not math.isfinite(v):
+                v = 0.0
+            window.append((int(ofs), float(v)))
 
     y_abs = 0.0
     try:

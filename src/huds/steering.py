@@ -23,6 +23,10 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
     i = int(ctx["i"])
     iL = int(ctx["iL"])
     iR = int(ctx["iR"])
+    frame_window_mapping = ctx.get("frame_window_mapping")
+    map_idxs_all = list(getattr(frame_window_mapping, "idxs", []) or [])
+    map_offsets_all = list(getattr(frame_window_mapping, "offsets", []) or [])
+    map_fast_idx_all = list(getattr(frame_window_mapping, "fast_idx", []) or [])
     slow_to_fast_frame = ctx["slow_to_fast_frame"]
     slow_steer_frames = ctx["slow_steer_frames"]
     fast_steer_frames = ctx["fast_steer_frames"]
@@ -304,9 +308,10 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                     else:
                         step_dbg = 1
     
-                    k = int(iL)
                     n_print = 0
-                    while k <= int(iR) and n_print < dbg_n:
+                    for k in range(int(iL), int(iR) + 1, int(step_dbg)):
+                        if n_print >= int(dbg_n):
+                            break
                         # slow CSV index
                         try:
                             si_dbg = int(round(float(k) * float(steer_slow_scale)))
@@ -353,41 +358,37 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                         )
     
                         n_print += 1
-                        k += step_dbg
                 except Exception:
                     pass
             # --- /DEBUG ---
     
             pts_s: list[tuple[int, int]] = []
             pts_f: list[tuple[int, int]] = []
-    
-            # Symmetrisches Sampling um den Marker (wie bei Throttle/Brake),
-            # damit links/rechts gleich â€žstabilâ€œ wirkt.
-            idxs: list[int] = []
-    
-            k = int(i)
-            while k >= int(iL):
-                idxs.append(k)
-                k -= int(stride)
-    
-            k = int(i) + int(stride)
-            while k <= int(iR):
-                idxs.append(k)
-                k += int(stride)
-    
-            idxs = sorted(set(idxs))
-            if idxs:
-                if idxs[0] != int(iL):
-                    idxs.insert(0, int(iL))
-                if idxs[-1] != int(iR):
-                    idxs.append(int(iR))
-            else:
-                idxs = [int(iL), int(i), int(iR)]
-    
-            for idx in idxs:
-                if idx < int(iL) or idx > int(iR):
-                    continue
-    
+
+            # Story 2.1: gemeinsames Fenster-Mapping nutzen (einmal pro Frame berechnet).
+            sample_rows: list[tuple[int, int, int]] = []
+            if map_idxs_all and len(map_idxs_all) == len(map_offsets_all) and len(map_idxs_all) == len(map_fast_idx_all):
+                for idx_m, off_m, fi_m in zip(map_idxs_all, map_offsets_all, map_fast_idx_all):
+                    idx_i = int(idx_m)
+                    if idx_i < int(iL) or idx_i > int(iR):
+                        continue
+                    use_point = (idx_i == int(iL)) or (idx_i == int(iR)) or ((int(off_m) % int(stride)) == 0)
+                    if use_point:
+                        sample_rows.append((idx_i, int(off_m), int(fi_m)))
+
+            if not sample_rows:
+                idxs_fallback: list[int] = []
+                for idx_fb in (int(iL), int(i), int(iR)):
+                    if idx_fb < int(iL) or idx_fb > int(iR):
+                        continue
+                    if idx_fb not in idxs_fallback:
+                        idxs_fallback.append(int(idx_fb))
+                if not idxs_fallback:
+                    idxs_fallback = [int(i)]
+                for idx_fb in idxs_fallback:
+                    sample_rows.append((int(idx_fb), int(idx_fb) - int(i), int(idx_fb)))
+
+            for idx, _off, fi2_map in sample_rows:
                 x = _idx_to_x(int(idx))
     
                 # Slow
@@ -404,12 +405,15 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 ys = _y_from_norm(float(sn))
                 pts_s.append((x, int(ys)))
     
-                # Fast: idx -> frame_map -> fast idx
-                fi2 = int(idx)
-                if slow_to_fast_frame and fi2 < len(slow_to_fast_frame):
-                    fi2 = int(slow_to_fast_frame[fi2])
-                    if fi2 < 0:
-                        fi2 = 0
+                # Fast: idx -> frame_map -> fast idx (aus globalem Mapping)
+                fi2 = int(fi2_map)
+                if fi2 < 0:
+                    fi2 = 0
+                if not map_fast_idx_all:
+                    if slow_to_fast_frame and fi2 < len(slow_to_fast_frame):
+                        fi2 = int(slow_to_fast_frame[fi2])
+                        if fi2 < 0:
+                            fi2 = 0
     
                 fv = 0.0
                 if fast_steer_frames:
@@ -485,178 +489,3 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 )  # Slow (blau) rechts am Marker
         except Exception:
             return
-    
-    
-            pts_target = int(hud_curve_points_default or 180)
-            try:
-                ovs = hud_curve_points_overrides if isinstance(hud_curve_points_overrides, dict) else None
-                if ovs and hud_key in ovs:
-                    pts_target = int(float(ovs.get(hud_key) or pts_target))
-            except Exception:
-                pass
-    
-            # Grenzen, damit es stabil bleibt
-            if pts_target < 40:
-                pts_target = 40
-            if pts_target > 600:
-                pts_target = 600
-    
-            # nicht mehr Punkte als Pixelbreite
-            max_pts = max(40, min(int(w), int(pts_target)))
-    
-            stride = max(1, int(round(float(span_n) / float(max_pts))))
-            
-            # --- DEBUG: Welche CSV-Punkte werden fÃ¼r einen bestimmten Output-Frame benutzt? ---
-            # Aktivieren per env:
-            #   set RVA_HUD_STEER_DEBUG_FRAME=1440
-            # Optional:
-            #   set RVA_HUD_STEER_DEBUG_SAMPLES=12
-            try:
-                dbg_frame = int(os.environ.get("RVA_HUD_STEER_DEBUG_FRAME", "").strip() or "-1")
-            except Exception:
-                dbg_frame = -1
-            try:
-                dbg_n = int(os.environ.get("RVA_HUD_STEER_DEBUG_SAMPLES", "").strip() or "12")
-            except Exception:
-                dbg_n = 12
-            if dbg_n < 4:
-                dbg_n = 4
-            if dbg_n > 60:
-                dbg_n = 60
-    
-            if dbg_frame >= 0 and int(i) == int(dbg_frame):
-                try:
-                    ov_b = 0
-                    ov_a = 0
-                    try:
-                        if isinstance(hud_windows, dict) and isinstance(hud_windows.get(hud_key), dict):
-                            o = hud_windows.get(hud_key) or {}
-                            if o.get("before_s") is not None:
-                                ov_b = 1
-                            if o.get("after_s") is not None:
-                                ov_a = 1
-                    except Exception:
-                        pass
-    
-                    _log_print(
-                        f"[hudpy][dbg-steer] i={int(i)} ld_c={ld_c:.6f} "
-                        f"before_s_h={float(before_s_h):.6f} after_s_h={float(after_s_h):.6f} "
-                        f"default_before_s={float(default_before_s):.6f} default_after_s={float(default_after_s):.6f} "
-                        f"ov_b={int(ov_b)} ov_a={int(ov_a)} "
-                        f"iL={int(iL)} iR={int(iR)} span_n={int(span_n)} "
-                        f"pts_target={int(pts_target)} max_pts={int(max_pts)} stride={int(stride)} "
-                        f"steer_slow_scale={float(steer_slow_scale):.6f} steer_fast_scale={float(steer_fast_scale):.6f} "
-                        f"abs_max={float(steer_abs_max):.6f}",
-                        log_file,
-                    )
-                except Exception:
-                    pass
-    
-                # Probe: ein paar Samples gleichmÃ¤ÃŸig Ã¼ber das Fenster
-                try:
-                    if int(iR) > int(iL):
-                        step_dbg = max(1, int(round(float(iR - iL) / float(dbg_n - 1))))
-                    else:
-                        step_dbg = 1
-    
-                    k = int(iL)
-                    n_print = 0
-                    while k <= int(iR) and n_print < dbg_n:
-                        # slow CSV index
-                        try:
-                            si_dbg = int(round(float(k) * float(steer_slow_scale)))
-                        except Exception:
-                            si_dbg = int(k)
-                        if si_dbg < 0:
-                            si_dbg = 0
-                        if slow_steer_frames:
-                            if si_dbg >= len(slow_steer_frames):
-                                si_dbg = len(slow_steer_frames) - 1
-                            sv_dbg = float(slow_steer_frames[si_dbg])
-                        else:
-                            sv_dbg = 0.0
-    
-                        sn_dbg = _clamp(sv_dbg / max(1e-6, steer_abs_max), -1.0, 1.0)
-                        ys_dbg = int(round(mid_y - (sn_dbg * amp)))
-    
-                        # fast mapping
-                        fi2_dbg = int(k)
-                        if slow_to_fast_frame and int(k) < len(slow_to_fast_frame):
-                            fi2_dbg = int(slow_to_fast_frame[int(k)])
-                            if fi2_dbg < 0:
-                                fi2_dbg = 0
-    
-                        try:
-                            fi_csv_dbg = int(round(float(fi2_dbg) * float(steer_fast_scale)))
-                        except Exception:
-                            fi_csv_dbg = int(fi2_dbg)
-                        if fi_csv_dbg < 0:
-                            fi_csv_dbg = 0
-                        if fast_steer_frames:
-                            if fi_csv_dbg >= len(fast_steer_frames):
-                                fi_csv_dbg = len(fast_steer_frames) - 1
-                            fv_dbg = float(fast_steer_frames[fi_csv_dbg])
-                        else:
-                            fv_dbg = 0.0
-                        fn_dbg = _clamp(fv_dbg / max(1e-6, steer_abs_max), -1.0, 1.0)
-                        yf_dbg = int(round(mid_y - (fn_dbg * amp)))
-    
-                        _log_print(
-                            f"[hudpy][dbg-steer] k={int(k)} si={int(si_dbg)} sv={sv_dbg:.6f} sn={sn_dbg:.6f} ys={int(ys_dbg)} "
-                            f"| fi2={int(fi2_dbg)} fi_csv={int(fi_csv_dbg)} fv={fv_dbg:.6f} fn={fn_dbg:.6f} yf={int(yf_dbg)}",
-                            log_file,
-                        )
-    
-                        n_print += 1
-                        k += step_dbg
-                except Exception:
-                    pass
-            # --- /DEBUG ---
-    
-            pts_s: list[tuple[int, int]] = []
-            pts_f: list[tuple[int, int]] = []
-    
-            idx = iL
-            while idx <= iR:
-                ld_k = float(slow_frame_to_lapdist[idx]) % 1.0
-                d = _wrap_delta_05(ld_k, ld_c)
-                if (-before_span <= d) and (d <= after_span):
-                    x = _delta_to_x(float(d))
-    
-                    if slow_steer_frames:
-                        si = int(round(float(idx) * float(steer_slow_scale)))
-                        if si < 0:
-                            si = 0
-                        if si >= len(slow_steer_frames):
-                            si = len(slow_steer_frames) - 1
-                        sv = float(slow_steer_frames[si])
-                    sn = _clamp(sv / max(1e-6, steer_abs_max), -1.0, 1.0)
-                    ys = int(round(mid_y - (sn * amp)))
-                    pts_s.append((x, ys))
-    
-                    fi2 = idx
-                    if slow_to_fast_frame and idx < len(slow_to_fast_frame):
-                        fi2 = int(slow_to_fast_frame[idx])
-                        if fi2 < 0:
-                            fi2 = 0
-    
-                    fv = 0.0
-                    if fast_steer_frames:
-                        fi_csv = int(round(float(fi2) * float(steer_fast_scale)))
-                        if fi_csv < 0:
-                            fi_csv = 0
-                        if fi_csv >= len(fast_steer_frames):
-                            fi_csv = len(fast_steer_frames) - 1
-                        fv = float(fast_steer_frames[fi_csv])
-                    fn = _clamp(fv / max(1e-6, steer_abs_max), -1.0, 1.0)
-                    yf = int(round(mid_y - (fn * amp)))
-                    pts_f.append((x, yf))
-    
-                idx += stride
-    
-            if len(pts_s) >= 2:
-                dr.line(pts_s, fill=(255, 0, 0, 255), width=2)
-            if len(pts_f) >= 2:
-                dr.line(pts_f, fill=(0, 120, 255, 255), width=2)
-        except Exception:
-            pass

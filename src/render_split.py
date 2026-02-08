@@ -226,6 +226,20 @@ class HudContext:
     log_file: Path | None = None
 
 
+@dataclass(frozen=True)
+class FrameWindowMapping:
+    i: int
+    before_f: int
+    after_f: int
+    iL: int
+    iR: int
+    idxs: list[int]
+    offsets: list[int]
+    t_slow: list[float]
+    fast_idx: list[int]
+    t_fast: list[float]
+
+
 def parse_output_preset(preset: str) -> tuple[int, int]:
     s = (preset or "").strip().lower()
     if "x" not in s:
@@ -1730,6 +1744,91 @@ def _compute_common_cut_by_fast_time(
         raise RuntimeError("sync: kein gemeinsamer Bereich (Fast-Zeit ungueltig).")
     return int(i0), int(i1)
 
+
+def _build_frame_window_mapping(
+    *,
+    i: int,
+    before_f: int,
+    after_f: int,
+    fps: float,
+    slow_frame_count: int,
+    fast_frame_count: int,
+    slow_to_fast_frame: list[int] | None,
+    slow_frame_to_fast_time_s: list[float] | None,
+) -> FrameWindowMapping:
+    fps_safe = float(fps) if float(fps) > 1e-6 else 30.0
+    i0 = int(i)
+    b = max(1, int(before_f))
+    a = max(1, int(after_f))
+    n_slow = max(0, int(slow_frame_count))
+
+    if n_slow <= 0:
+        return FrameWindowMapping(
+            i=i0,
+            before_f=b,
+            after_f=a,
+            iL=0,
+            iR=0,
+            idxs=[],
+            offsets=[],
+            t_slow=[],
+            fast_idx=[],
+            t_fast=[],
+        )
+
+    iL = max(0, i0 - b)
+    iR = min(n_slow - 1, i0 + a)
+    if iR < iL:
+        iR = iL
+
+    idxs = list(range(int(iL), int(iR) + 1))
+    offsets: list[int] = []
+    t_slow: list[float] = []
+    fast_idx: list[int] = []
+    t_fast: list[float] = []
+
+    fast_hi = int(fast_frame_count) - 1 if int(fast_frame_count) > 0 else None
+    n_tf = len(slow_frame_to_fast_time_s) if slow_frame_to_fast_time_s else 0
+
+    for idx in idxs:
+        off = int(idx - i0)
+        offsets.append(int(off))
+        t_slow.append(float(idx) / float(fps_safe))
+
+        fi = int(idx)
+        if slow_to_fast_frame and idx < len(slow_to_fast_frame):
+            try:
+                fi = int(slow_to_fast_frame[idx])
+            except Exception:
+                fi = int(idx)
+        if fi < 0:
+            fi = 0
+        if fast_hi is not None and fi > int(fast_hi):
+            fi = int(fast_hi)
+        fast_idx.append(int(fi))
+
+        if n_tf > 0 and idx < n_tf:
+            try:
+                t_fast.append(float(slow_frame_to_fast_time_s[idx]))
+            except Exception:
+                t_fast.append(float(fi) / float(fps_safe))
+        else:
+            t_fast.append(float(fi) / float(fps_safe))
+
+    return FrameWindowMapping(
+        i=i0,
+        before_f=b,
+        after_f=a,
+        iL=int(iL),
+        iR=int(iR),
+        idxs=idxs,
+        offsets=offsets,
+        t_slow=t_slow,
+        fast_idx=fast_idx,
+        t_fast=t_fast,
+    )
+
+
 def _build_hud_context(
     *,
     fps: float,
@@ -2049,6 +2148,32 @@ def _render_hud_scroll_frames_png(
 
         hud_params[str(name)] = {"before_s": max(1e-6, float(b)), "after_s": max(1e-6, float(a))}
 
+    def _resolve_hud_window_seconds(hud_name_local: str) -> tuple[float, float]:
+        b2 = float(default_before_s)
+        a2 = float(default_after_s)
+        try:
+            if isinstance(hud_windows, dict) and isinstance(hud_windows.get(hud_name_local), dict):
+                o2 = hud_windows.get(hud_name_local) or {}
+                if o2.get("before_s") is not None:
+                    b2 = float(o2.get("before_s"))
+                if o2.get("after_s") is not None:
+                    a2 = float(o2.get("after_s"))
+        except Exception:
+            pass
+        try:
+            p2 = hud_params.get(hud_name_local) or {}
+            if p2.get("before_s") is not None:
+                b2 = float(p2.get("before_s"))
+            if p2.get("after_s") is not None:
+                a2 = float(p2.get("after_s"))
+        except Exception:
+            pass
+        if env_before_s is not None:
+            b2 = float(env_before_s)
+        if env_after_s is not None:
+            a2 = float(env_after_s)
+        return max(1e-6, float(b2)), max(1e-6, float(a2))
+
     try:
         step = float((os.environ.get("IRVC_HUD_TICK_STEP") or "").strip() or "0.01")
     except Exception:
@@ -2091,6 +2216,33 @@ def _render_hud_scroll_frames_png(
     if frames <= 0:
         _log_print("[hudpy] frames <= 0", log_file)
         return None
+
+    fast_frame_count = 0
+    try:
+        fast_candidates = (
+            fast_speed_frames,
+            fast_min_speed_frames,
+            fast_gear_frames,
+            fast_rpm_frames,
+            fast_steer_frames,
+            fast_throttle_frames,
+            fast_brake_frames,
+            fast_abs_frames,
+            under_oversteer_fast_frames,
+        )
+        for arr in fast_candidates:
+            if arr:
+                fast_frame_count = max(int(fast_frame_count), int(len(arr)))
+        if slow_to_fast_frame:
+            for v_f in slow_to_fast_frame:
+                try:
+                    fi = int(v_f)
+                except Exception:
+                    continue
+                if fi >= 0:
+                    fast_frame_count = max(int(fast_frame_count), int(fi) + 1)
+    except Exception:
+        fast_frame_count = int(max(0, int(fast_frame_count)))
 
     hud_dbg = (os.environ.get("IRVC_HUD_DEBUG") or "0").strip() in ("1", "true", "yes", "on")
     if hud_dbg:
@@ -2346,6 +2498,27 @@ def _render_hud_scroll_frames_png(
         ld_mod = ld % step
         active_table_items = _active_hud_items_for_frame(table_items)
         active_scroll_items = _active_hud_items_for_frame(hud_items)
+        global_before_f = 1
+        global_after_f = 1
+        if active_scroll_items:
+            for hud_name_local, _x0, _y0, _w, _h in active_scroll_items:
+                b_s_h, a_s_h = _resolve_hud_window_seconds(str(hud_name_local))
+                bf_h = max(1, int(round(float(b_s_h) * float(r))))
+                af_h = max(1, int(round(float(a_s_h) * float(r))))
+                if bf_h > global_before_f:
+                    global_before_f = int(bf_h)
+                if af_h > global_after_f:
+                    global_after_f = int(af_h)
+        frame_window_mapping = _build_frame_window_mapping(
+            i=int(i),
+            before_f=int(global_before_f),
+            after_f=int(global_after_f),
+            fps=float(r),
+            slow_frame_count=len(slow_frame_to_lapdist),
+            fast_frame_count=int(fast_frame_count),
+            slow_to_fast_frame=slow_to_fast_frame,
+            slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
+        )
 
 
         # Table-HUDs (Speed, Gear & RPM) als Text
@@ -2414,46 +2587,13 @@ def _render_hud_scroll_frames_png(
         # Wir zeichnen alle Scroll-HUDs in dieses eine Bild.
         for hud_key, x0, y0, w, h in active_scroll_items:
             try:
-                # Sekundenfenster: bevorzugt aus hud_windows (kommt aus render_split_screen_sync),
-                # damit wir garantiert die 10/10 Sekunden bekommen.
-                b2 = float(default_before_s)
-                a2 = float(default_after_s)
-
-                try:
-                    if isinstance(hud_windows, dict) and isinstance(hud_windows.get(hud_key), dict):
-                        o2 = hud_windows.get(hud_key) or {}
-                        if o2.get("before_s") is not None:
-                            b2 = float(o2.get("before_s"))
-                        if o2.get("after_s") is not None:
-                            a2 = float(o2.get("after_s"))
-                except Exception:
-                    pass
-
-                # Fallback (kompatibel): hud_params, falls vorhanden
-                try:
-                    p = hud_params.get(hud_key) or {}
-                    if p.get("before_s") is not None:
-                        b2 = float(p.get("before_s"))
-                    if p.get("after_s") is not None:
-                        a2 = float(p.get("after_s"))
-                except Exception:
-                    p = {}
-
-                before_s_h = float(b2)
-                after_s_h = float(a2)
-
-                # Optional: ENV Ã¼berschreibt (Debug) -> gilt dann fÃ¼r ALLE HUDs
-                if env_before_s is not None:
-                    before_s_h = float(env_before_s)
-                if env_after_s is not None:
-                    after_s_h = float(env_after_s)
-
+                before_s_h, after_s_h = _resolve_hud_window_seconds(str(hud_key))
                 before_f = max(1, int(round(before_s_h * r)))
                 after_f = max(1, int(round(after_s_h * r)))
 
                 # Fenster in Frames (Zeit-Achse): stabiler als LapDist-Spannen
-                iL = max(0, i - before_f)
-                iR = min(len(slow_frame_to_lapdist) - 1, i + after_f)
+                iL = max(0, i - int(before_f))
+                iR = min(len(slow_frame_to_lapdist) - 1, i + int(after_f))
 
                 center_x = int(x0 + (w // 2))
                 half_w = float(w - 1) / 2.0  # Pixel bis zum Rand (links/rechts)
@@ -2494,6 +2634,7 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "frame_window_mapping": frame_window_mapping,
                         "fps": fps,
                         "_idx_to_x": _idx_to_x,
                         "_clamp": _clamp,
@@ -2525,6 +2666,7 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "frame_window_mapping": frame_window_mapping,
                         "mx": mx,
                         "_idx_to_x": _idx_to_x,
                         "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
@@ -2548,6 +2690,7 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "frame_window_mapping": frame_window_mapping,
                         "slow_to_fast_frame": slow_to_fast_frame,
                         "slow_steer_frames": slow_steer_frames,
                         "fast_steer_frames": fast_steer_frames,
@@ -2586,6 +2729,7 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "before_f": before_f,
                         "after_f": after_f,
+                        "frame_window_mapping": frame_window_mapping,
                         "line_delta_m_frames": line_delta_m_frames,
                         "line_delta_y_abs_m": line_delta_y_abs_m,
                         "COL_WHITE": COL_WHITE,
@@ -2599,6 +2743,7 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "before_f": before_f,
                         "after_f": after_f,
+                        "frame_window_mapping": frame_window_mapping,
                         "under_oversteer_slow_frames": under_oversteer_slow_frames,
                         "under_oversteer_fast_frames": under_oversteer_fast_frames,
                         "under_oversteer_y_abs": under_oversteer_y_abs,

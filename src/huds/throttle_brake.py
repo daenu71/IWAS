@@ -18,6 +18,12 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
     i = int(ctx["i"])
     iL = int(ctx["iL"])
     iR = int(ctx["iR"])
+    frame_window_mapping = ctx.get("frame_window_mapping")
+    map_idxs_all = list(getattr(frame_window_mapping, "idxs", []) or [])
+    map_offsets_all = list(getattr(frame_window_mapping, "offsets", []) or [])
+    map_t_slow_all = list(getattr(frame_window_mapping, "t_slow", []) or [])
+    map_fast_idx_all = list(getattr(frame_window_mapping, "fast_idx", []) or [])
+    map_t_fast_all = list(getattr(frame_window_mapping, "t_fast", []) or [])
     fps = float(ctx.get("fps", 30.0) or 30.0)
     _idx_to_x = ctx["_idx_to_x"]
     _clamp = ctx["_clamp"]
@@ -317,44 +323,68 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
             # Helper: X aus Frame-Index (Zeit-Achse, stabil)
             def _x_from_idx(idx0: int) -> int:
                 return _idx_to_x(int(idx0))
-    
-            # Marker-zentriertes Sampling (symmetrisch links/rechts) + Endpunkte erzwingen
-            idxs: list[int] = []
-    
-            k = int(i)
-            while k >= int(iL):
-                idxs.append(k)
-                k -= int(stride)
-    
-            k = int(i) + int(stride)
-            while k <= int(iR):
-                idxs.append(k)
-                k += int(stride)
-    
-            idxs = sorted(set(idxs))
-            if idxs:
-                if idxs[0] != int(iL):
-                    idxs.insert(0, int(iL))
-                if idxs[-1] != int(iR):
-                    idxs.append(int(iR))
-            else:
-                idxs = [int(iL), int(i), int(iR)]
+
+            # Story 2.1: gemeinsames Fenster-Mapping nutzen (einmal pro Frame berechnet).
+            sample_rows: list[tuple[int, int, float, int, float]] = []
+            if (
+                map_idxs_all
+                and len(map_idxs_all) == len(map_offsets_all)
+                and len(map_idxs_all) == len(map_t_slow_all)
+                and len(map_idxs_all) == len(map_fast_idx_all)
+                and len(map_idxs_all) == len(map_t_fast_all)
+            ):
+                for idx_m, off_m, ts_m, fi_m, tf_m in zip(
+                    map_idxs_all,
+                    map_offsets_all,
+                    map_t_slow_all,
+                    map_fast_idx_all,
+                    map_t_fast_all,
+                ):
+                    idx_i = int(idx_m)
+                    if idx_i < int(iL) or idx_i > int(iR):
+                        continue
+                    use_point = (idx_i == int(iL)) or (idx_i == int(iR)) or ((int(off_m) % int(stride)) == 0)
+                    if use_point:
+                        sample_rows.append((idx_i, int(off_m), float(ts_m), int(fi_m), float(tf_m)))
+
+            if not sample_rows:
+                # Fallback (kompatibel), falls kein globales Mapping vorhanden ist.
+                idxs_fallback: list[int] = []
+                for idx_fb in (int(iL), int(i), int(iR)):
+                    if idx_fb < int(iL) or idx_fb > int(iR):
+                        continue
+                    if idx_fb not in idxs_fallback:
+                        idxs_fallback.append(int(idx_fb))
+                if not idxs_fallback:
+                    idxs_fallback = [int(i)]
+                for idx_fb in idxs_fallback:
+                    sample_rows.append(
+                        (
+                            int(idx_fb),
+                            int(idx_fb) - int(i),
+                            float(idx_fb) / float(fps_safe),
+                            int(idx_fb),
+                            float(idx_fb) / float(fps_safe),
+                        )
+                    )
+
+            idxs = [int(row[0]) for row in sample_rows]
+            idx_to_t_slow = {int(row[0]): float(row[2]) for row in sample_rows}
+            idx_to_fast_idx = {int(row[0]): int(row[3]) for row in sample_rows}
+            idx_to_t_fast = {int(row[0]): float(row[4]) for row in sample_rows}
     
             # Kurven sammeln
             pts_s_t: list[tuple[int, int]] = []
             pts_s_b: list[tuple[int, int]] = []
             pts_f_t: list[tuple[int, int]] = []
             pts_f_b: list[tuple[int, int]] = []
-    
-            for idx in idxs:
-                if idx < int(iL) or idx > int(iR):
-                    continue
-    
+
+            for idx, _off, t_slow_m, fi_m, t_fast_m in sample_rows:
                 x = int(round(_idx_to_x(int(idx))))
 
                 if hud_pedals_sample_mode == "time":
-                    t_slow = float(idx) / float(fps_safe)
-                    t_fast = _fast_time_from_slow_idx(int(idx))
+                    t_slow = float(t_slow_m)
+                    t_fast = float(t_fast_m)
                     st = _sample_linear_time(slow_throttle_frames, t_slow)
                     sb = _sample_linear_time(slow_brake_frames, t_slow)
                     ft = _sample_linear_time(fast_throttle_frames, t_fast)
@@ -374,12 +404,10 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                     else:
                         sb = 0.0
 
-                    # Fast: idx -> frame_map -> fast idx
-                    fi = int(idx)
-                    if slow_to_fast_frame and fi < len(slow_to_fast_frame):
-                        fi = int(slow_to_fast_frame[fi])
-                        if fi < 0:
-                            fi = 0
+                    # Fast: aus gemeinsamem Mapping (fallback: idx)
+                    fi = int(fi_m)
+                    if fi < 0:
+                        fi = 0
 
                     if fast_throttle_frames:
                         fci = int(round(float(fi) * float(t_fast_scale)))
@@ -412,7 +440,7 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
             # ABS-Balken: scrollende Segmente (LÃ¤nge = Dauer von ABS=1 im Fenster)
             def _abs_val_s(idx0: int) -> float:
                 if hud_pedals_sample_mode == "time":
-                    t_slow = float(idx0) / float(fps_safe)
+                    t_slow = float(idx_to_t_slow.get(int(idx0), float(idx0) / float(fps_safe)))
                     return _abs_on_majority_time(slow_abs_frames, slow_abs_prefix, t_slow)
                 if not slow_abs_frames:
                     return 0.0
@@ -422,15 +450,13 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
 
             def _abs_val_f(idx0: int) -> float:
                 if hud_pedals_sample_mode == "time":
-                    t_fast = _fast_time_from_slow_idx(int(idx0))
+                    t_fast = float(idx_to_t_fast.get(int(idx0), _fast_time_from_slow_idx(int(idx0))))
                     return _abs_on_majority_time(fast_abs_frames, fast_abs_prefix, t_fast)
                 if not fast_abs_frames:
                     return 0.0
-                fi = int(idx0)
-                if slow_to_fast_frame and fi < len(slow_to_fast_frame):
-                    fi = int(slow_to_fast_frame[fi])
-                    if fi < 0:
-                        fi = 0
+                fi = int(idx_to_fast_idx.get(int(idx0), int(idx0)))
+                if fi < 0:
+                    fi = 0
                 fci = int(round(float(fi) * float(a_fast_scale)))
                 fci = max(0, min(fci, len(fast_abs_frames) - 1))
                 return float(fast_abs_frames[fci])

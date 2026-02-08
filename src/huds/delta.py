@@ -22,6 +22,11 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
     i = int(ctx["i"])
     iL = int(ctx["iL"])
     iR = int(ctx["iR"])
+    frame_window_mapping = ctx.get("frame_window_mapping")
+    map_idxs_all = list(getattr(frame_window_mapping, "idxs", []) or [])
+    map_offsets_all = list(getattr(frame_window_mapping, "offsets", []) or [])
+    map_t_slow_all = list(getattr(frame_window_mapping, "t_slow", []) or [])
+    map_t_fast_all = list(getattr(frame_window_mapping, "t_fast", []) or [])
     mx = int(ctx["mx"])
     _idx_to_x = ctx["_idx_to_x"]
     slow_frame_to_fast_time_s = ctx["slow_frame_to_fast_time_s"]
@@ -79,9 +84,23 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                 plot_y0 = int(y0) + 2
                 plot_y1 = int(y0 + h - 2)
 
+            map_idx_to_tslow: dict[int, float] = {}
+            map_idx_to_tfast: dict[int, float] = {}
+            if (
+                map_idxs_all
+                and len(map_idxs_all) == len(map_t_slow_all)
+                and len(map_idxs_all) == len(map_t_fast_all)
+            ):
+                for idx_m, ts_m, tf_m in zip(map_idxs_all, map_t_slow_all, map_t_fast_all):
+                    map_idx_to_tslow[int(idx_m)] = float(ts_m)
+                    map_idx_to_tfast[int(idx_m)] = float(tf_m)
+
             # Delta-Funktion (aus Sync-Map)
             def _delta_at_slow_frame(idx0: int) -> float:
                 fps_safe = float(fps) if float(fps) > 0.1 else 30.0
+                ii = int(idx0)
+                if ii in map_idx_to_tslow and ii in map_idx_to_tfast:
+                    return float(map_idx_to_tslow[ii] - map_idx_to_tfast[ii])
                 if not slow_frame_to_fast_time_s:
                     return 0.0
                 if idx0 < 0:
@@ -240,24 +259,27 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                     except Exception:
                         pass
 
-            idxs = []
-            k = int(i)
-            while k >= int(iL):
-                idxs.append(k)
-                k -= int(stride)
-            k = int(i) + int(stride)
-            while k <= int(iR):
-                idxs.append(k)
-                k += int(stride)
+            sample_rows: list[tuple[int, int]] = []
+            if map_idxs_all and len(map_idxs_all) == len(map_offsets_all):
+                for idx_m, off_m in zip(map_idxs_all, map_offsets_all):
+                    idx_i = int(idx_m)
+                    if idx_i < int(iL) or idx_i > int(iR):
+                        continue
+                    use_point = (idx_i == int(iL)) or (idx_i == int(iR)) or ((int(off_m) % int(stride)) == 0)
+                    if use_point:
+                        sample_rows.append((idx_i, int(off_m)))
 
-            idxs = sorted(set(idxs))
-            if idxs:
-                if idxs[0] != int(iL):
-                    idxs.insert(0, int(iL))
-                if idxs[-1] != int(iR):
-                    idxs.append(int(iR))
-            else:
-                idxs = [int(iL), int(i), int(iR)]
+            if not sample_rows:
+                idxs_fallback: list[int] = []
+                for idx_fb in (int(iL), int(i), int(iR)):
+                    if idx_fb < int(iL) or idx_fb > int(iR):
+                        continue
+                    if idx_fb not in idxs_fallback:
+                        idxs_fallback.append(int(idx_fb))
+                if not idxs_fallback:
+                    idxs_fallback = [int(i)]
+                for idx_fb in idxs_fallback:
+                    sample_rows.append((int(idx_fb), int(idx_fb) - int(i)))
 
             # Segmente nach Vorzeichen einfärben (blau >=0, rot <0)
             seg_pts = []
@@ -278,10 +300,7 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
 
             last_sign = None
 
-            for idx in idxs:
-                if idx < int(iL) or idx > int(iR):
-                    continue
-
+            for idx, _off in sample_rows:
                 x = int(round(_idx_to_x(int(idx))))
                 dsec = float(_delta_at_slow_frame(int(idx)))
                 y = int(round(_y_from_delta(float(dsec))))

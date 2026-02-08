@@ -25,6 +25,9 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     i = int(ctx.get("i", 0))
     before_f = max(1, int(ctx.get("before_f", 1)))
     after_f = max(1, int(ctx.get("after_f", 1)))
+    frame_window_mapping = ctx.get("frame_window_mapping")
+    map_idxs_all = list(getattr(frame_window_mapping, "idxs", []) or [])
+    map_offsets_all = list(getattr(frame_window_mapping, "offsets", []) or [])
     slow_vals = ctx.get("under_oversteer_slow_frames")
     fast_vals = ctx.get("under_oversteer_fast_frames")
     y_abs_in = ctx.get("under_oversteer_y_abs")
@@ -140,16 +143,26 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     pts_slow: list[tuple[int, int]] = []
     pts_fast: list[tuple[int, int]] = []
 
-    for ofs in range(-before_f, after_f + 1):
-        idx = int(i + ofs)
+    if map_idxs_all and len(map_idxs_all) == len(map_offsets_all):
+        iter_rows = [(int(idx_m), int(ofs_m)) for idx_m, ofs_m in zip(map_idxs_all, map_offsets_all)]
+    else:
+        iter_rows = [
+            (int(i - before_f), int(-before_f)),
+            (int(i), 0),
+            (int(i + after_f), int(after_f)),
+        ]
 
-        idx_s = idx
+    for idx_raw, ofs in iter_rows:
+        if ofs < -int(before_f) or ofs > int(after_f):
+            continue
+
+        idx_s = int(idx_raw)
         if idx_s < 0:
             idx_s = 0
         if n_s > 0 and idx_s >= n_s:
             idx_s = n_s - 1
 
-        idx_f = idx
+        idx_f = int(idx_raw)
         if idx_f < 0:
             idx_f = 0
         if n_f > 0 and idx_f >= n_f:
