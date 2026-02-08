@@ -179,32 +179,43 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
             table_y0 = int(y0)
             table_y1 = int(y0 + h)
 
-        font_title = _load_font(18)
-        header_h = 0
-        for lbl in header_labels:
-            _tw, th = _text_wh(lbl, font_title)
-            if th > header_h:
-                header_h = th
-        if header_h <= 0:
-            header_h = 18
+        table_top = int(table_y0)
+        table_bottom = int(table_y1 - 1)
+        if table_bottom <= table_top:
+            table_bottom = int(table_top + 1)
+        row_sep = int(round((float(table_top) + float(table_bottom)) / 2.0))
+        if row_sep <= table_top:
+            row_sep = int(table_top + 1)
+        if row_sep >= table_bottom:
+            row_sep = int(table_bottom - 1)
 
-        header_y0 = int(table_y0)
-        header_y1 = int(header_y0 + header_h)
-        row_gap = int(max(2, min(12, round(float(h) * 0.05))))
-        value_y0 = int(header_y1 + row_gap)
-        value_y1 = int(table_y1)
-        value_h = int(value_y1 - value_y0)
-        if value_h < 8:
-            value_y0 = int(header_y1 + 2)
-            value_y1 = int(y0 + h - 2)
-            value_h = int(max(8, value_y1 - value_y0))
-
+        cell_pad_y = int(max(1, min(4, round(float(h) * 0.01))))
         col_w = float(table_w) / 3.0
-        fit_w = int(max(8, round(col_w) - 6))
-        fit_h = int(max(8, value_h - 2))
+        cell_pad_x = int(max(2, min(8, round(col_w * 0.08))))
+
+        header_fit_h = int(max(8, (row_sep - table_top + 1) - (2 * cell_pad_y)))
+        value_fit_h = int(max(8, (table_bottom - row_sep + 1) - (2 * cell_pad_y)))
+        fit_w = int(max(8, round(col_w) - (2 * cell_pad_x)))
+
+        max_header_font = int(max(9, min(72, header_fit_h)))
+        min_header_font = 9
+        font_title = _load_font(min_header_font)
+        for sz in range(max_header_font, min_header_font - 1, -1):
+            fnt = _load_font(sz)
+            if fnt is None:
+                continue
+            ok = True
+            for lbl in header_labels:
+                tw, th = _text_wh(lbl, fnt)
+                if tw > fit_w or th > header_fit_h:
+                    ok = False
+                    break
+            if ok:
+                font_title = fnt
+                break
 
         probe_values = list(slow_values) + list(fast_values)
-        max_font = int(max(10, min(120, fit_h)))
+        max_font = int(max(10, min(120, value_fit_h)))
         min_font = 10
         font_val = _load_font(min_font)
         for sz in range(max_font, min_font - 1, -1):
@@ -214,24 +225,71 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
             ok = True
             for txt in probe_values:
                 tw, th = _text_wh(txt, fnt)
-                if tw > fit_w or th > fit_h:
+                if tw > fit_w or th > value_fit_h:
                     ok = False
                     break
             if ok:
                 font_val = fnt
                 break
 
+        bg_r, bg_g, bg_b, bg_a = COL_HUD_BG
+        grid_col = (
+            int(min(255, bg_r + 20)),
+            int(min(255, bg_g + 20)),
+            int(min(255, bg_b + 20)),
+            int(min(255, max(int(bg_a), 150))),
+        )
+
+        def _cell_text_top(cell_y0: int, cell_y1: int, th: int) -> float:
+            avail_h = int(max(1, (cell_y1 - cell_y0 + 1) - (2 * cell_pad_y)))
+            y_inner = int(cell_y0 + cell_pad_y)
+            return float(y_inner) + max(0.0, (float(avail_h) - float(th)) / 2.0)
+
+        def _draw_table_grid(table_x: int) -> tuple[list[int], list[int]]:
+            table_left = int(table_x)
+            table_right = int(table_x + table_w - 1)
+            c1 = int(table_x + round(float(table_w) / 3.0))
+            c2 = int(table_x + round((2.0 * float(table_w)) / 3.0))
+
+            x_lines = [table_left, c1, c2, table_right]
+            dedup_x: list[int] = []
+            for x in x_lines:
+                if not dedup_x or x != dedup_x[-1]:
+                    dedup_x.append(x)
+            for x in dedup_x:
+                dr.line([(int(x), int(table_top)), (int(x), int(table_bottom))], fill=grid_col, width=1)
+
+            y_lines = [table_top, row_sep, table_bottom]
+            dedup_y: list[int] = []
+            for y in y_lines:
+                if not dedup_y or y != dedup_y[-1]:
+                    dedup_y.append(y)
+            for y in dedup_y:
+                dr.line([(int(table_left), int(y)), (int(table_right), int(y))], fill=grid_col, width=1)
+            return dedup_x, dedup_y
+
         def _draw_table(table_x: int, vals: tuple[str, str, str], col: Any) -> None:
+            x_lines, _ = _draw_table_grid(table_x)
+            if len(x_lines) < 4:
+                return
+            cell_x_ranges = [
+                (x_lines[0], x_lines[1]),
+                (x_lines[1], x_lines[2]),
+                (x_lines[2], x_lines[3]),
+            ]
+
             for c, lbl in enumerate(header_labels):
-                cx = float(table_x) + (float(c) + 0.5) * col_w
+                x_l, x_r = cell_x_ranges[c]
+                cx = (float(x_l) + float(x_r)) / 2.0
                 _tw_h, th_h = _text_wh(lbl, font_title)
-                y_h = float(header_y0) + max(0.0, (float(header_h) - float(th_h)) / 2.0)
+                y_h = _cell_text_top(table_top, row_sep, th_h)
                 _draw_centered_text(cx, y_h, lbl, font_title, col)
 
             _tw_v, th_v = _text_wh("9999", font_val)
-            y_v = float(value_y0) + max(0.0, (float(value_h) - float(th_v)) / 2.0)
+            y_v = _cell_text_top(row_sep, table_bottom, th_v)
             for c, txt in enumerate(vals):
-                cx = float(table_x) + (float(c) + 0.5) * col_w
+                x_l, x_r = cell_x_ranges[c]
+                cx = (float(x_l) + float(x_r)) / 2.0
                 _draw_centered_text(cx, y_v, txt, font_val, col)
 
         _draw_table(left_x, slow_values, col_slow_darkred)
