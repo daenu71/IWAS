@@ -52,11 +52,18 @@ def _coerce_rgba(col: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     )
 
 
-def _darken_rgba(col: tuple[int, int, int, int], delta: int = 8) -> tuple[int, int, int, int]:
+def _darken_rgba(
+    col: tuple[int, int, int, int],
+    delta: int = 8,
+    min_alpha: int = 0,
+) -> tuple[int, int, int, int]:
     r, g, b, a = _coerce_rgba(col)
     # Keep stripes subtle but visible in encoded video output.
     d = int(max(2, round(float(delta) * 2.0)))
-    return (max(0, r - d), max(0, g - d), max(0, b - d), a)
+    a_out = max(int(a), int(min_alpha))
+    if a_out > 255:
+        a_out = 255
+    return (max(0, r - d), max(0, g - d), max(0, b - d), int(a_out))
 
 
 def draw_hud_background(
@@ -186,7 +193,9 @@ def draw_stripe_grid(
     if len(ys) < 2:
         return
 
-    col_dark = _darken_rgba(col_bg, int(darken_delta))
+    bg_rgba = _coerce_rgba(col_bg)
+    stripe_alpha = max(int(bg_rgba[3]), min(170, int(bg_rgba[3]) + 72))
+    col_dark = _darken_rgba(col_bg, int(darken_delta), min_alpha=int(stripe_alpha))
     for i in range(len(ys) - 1):
         if (i % 2) == 0:
             continue
@@ -196,6 +205,14 @@ def draw_stripe_grid(
             continue
         try:
             dr.rectangle([int(x0), y_a, x1, y_b], fill=col_dark)
+        except Exception:
+            pass
+
+    # Separator lines survive YUV compression better than pure low-alpha fills.
+    line_col = _darken_rgba(col_bg, int(max(10, int(darken_delta) + 6)), min_alpha=max(176, int(stripe_alpha)))
+    for y_line in ys[1:-1]:
+        try:
+            dr.line([(int(x0), int(y_line)), (x1, int(y_line))], fill=line_col, width=1)
         except Exception:
             pass
 

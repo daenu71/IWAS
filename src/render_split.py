@@ -2957,10 +2957,18 @@ def _render_hud_scroll_frames_png(
                             if y_b < y_a:
                                 continue
                             if (stripe_i % 2) == 1:
+                                stripe_a = max(int(COL_HUD_BG[3]), min(170, int(COL_HUD_BG[3]) + 72))
                                 static_dr_local.rectangle(
                                     [x0s, y_a, x1s, y_b],
-                                    fill=(max(0, COL_HUD_BG[0] - 12), max(0, COL_HUD_BG[1] - 12), max(0, COL_HUD_BG[2] - 12), COL_HUD_BG[3]),
+                                    fill=(max(0, COL_HUD_BG[0] - 12), max(0, COL_HUD_BG[1] - 12), max(0, COL_HUD_BG[2] - 12), int(stripe_a)),
                                 )
+                        try:
+                            sep_a = max(int(COL_HUD_BG[3]), min(200, int(COL_HUD_BG[3]) + 96))
+                            sep_col = (max(0, COL_HUD_BG[0] - 20), max(0, COL_HUD_BG[1] - 20), max(0, COL_HUD_BG[2] - 20), int(sep_a))
+                            for y_sep in y_bounds[1:-1]:
+                                static_dr_local.line([(x0s, int(y_sep)), (x1s, int(y_sep))], fill=sep_col, width=1)
+                        except Exception:
+                            pass
 
                         axis_labels = [
                             (int(tb_layout["y_from_01"](0.2)), "20"),
