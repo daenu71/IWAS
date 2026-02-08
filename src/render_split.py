@@ -2621,6 +2621,7 @@ def _render_hud_scroll_frames_png(
 
                 is_throttle_brake = str(hud_key) == "Throttle / Brake"
                 is_steering = str(hud_key) == "Steering"
+                is_delta = str(hud_key) == "Delta"
                 tb_layout: dict[str, Any] = {}
                 tb_map_idx_to_t_slow: dict[int, float] = {}
                 tb_map_idx_to_t_fast: dict[int, float] = {}
@@ -3286,6 +3287,265 @@ def _render_hud_scroll_frames_png(
                         except Exception:
                             pass
 
+                if is_delta:
+                    d_map_idx_to_t_slow: dict[int, float] = {}
+                    d_map_idx_to_t_fast: dict[int, float] = {}
+                    map_idxs_all_d = list(getattr(frame_window_mapping, "idxs", []) or [])
+                    map_t_slow_all_d = list(getattr(frame_window_mapping, "t_slow", []) or [])
+                    map_t_fast_all_d = list(getattr(frame_window_mapping, "t_fast", []) or [])
+                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_slow_all_d):
+                        for idx_m_d, ts_m_d in zip(map_idxs_all_d, map_t_slow_all_d):
+                            d_map_idx_to_t_slow[int(idx_m_d)] = float(ts_m_d)
+                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_fast_all_d):
+                        for idx_m_d, tf_m_d in zip(map_idxs_all_d, map_t_fast_all_d):
+                            d_map_idx_to_t_fast[int(idx_m_d)] = float(tf_m_d)
+
+                    def _d_load_font(sz: int):
+                        try:
+                            from PIL import ImageFont
+                        except Exception:
+                            ImageFont = None  # type: ignore
+                        if ImageFont is None:
+                            return None
+                        try:
+                            return ImageFont.truetype("arial.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.truetype("DejaVuSans.ttf", sz)
+                        except Exception:
+                            pass
+                        try:
+                            return ImageFont.load_default()
+                        except Exception:
+                            return None
+
+                    d_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                    d_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                    d_top_pad = int(round(max(14.0, float(d_font_sz) + 8.0)))
+                    d_plot_y0 = int(d_top_pad)
+                    d_plot_y1 = int(h - 2)
+                    if d_plot_y1 <= d_plot_y0 + 4:
+                        d_plot_y0 = int(2)
+                        d_plot_y1 = int(h - 2)
+
+                    d_mx = int(w // 2)
+                    d_marker_xf = float(d_mx)
+                    d_half_w = float(max(1, int(w) - 1)) / 2.0
+                    d_layout = {
+                        "font_title": _d_load_font(d_font_sz),
+                        "font_val": _d_load_font(d_font_val_sz),
+                        "y_txt": int(2),
+                        "mx": int(d_mx),
+                        "marker_xf": float(d_marker_xf),
+                        "half_w": float(d_half_w),
+                        "plot_y0": int(d_plot_y0),
+                        "plot_y1": int(d_plot_y1),
+                    }
+
+                    d_range_pos = float(delta_pos_max)
+                    d_range_neg = float(abs(delta_neg_min))
+                    d_y_top = float(d_layout["plot_y0"])
+                    d_y_bot = float(d_layout["plot_y1"])
+                    d_span = max(10.0, (d_y_bot - d_y_top))
+
+                    if not delta_has_neg:
+                        d_y_zero_f = float(d_y_bot)
+                        d_pos_span = max(4.0, (d_y_zero_f - d_y_top))
+
+                        def _d_y_from_delta(dsec: float) -> int:
+                            d = float(dsec)
+                            if d < 0.0:
+                                d = 0.0
+                            if d > float(delta_pos_max):
+                                d = float(delta_pos_max)
+                            yy = d_y_zero_f - (d / float(delta_pos_max)) * d_pos_span
+                            return int(round(yy))
+                    else:
+                        d_total = max(1e-6, (d_range_neg + d_range_pos))
+                        d_y_zero_f = d_y_top + (d_range_pos / d_total) * d_span
+                        d_y_zero_f = max(d_y_top + 2.0, min(d_y_bot - 2.0, d_y_zero_f))
+                        d_pos_span = max(4.0, (d_y_zero_f - d_y_top))
+                        d_neg_span = max(4.0, (d_y_bot - d_y_zero_f))
+
+                        def _d_y_from_delta(dsec: float) -> int:
+                            d = float(dsec)
+                            if d >= 0.0:
+                                if d > d_range_pos:
+                                    d = d_range_pos
+                                yy = d_y_zero_f - (d / d_range_pos) * d_pos_span
+                            else:
+                                ad = abs(d)
+                                if ad > d_range_neg:
+                                    ad = d_range_neg
+                                yy = d_y_zero_f + (ad / d_range_neg) * d_neg_span
+                            return int(round(yy))
+
+                    d_y_zero = int(round(d_y_zero_f))
+                    d_fps_safe = float(fps) if float(fps) > 0.1 else 30.0
+
+                    def _d_delta_at_slow_frame(idx0: int) -> float:
+                        ii = int(idx0)
+                        if ii in d_map_idx_to_t_slow and ii in d_map_idx_to_t_fast:
+                            return float(d_map_idx_to_t_slow[ii] - d_map_idx_to_t_fast[ii])
+                        if not slow_frame_to_fast_time_s:
+                            return 0.0
+                        if ii < 0:
+                            ii = 0
+                        if ii >= len(slow_frame_to_fast_time_s):
+                            ii = len(slow_frame_to_fast_time_s) - 1
+                        slow_t = float(ii) / float(d_fps_safe)
+                        fast_t = float(slow_frame_to_fast_time_s[ii])
+                        return float(slow_t - fast_t)
+
+                    def _d_sign_from_delta(dsec: float) -> int:
+                        return 1 if float(dsec) >= 0.0 else -1
+
+                    def _d_sample_column(x_col: int) -> dict[str, Any]:
+                        xi = int(x_col)
+                        if xi < 0:
+                            xi = 0
+                        if xi >= int(w):
+                            xi = int(w) - 1
+
+                        frac = (float(xi) - float(d_layout["marker_xf"])) / max(1.0, float(d_layout["half_w"]))
+                        frac = _clamp(float(frac), -1.0, 1.0)
+                        if frac <= 0.0:
+                            off_f = float(frac) * float(before_f)
+                        else:
+                            off_f = float(frac) * float(after_f)
+
+                        idx_slow = int(round(float(i) + float(off_f)))
+                        if idx_slow < int(iL):
+                            idx_slow = int(iL)
+                        if idx_slow > int(iR):
+                            idx_slow = int(iR)
+                        if idx_slow < 0:
+                            idx_slow = 0
+                        if idx_slow >= len(slow_frame_to_lapdist):
+                            idx_slow = len(slow_frame_to_lapdist) - 1
+
+                        d_val = float(_d_delta_at_slow_frame(int(idx_slow)))
+                        y_val = int(_d_y_from_delta(float(d_val)))
+                        return {
+                            "x": int(xi),
+                            "slow_idx": int(idx_slow),
+                            "delta": float(d_val),
+                            "y": int(y_val),
+                        }
+
+                    def _d_draw_segment(
+                        dr_local: Any,
+                        x0_seg: int,
+                        y0_seg: int,
+                        d0_seg: float,
+                        x1_seg: int,
+                        y1_seg: int,
+                        d1_seg: float,
+                    ) -> None:
+                        sign0 = _d_sign_from_delta(float(d0_seg))
+                        sign1 = _d_sign_from_delta(float(d1_seg))
+                        col0 = COL_FAST_DARKBLUE if sign0 >= 0 else COL_SLOW_DARKRED
+                        col1 = COL_FAST_DARKBLUE if sign1 >= 0 else COL_SLOW_DARKRED
+                        if sign0 == sign1:
+                            try:
+                                dr_local.line(
+                                    [(int(x0_seg), int(y0_seg)), (int(x1_seg), int(y1_seg))],
+                                    fill=col1,
+                                    width=2,
+                                )
+                            except Exception:
+                                pass
+                            return
+
+                        denom = float(d1_seg) - float(d0_seg)
+                        if abs(denom) <= 1e-12:
+                            try:
+                                dr_local.line(
+                                    [(int(x0_seg), int(y0_seg)), (int(x1_seg), int(y1_seg))],
+                                    fill=col1,
+                                    width=2,
+                                )
+                            except Exception:
+                                pass
+                            return
+
+                        t_cross = (0.0 - float(d0_seg)) / float(denom)
+                        t_cross = _clamp(float(t_cross), 0.0, 1.0)
+                        x_cross = int(round(float(x0_seg) + (float(x1_seg - x0_seg) * float(t_cross))))
+                        y_cross = int(d_y_zero)
+                        try:
+                            dr_local.line(
+                                [(int(x0_seg), int(y0_seg)), (int(x_cross), int(y_cross))],
+                                fill=col0,
+                                width=2,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            dr_local.line(
+                                [(int(x_cross), int(y_cross)), (int(x1_seg), int(y1_seg))],
+                                fill=col1,
+                                width=2,
+                            )
+                        except Exception:
+                            pass
+
+                    def _d_render_static_layer() -> Any:
+                        static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        static_dr_local = ImageDraw.Draw(static_img_local)
+                        static_dr_local.rectangle([0, 0, int(w) - 1, int(h) - 1], fill=COL_HUD_BG)
+                        try:
+                            static_dr_local.line(
+                                [(0, int(d_y_zero)), (int(w) - 1, int(d_y_zero))],
+                                fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
+                                width=1,
+                            )
+                        except Exception:
+                            pass
+                        return static_img_local
+
+                    def _d_render_dynamic_full() -> tuple[Any, list[dict[str, Any]]]:
+                        dyn_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                        dyn_dr_local = ImageDraw.Draw(dyn_img_local)
+                        d_cols_local: list[dict[str, Any]] = []
+                        prev_col: dict[str, Any] | None = None
+                        for xi_full in range(int(w)):
+                            col_now = _d_sample_column(int(xi_full))
+                            if prev_col is not None:
+                                _d_draw_segment(
+                                    dyn_dr_local,
+                                    int(prev_col["x"]),
+                                    int(prev_col["y"]),
+                                    float(prev_col["delta"]),
+                                    int(col_now["x"]),
+                                    int(col_now["y"]),
+                                    float(col_now["delta"]),
+                                )
+                            d_cols_local.append(col_now)
+                            prev_col = col_now
+                        return dyn_img_local, d_cols_local
+
+                    def _d_draw_values_overlay(main_dr_local: Any, base_x: int, base_y: int) -> None:
+                        d_cur = float(_d_delta_at_slow_frame(int(i)))
+                        col_cur = COL_FAST_DARKBLUE if d_cur >= 0.0 else COL_SLOW_DARKRED
+                        placeholder = "+999.999s"
+                        try:
+                            bb = main_dr_local.textbbox((0, 0), placeholder, font=d_layout.get("font_val"))
+                            w_fix = int(bb[2] - bb[0])
+                        except Exception:
+                            w_fix = int(len(placeholder) * max(6, int(d_font_val_sz * 0.6)))
+
+                        x_val = int(base_x) + int(d_layout["mx"]) - 6 - int(w_fix)
+                        y_val = int(base_y) + int(d_layout["y_txt"])
+                        txt = f"{d_cur:+.3f}s"
+                        if len(txt) < len(placeholder):
+                            txt = txt.rjust(len(placeholder), " ")
+                        try:
+                            main_dr_local.text((int(x_val), int(y_val)), txt, fill=col_cur, font=d_layout.get("font_val"))
+                        except Exception:
+                            pass
+
                 def _render_scroll_hud_full(
                     scroll_pos_px_local: float,
                     shift_int_local: int,
@@ -3547,6 +3807,26 @@ def _render_hud_scroll_frames_png(
                         img.paste(static_layer, (int(x0), int(y0)), static_layer)
                         img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
                         _st_draw_values_overlay(dr, int(x0), int(y0))
+                    elif is_delta:
+                        static_layer = _d_render_static_layer()
+                        dynamic_layer, d_cols_fill = _d_render_dynamic_full()
+                        d_last_col_fill = d_cols_fill[-1] if d_cols_fill else _d_sample_column(int(w) - 1)
+                        right_sample_now = int(d_last_col_fill["slow_idx"]) if d_last_col_fill is not None else _right_edge_sample_idx()
+                        d_last_delta = float(d_last_col_fill["delta"]) if d_last_col_fill is not None else 0.0
+                        scroll_state_by_hud[hud_state_key] = {
+                            "static_layer": static_layer,
+                            "dynamic_layer": dynamic_layer,
+                            "scroll_pos_px": 0.0,
+                            "last_i": int(i),
+                            "last_right_sample": int(right_sample_now),
+                            "window_frames": int(window_frames),
+                            "last_y": int(d_last_col_fill["y"]),
+                            "last_delta_value": float(d_last_delta),
+                            "last_delta_sign": int(_d_sign_from_delta(float(d_last_delta))),
+                        }
+                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
+                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                        _d_draw_values_overlay(dr, int(x0), int(y0))
                     else:
                         static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         dynamic_layer = _render_scroll_hud_full(
@@ -3738,6 +4018,81 @@ def _render_hud_scroll_frames_png(
                         img.paste(static_now, (int(x0), int(y0)), static_now)
                     img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
                     _st_draw_values_overlay(dr, int(x0), int(y0))
+                elif is_delta:
+                    d_dr_next = ImageDraw.Draw(dynamic_next)
+
+                    prev_x_inc: int | None = None
+                    prev_y_inc: int | None = None
+                    prev_d_inc: float | None = None
+                    if int(right_edge_cols) > 0:
+                        first_dest_x = int(w) - int(right_edge_cols)
+                        if first_dest_x < 0:
+                            first_dest_x = 0
+                        if first_dest_x > 0:
+                            prev_x_inc = int(first_dest_x) - 1
+                            if shift_px > 0:
+                                last_y_state = state.get("last_y")
+                                last_d_state = state.get("last_delta_value")
+                                if last_y_state is not None:
+                                    try:
+                                        prev_y_inc = int(last_y_state)
+                                    except Exception:
+                                        prev_y_inc = None
+                                if last_d_state is not None:
+                                    try:
+                                        prev_d_inc = float(last_d_state)
+                                    except Exception:
+                                        prev_d_inc = None
+                            if prev_y_inc is None or prev_d_inc is None:
+                                col_prev_left = _d_sample_column(int(prev_x_inc))
+                                prev_y_inc = int(col_prev_left["y"])
+                                prev_d_inc = float(col_prev_left["delta"])
+
+                    last_col_inc: dict[str, Any] | None = None
+                    for c_inc in range(int(right_edge_cols)):
+                        dest_x = int(w) - int(right_edge_cols) + int(c_inc)
+                        if dest_x < 0:
+                            dest_x = 0
+                        if dest_x >= int(w):
+                            dest_x = int(w) - 1
+
+                        dynamic_next.paste((0, 0, 0, 0), (int(dest_x), 0, int(dest_x) + 1, int(h)))
+                        col_now_inc = _d_sample_column(int(dest_x))
+
+                        if prev_x_inc is not None and prev_y_inc is not None and prev_d_inc is not None:
+                            _d_draw_segment(
+                                d_dr_next,
+                                int(prev_x_inc),
+                                int(prev_y_inc),
+                                float(prev_d_inc),
+                                int(dest_x),
+                                int(col_now_inc["y"]),
+                                float(col_now_inc["delta"]),
+                            )
+
+                        prev_x_inc = int(dest_x)
+                        prev_y_inc = int(col_now_inc["y"])
+                        prev_d_inc = float(col_now_inc["delta"])
+                        last_col_inc = col_now_inc
+
+                    if last_col_inc is None:
+                        last_col_inc = _d_sample_column(int(w) - 1)
+                    right_sample_now = int(last_col_inc["slow_idx"]) if last_col_inc is not None else _right_edge_sample_idx()
+                    last_delta_now = float(last_col_inc["delta"]) if last_col_inc is not None else 0.0
+                    state["dynamic_layer"] = dynamic_next
+                    state["scroll_pos_px"] = float(scroll_pos_px)
+                    state["last_i"] = int(i)
+                    state["last_right_sample"] = int(right_sample_now)
+                    state["window_frames"] = int(window_frames)
+                    state["last_y"] = int(last_col_inc["y"])
+                    state["last_delta_value"] = float(last_delta_now)
+                    state["last_delta_sign"] = int(_d_sign_from_delta(float(last_delta_now)))
+
+                    static_now = state.get("static_layer")
+                    if static_now is not None:
+                        img.paste(static_now, (int(x0), int(y0)), static_now)
+                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
+                    _d_draw_values_overlay(dr, int(x0), int(y0))
                 else:
                     hud_full_now = _render_scroll_hud_full(
                         scroll_pos_px_local=scroll_pos_px,
