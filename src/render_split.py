@@ -4314,6 +4314,64 @@ def _render_hud_scroll_frames_png(
                     except Exception:
                         reset_now = True
 
+                def _compose_hud_layers_local(
+                    static_layer_local: Any | None,
+                    dynamic_layer_local: Any | None,
+                    value_layer_local: Any | None,
+                ) -> Any:
+                    composed_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                    for layer_local in (static_layer_local, dynamic_layer_local, value_layer_local):
+                        if layer_local is None:
+                            continue
+                        layer_rgba = layer_local if getattr(layer_local, "mode", "") == "RGBA" else layer_local.convert("RGBA")
+                        if layer_rgba.size != composed_local.size:
+                            fixed_layer = Image.new("RGBA", composed_local.size, (0, 0, 0, 0))
+                            try:
+                                fixed_layer.paste(layer_rgba, (0, 0), layer_rgba)
+                            except Exception:
+                                fixed_layer.paste(layer_rgba, (0, 0))
+                            layer_rgba = fixed_layer
+                        composed_local = Image.alpha_composite(composed_local, layer_rgba)
+                    return composed_local
+
+                def _render_value_layer_local(draw_values_fn: Any | None) -> Any:
+                    value_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                    if draw_values_fn is None:
+                        return value_img_local
+                    try:
+                        value_dr_local = ImageDraw.Draw(value_img_local)
+                        draw_values_fn(value_dr_local, 0, 0)
+                    except Exception:
+                        pass
+                    return value_img_local
+
+                def _composite_hud_into_frame_local(
+                    frame_img_local: Any,
+                    hud_layer_local: Any,
+                    dst_x_local: int,
+                    dst_y_local: int,
+                ) -> None:
+                    hud_rgba = hud_layer_local if getattr(hud_layer_local, "mode", "") == "RGBA" else hud_layer_local.convert("RGBA")
+                    fx0 = int(dst_x_local)
+                    fy0 = int(dst_y_local)
+                    fx1 = int(fx0 + int(hud_rgba.size[0]))
+                    fy1 = int(fy0 + int(hud_rgba.size[1]))
+                    frame_w, frame_h = frame_img_local.size
+                    cx0 = max(0, int(fx0))
+                    cy0 = max(0, int(fy0))
+                    cx1 = min(int(frame_w), int(fx1))
+                    cy1 = min(int(frame_h), int(fy1))
+                    if cx1 <= cx0 or cy1 <= cy0:
+                        return
+                    sx0 = int(cx0 - fx0)
+                    sy0 = int(cy0 - fy0)
+                    sx1 = int(sx0 + (cx1 - cx0))
+                    sy1 = int(sy0 + (cy1 - cy0))
+                    dst_region = frame_img_local.crop((int(cx0), int(cy0), int(cx1), int(cy1)))
+                    src_region = hud_rgba.crop((int(sx0), int(sy0), int(sx1), int(sy1)))
+                    composed_region = Image.alpha_composite(dst_region, src_region)
+                    frame_img_local.paste(composed_region, (int(cx0), int(cy0)))
+
                 if first_frame or reset_now:
                     if is_throttle_brake:
                         static_layer = _tb_render_static_layer()
@@ -4334,9 +4392,9 @@ def _render_hud_scroll_frames_png(
                             "tb_abs_f_on_count": int(tb_abs_state_fill.get("tb_abs_f_on_count", 0)),
                             "tb_abs_f_off_count": int(tb_abs_state_fill.get("tb_abs_f_off_count", 0)),
                         }
-                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
-                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
-                        _tb_draw_values_overlay(dr, int(x0), int(y0))
+                        value_layer = _render_value_layer_local(_tb_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_steering:
                         static_layer = _st_render_static_layer()
                         dynamic_layer, st_cols_fill = _st_render_dynamic_full()
@@ -4352,9 +4410,9 @@ def _render_hud_scroll_frames_png(
                             "last_y": (int(st_last_col_fill["y_s"]), int(st_last_col_fill["y_f"])),
                             "st_last_fast_idx": int(st_last_col_fill["fast_idx"]),
                         }
-                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
-                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
-                        _st_draw_values_overlay(dr, int(x0), int(y0))
+                        value_layer = _render_value_layer_local(_st_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_delta:
                         static_layer = _d_render_static_layer()
                         dynamic_layer, d_cols_fill = _d_render_dynamic_full()
@@ -4372,9 +4430,9 @@ def _render_hud_scroll_frames_png(
                             "last_delta_value": float(d_last_delta),
                             "last_delta_sign": int(_d_sign_from_delta(float(d_last_delta))),
                         }
-                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
-                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
-                        _d_draw_values_overlay(dr, int(x0), int(y0))
+                        value_layer = _render_value_layer_local(_d_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_line_delta:
                         static_layer = _ld_render_static_layer()
                         dynamic_layer, ld_cols_fill = _ld_render_dynamic_full()
@@ -4389,9 +4447,9 @@ def _render_hud_scroll_frames_png(
                             "window_frames": int(window_frames),
                             "last_y": float(ld_last_col_fill["y"]),
                         }
-                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
-                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
-                        _ld_draw_values_overlay(dr, int(x0), int(y0))
+                        value_layer = _render_value_layer_local(_ld_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_under_oversteer:
                         static_layer = _uo_render_static_layer()
                         dynamic_layer, uo_cols_fill = _uo_render_dynamic_full()
@@ -4407,8 +4465,9 @@ def _render_hud_scroll_frames_png(
                             "last_y": (int(uo_last_col_fill["y_s"]), int(uo_last_col_fill["y_f"])),
                             "uo_last_fast_idx": int(uo_last_col_fill["fast_idx"]),
                         }
-                        img.paste(static_layer, (int(x0), int(y0)), static_layer)
-                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                        value_layer = _render_value_layer_local(None)
+                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     else:
                         static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         dynamic_layer = _render_scroll_hud_full(
@@ -4425,7 +4484,9 @@ def _render_hud_scroll_frames_png(
                             "last_right_sample": int(right_sample_now),
                             "window_frames": int(window_frames),
                         }
-                        img.paste(dynamic_layer, (int(x0), int(y0)), dynamic_layer)
+                        value_layer = _render_value_layer_local(None)
+                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     continue
 
                 scroll_pos_px = float(state.get("scroll_pos_px", 0.0))
@@ -4525,10 +4586,9 @@ def _render_hud_scroll_frames_png(
                     state["tb_abs_f_off_count"] = int(tb_abs_state_inc.get("tb_abs_f_off_count", 0))
 
                     static_now = state.get("static_layer")
-                    if static_now is not None:
-                        img.paste(static_now, (int(x0), int(y0)), static_now)
-                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
-                    _tb_draw_values_overlay(dr, int(x0), int(y0))
+                    value_layer = _render_value_layer_local(_tb_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_steering:
                     st_dr_next = ImageDraw.Draw(dynamic_next)
 
@@ -4596,10 +4656,9 @@ def _render_hud_scroll_frames_png(
                     state["st_last_fast_idx"] = int(last_col_inc["fast_idx"])
 
                     static_now = state.get("static_layer")
-                    if static_now is not None:
-                        img.paste(static_now, (int(x0), int(y0)), static_now)
-                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
-                    _st_draw_values_overlay(dr, int(x0), int(y0))
+                    value_layer = _render_value_layer_local(_st_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_delta:
                     d_dr_next = ImageDraw.Draw(dynamic_next)
 
@@ -4671,10 +4730,9 @@ def _render_hud_scroll_frames_png(
                     state["last_delta_sign"] = int(_d_sign_from_delta(float(last_delta_now)))
 
                     static_now = state.get("static_layer")
-                    if static_now is not None:
-                        img.paste(static_now, (int(x0), int(y0)), static_now)
-                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
-                    _d_draw_values_overlay(dr, int(x0), int(y0))
+                    value_layer = _render_value_layer_local(_d_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_line_delta:
                     ld_dr_next = ImageDraw.Draw(dynamic_next)
 
@@ -4733,10 +4791,9 @@ def _render_hud_scroll_frames_png(
                     state["last_y"] = float(last_col_inc["y"])
 
                     static_now = state.get("static_layer")
-                    if static_now is not None:
-                        img.paste(static_now, (int(x0), int(y0)), static_now)
-                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
-                    _ld_draw_values_overlay(dr, int(x0), int(y0))
+                    value_layer = _render_value_layer_local(_ld_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_under_oversteer:
                     uo_dr_next = ImageDraw.Draw(dynamic_next)
 
@@ -4810,9 +4867,9 @@ def _render_hud_scroll_frames_png(
                     state["uo_last_fast_idx"] = int(last_col_inc["fast_idx"])
 
                     static_now = state.get("static_layer")
-                    if static_now is not None:
-                        img.paste(static_now, (int(x0), int(y0)), static_now)
-                    img.paste(dynamic_next, (int(x0), int(y0)), dynamic_next)
+                    value_layer = _render_value_layer_local(None)
+                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 else:
                     hud_full_now = _render_scroll_hud_full(
                         scroll_pos_px_local=scroll_pos_px,
@@ -4831,7 +4888,10 @@ def _render_hud_scroll_frames_png(
                     state["last_i"] = int(i)
                     state["last_right_sample"] = int(right_sample_now)
                     state["window_frames"] = int(window_frames)
-                    img.paste(hud_full_now, (int(x0), int(y0)), hud_full_now)
+                    static_now = state.get("static_layer")
+                    value_layer = _render_value_layer_local(None)
+                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
             except Exception:
                 continue
 
