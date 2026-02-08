@@ -153,10 +153,38 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
             except Exception:
                 return int(max(1, len(str(text))) * 7), 12
 
-        def _draw_centered_text(xc: float, y_top: float, text: str, font_obj: Any, col: Any) -> None:
-            tw, _th = _text_wh(str(text), font_obj)
-            x_txt = int(round(float(xc) - (float(tw) / 2.0)))
-            dr.text((x_txt, int(round(float(y_top)))), str(text), fill=col, font=font_obj)
+        def _draw_centered_text(
+            x0_cell: int,
+            y0_cell: int,
+            x1_cell: int,
+            y1_cell: int,
+            text: str,
+            font_obj: Any,
+            col: Any,
+            pad_y: int = 0,
+        ) -> None:
+            txt = str(text)
+            try:
+                bb = dr.textbbox((0, 0), txt, font=font_obj)
+                tw = int(bb[2] - bb[0])
+                th = int(bb[3] - bb[1])
+                bx0 = float(bb[0])
+                by0 = float(bb[1])
+            except Exception:
+                tw, th = _text_wh(txt, font_obj)
+                bx0 = 0.0
+                by0 = 0.0
+
+            inner_top = float(y0_cell + max(0, pad_y))
+            inner_bottom = float(y1_cell - max(0, pad_y))
+            if inner_bottom < inner_top:
+                cy = (float(y0_cell) + float(y1_cell)) / 2.0
+                inner_top = cy
+                inner_bottom = cy
+
+            tx = ((float(x0_cell) + float(x1_cell)) - float(tw)) / 2.0 - bx0
+            ty = (inner_top + inner_bottom - float(th)) / 2.0 - by0
+            dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
 
         header_labels = ("Speed", "Min. Speed", "Max. Speed")
         slow_values = (str(sv), str(smin), str(smax_txt))
@@ -240,11 +268,6 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
             int(min(255, max(int(bg_a), 150))),
         )
 
-        def _cell_text_top(cell_y0: int, cell_y1: int, th: int) -> float:
-            avail_h = int(max(1, (cell_y1 - cell_y0 + 1) - (2 * cell_pad_y)))
-            y_inner = int(cell_y0 + cell_pad_y)
-            return float(y_inner) + max(0.0, (float(avail_h) - float(th)) / 2.0)
-
         def _draw_table_grid(table_x: int) -> tuple[list[int], list[int]]:
             table_left = int(table_x)
             table_right = int(table_x + table_w - 1)
@@ -280,17 +303,11 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
 
             for c, lbl in enumerate(header_labels):
                 x_l, x_r = cell_x_ranges[c]
-                cx = (float(x_l) + float(x_r)) / 2.0
-                _tw_h, th_h = _text_wh(lbl, font_title)
-                y_h = _cell_text_top(table_top, row_sep, th_h)
-                _draw_centered_text(cx, y_h, lbl, font_title, col)
+                _draw_centered_text(x_l, table_top, x_r, row_sep, lbl, font_title, col, pad_y=cell_pad_y)
 
-            _tw_v, th_v = _text_wh("9999", font_val)
-            y_v = _cell_text_top(row_sep, table_bottom, th_v)
             for c, txt in enumerate(vals):
                 x_l, x_r = cell_x_ranges[c]
-                cx = (float(x_l) + float(x_r)) / 2.0
-                _draw_centered_text(cx, y_v, txt, font_val, col)
+                _draw_centered_text(x_l, row_sep, x_r, table_bottom, txt, font_val, col, pad_y=cell_pad_y)
 
         _draw_table(left_x, slow_values, col_slow_darkred)
         _draw_table(right_x, fast_values, col_fast_darkblue)
