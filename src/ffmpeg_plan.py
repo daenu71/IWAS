@@ -418,7 +418,7 @@ def _hud_drawboxes_chain(
             if hud_dbg:
                 print(f"[hud] draw {name}: rel=({x},{y},{w},{h}) abs=({x_abs},{y_abs},{w},{h})")
 
-            chain_parts.append(f"drawbox=x={x_abs}:y={y_abs}:w={w}:h={h}:color=white@0.20:t=fill")
+            # Keep only the border; filled white boxes create an unintended milky veil.
             chain_parts.append(f"drawbox=x={x_abs}:y={y_abs}:w={w}:h={h}:color=white@0.80:t=2")
             drawn += 1
     except Exception:
