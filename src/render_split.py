@@ -2484,6 +2484,10 @@ def _render_hud_scroll_frames_png(
             return []
         return list(items)
 
+    # Story 2.2: Persistenter Subpixel-Scrollzustand pro Scroll-HUD-Instanz.
+    # Key basiert auf HUD-Key + Box-Geometrie innerhalb der HUD-Spalte.
+    scroll_state_by_hud: dict[str, dict[str, float]] = {}
+
     for j in range(frames):
 
         
@@ -2590,6 +2594,39 @@ def _render_hud_scroll_frames_png(
                 before_s_h, after_s_h = _resolve_hud_window_seconds(str(hud_key))
                 before_f = max(1, int(round(before_s_h * r)))
                 after_f = max(1, int(round(after_s_h * r)))
+                # Story 2.2: Scroll-HUDs symmetrisch behandeln (before_f == after_f).
+                if before_f != after_f:
+                    win_f = max(int(before_f), int(after_f))
+                    before_f = int(win_f)
+                    after_f = int(win_f)
+
+                # Story 2.2:
+                # shift_px_per_frame ist die Pixelverschiebung pro Frame.
+                # window_frames ist HUD-lokal (inkl. Zentrum), daher pro HUD unterschiedlich.
+                window_frames = max(1, int(before_f) + int(after_f) + 1)
+                hud_width_px = max(1, int(w))
+                shift_px_per_frame = float(hud_width_px) / float(window_frames)
+
+                hud_state_key = f"{str(hud_key)}|{int(x0)}|{int(y0)}|{int(w)}|{int(h)}"
+                state = scroll_state_by_hud.get(hud_state_key)
+                if state is None:
+                    state = {"scroll_pos_px": 0.0}
+                    scroll_state_by_hud[hud_state_key] = state
+
+                scroll_pos_px = float(state.get("scroll_pos_px", 0.0))
+                scroll_pos_px += float(shift_px_per_frame)
+                shift_int = 0
+                if scroll_pos_px >= 1.0:
+                    shift_int = int(math.floor(scroll_pos_px))
+                    scroll_pos_px -= float(shift_int)
+                state["scroll_pos_px"] = float(scroll_pos_px)
+
+                # Deterministische Regel fuer rechte Randspalten:
+                # - mit Shift: genau shift_int neue Spalten
+                # - ohne Shift: 1 Spalte in-place am rechten Rand aktualisieren
+                right_edge_cols = int(shift_int) if int(shift_int) > 0 else 1
+                if right_edge_cols > int(w):
+                    right_edge_cols = int(w)
 
                 # Fenster in Frames (Zeit-Achse): stabiler als LapDist-Spannen
                 iL = max(0, i - int(before_f))
@@ -2634,6 +2671,11 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "window_frames": window_frames,
+                        "shift_px_per_frame": shift_px_per_frame,
+                        "scroll_pos_px": scroll_pos_px,
+                        "scroll_shift_int": shift_int,
+                        "right_edge_cols": right_edge_cols,
                         "frame_window_mapping": frame_window_mapping,
                         "fps": fps,
                         "_idx_to_x": _idx_to_x,
@@ -2666,6 +2708,11 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "window_frames": window_frames,
+                        "shift_px_per_frame": shift_px_per_frame,
+                        "scroll_pos_px": scroll_pos_px,
+                        "scroll_shift_int": shift_int,
+                        "right_edge_cols": right_edge_cols,
                         "frame_window_mapping": frame_window_mapping,
                         "mx": mx,
                         "_idx_to_x": _idx_to_x,
@@ -2690,6 +2737,11 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "iL": iL,
                         "iR": iR,
+                        "window_frames": window_frames,
+                        "shift_px_per_frame": shift_px_per_frame,
+                        "scroll_pos_px": scroll_pos_px,
+                        "scroll_shift_int": shift_int,
+                        "right_edge_cols": right_edge_cols,
                         "frame_window_mapping": frame_window_mapping,
                         "slow_to_fast_frame": slow_to_fast_frame,
                         "slow_steer_frames": slow_steer_frames,
@@ -2729,6 +2781,11 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "before_f": before_f,
                         "after_f": after_f,
+                        "window_frames": window_frames,
+                        "shift_px_per_frame": shift_px_per_frame,
+                        "scroll_pos_px": scroll_pos_px,
+                        "scroll_shift_int": shift_int,
+                        "right_edge_cols": right_edge_cols,
                         "frame_window_mapping": frame_window_mapping,
                         "line_delta_m_frames": line_delta_m_frames,
                         "line_delta_y_abs_m": line_delta_y_abs_m,
@@ -2743,6 +2800,11 @@ def _render_hud_scroll_frames_png(
                         "i": i,
                         "before_f": before_f,
                         "after_f": after_f,
+                        "window_frames": window_frames,
+                        "shift_px_per_frame": shift_px_per_frame,
+                        "scroll_pos_px": scroll_pos_px,
+                        "scroll_shift_int": shift_int,
+                        "right_edge_cols": right_edge_cols,
                         "frame_window_mapping": frame_window_mapping,
                         "under_oversteer_slow_frames": under_oversteer_slow_frames,
                         "under_oversteer_fast_frames": under_oversteer_fast_frames,
@@ -3287,7 +3349,15 @@ def render_split_screen_sync(
                         a = float(o.get("after_s"))
             except Exception:
                 pass
-                
+
+            # Story 2.2: Scroll-HUD Fenster intern symmetrisch halten.
+            # Damit ist die Pixel-Scrollrate links/rechts eindeutig.
+            b = max(1e-6, float(b))
+            a = max(1e-6, float(a))
+            sym_s = max(float(b), float(a))
+            b = float(sym_s)
+            a = float(sym_s)
+                 
             # DEBUG: finaler Wert, der gleich in hud_windows geschrieben wird
             try:
                 if (os.environ.get("RVA_HUD_STEER_DEBUG_FRAME") or "").strip() != "":
