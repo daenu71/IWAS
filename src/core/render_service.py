@@ -99,6 +99,11 @@ def build_payload(
     _add_override("Under-/Oversteer", "under_oversteer")
 
     hud_pts_default = persistence._cfg_int("video_compare", "hud_curve_points_default", 180)
+    under_oversteer_curve_center = persistence._cfg_float("video_compare", "under_oversteer_curve_center", 0.0)
+    if under_oversteer_curve_center < -50.0:
+        under_oversteer_curve_center = -50.0
+    if under_oversteer_curve_center > 50.0:
+        under_oversteer_curve_center = 50.0
 
     hud_pts_overrides: dict[str, int] = {}
 
@@ -133,6 +138,7 @@ def build_payload(
             "default_before_s": float(hud_win_default_before),
             "default_after_s": float(hud_win_default_after),
             "overrides": hud_win_overrides,
+            "under_oversteer_curve_center": float(under_oversteer_curve_center),
         },
         "hud_speed": {
             "units": str(speed_units),

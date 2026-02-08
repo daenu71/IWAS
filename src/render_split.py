@@ -34,7 +34,7 @@ from huds.common import (
 from huds.delta import render_delta
 from huds.gear_rpm import render_gear_rpm
 from huds.line_delta import render_line_delta
-from huds.speed import render_speed
+from huds.speed import build_confirmed_max_speed_display, render_speed
 from huds.steering import render_steering
 from huds.throttle_brake import render_throttle_brake
 from huds.under_oversteer import render_under_oversteer
@@ -754,6 +754,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
     fps: float,
     slow_frame_to_fast_time_s: list[float] | None,
     frame_count_hint: int,
+    under_oversteer_curve_center: float = 0.0,
     log_file: Path | None = None,
 ) -> tuple[list[float], list[float], float]:
     from csv_g61 import get_float_col, has_col, load_g61_csv
@@ -834,6 +835,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
         dbg_level = 0
     dbg_enabled = dbg_level >= 1
     dbg_spam = dbg_level >= 2
+    hud_dbg = (os.environ.get("IRVC_HUD_DEBUG") or "0").strip().lower() in ("1", "true", "yes", "on")
     dbg_k = 732
     try:
         dbg_k = int(float((os.getenv("IRVC_DEBUG_UO_K") or "").strip() or "732"))
@@ -1398,6 +1400,22 @@ def _build_under_oversteer_proxy_frames_from_csv(
         slow_err = slow_err_clamped
         fast_err = fast_err_clamped
 
+        curve_center_pct = 0.0
+        try:
+            curve_center_pct = float(under_oversteer_curve_center)
+        except Exception:
+            curve_center_pct = 0.0
+        curve_center_pct = float(_clamp(curve_center_pct, -50.0, 50.0))
+        offset_units = (float(curve_center_pct) / 100.0) * (2.0 * float(y_abs_base))
+        if abs(float(offset_units)) > 0.0:
+            slow_err = [float(_clamp(float(v) + float(offset_units), y_min, y_max)) for v in slow_err]
+            fast_err = [float(_clamp(float(v) + float(offset_units), y_min, y_max)) for v in fast_err]
+        if hud_dbg:
+            _log_print(
+                f"[uo] curve_center_pct={curve_center_pct:+.6f} offset_units={offset_units:+.6f} y_abs_base={float(y_abs_base):+.6f}",
+                log_file,
+            )
+
         slow_max_abs_after_clamp = 0.0
         fast_max_abs_after_clamp = 0.0
         if dbg_enabled:
@@ -1876,11 +1894,14 @@ def _render_hud_scroll_frames_png(
     fast_speed_u = _hold_every_n(_speed_to_units(fast_speed_frames))
     slow_min_u = _hold_every_n(_speed_to_units(slow_min_speed_frames))
     fast_min_u = _hold_every_n(_speed_to_units(fast_min_speed_frames))
+    speed_max_peak_threshold_u = 5.0
+    slow_max_u = build_confirmed_max_speed_display(slow_speed_u, threshold=float(speed_max_peak_threshold_u))
+    fast_max_u = build_confirmed_max_speed_display(fast_speed_u, threshold=float(speed_max_peak_threshold_u))
     speed_axis_min_u = 0.0
     speed_axis_max_u = 1.0
     try:
         vmax = 0.0
-        for arr in (slow_speed_u, fast_speed_u, slow_min_u, fast_min_u):
+        for arr in (slow_speed_u, fast_speed_u, slow_min_u, fast_min_u, slow_max_u, fast_max_u):
             if not arr:
                 continue
             for vv in arr:
@@ -2341,6 +2362,8 @@ def _render_hud_scroll_frames_png(
                             "fast_speed_u": fast_speed_u,
                             "slow_min_u": slow_min_u,
                             "fast_min_u": fast_min_u,
+                            "slow_max_u": slow_max_u,
+                            "fast_max_u": fast_max_u,
                             "speed_axis_min_u": speed_axis_min_u,
                             "speed_axis_max_u": speed_axis_max_u,
                             "unit_label": unit_label,
@@ -2827,6 +2850,7 @@ def render_split_screen_sync(
     hud_speed_units: str = "kmh",
     hud_speed_update_hz: int = 60,
     hud_gear_rpm_update_hz: int = 60,
+    under_oversteer_curve_center: float = 0.0,
     log_file: "Path | None" = None,
 ) -> None:
     # Story 6: Stream-Sync (ohne PNG, ohne fast_sync.mp4, ein ffmpeg-Run)
@@ -2850,6 +2874,12 @@ def render_split_screen_sync(
 
     if audio_source not in ("slow", "fast", "none"):
         audio_source = "slow"
+
+    try:
+        under_oversteer_curve_center = float(under_oversteer_curve_center)
+    except Exception:
+        under_oversteer_curve_center = 0.0
+    under_oversteer_curve_center = float(_clamp(float(under_oversteer_curve_center), -50.0, 50.0))
 
     preset = f"{ms.width}x{ms.height}"
     if preset_w > 0 and preset_h > 0:
@@ -3036,6 +3066,7 @@ def render_split_screen_sync(
                 fps=float(fps_int),
                 slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
                 frame_count_hint=len(slow_frame_to_lapdist),
+                under_oversteer_curve_center=float(under_oversteer_curve_center),
                 log_file=log_file,
             )
 

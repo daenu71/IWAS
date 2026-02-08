@@ -412,18 +412,25 @@ def main() -> None:
     hud_win_default_before = 10.0
     hud_win_default_after = 10.0
     hud_win_overrides = None
+    under_oversteer_curve_center = 0.0
 
     try:
         if isinstance(hud_win, dict):
             hud_win_default_before = float(hud_win.get("default_before_s") or 10.0)
             hud_win_default_after = float(hud_win.get("default_after_s") or 10.0)
+            under_oversteer_curve_center = float(hud_win.get("under_oversteer_curve_center") or 0.0)
             ovs = hud_win.get("overrides")
             hud_win_overrides = ovs if isinstance(ovs, dict) else None
     except Exception:
         pass
+    if under_oversteer_curve_center < -50.0:
+        under_oversteer_curve_center = -50.0
+    if under_oversteer_curve_center > 50.0:
+        under_oversteer_curve_center = 50.0
 
     log.kv("hud_win_default_before_s", str(hud_win_default_before))
     log.kv("hud_win_default_after_s", str(hud_win_default_after))
+    log.kv("under_oversteer_curve_center", str(under_oversteer_curve_center))
 
     hud_pts = ui.get("hud_curve_points") if isinstance(ui, dict) else None
     hud_pts_default = 180
@@ -503,6 +510,7 @@ def main() -> None:
             hud_curve_points_overrides=hud_pts_overrides,
             hud_speed_units=str(hud_speed_units),
             hud_speed_update_hz=int(hud_speed_update_hz),
+            under_oversteer_curve_center=float(under_oversteer_curve_center),
             log_file=log.log_file,
         )
     else:
