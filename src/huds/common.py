@@ -208,8 +208,14 @@ def draw_stripe_grid(
         except Exception:
             pass
 
-    # Separator lines survive YUV compression better than pure low-alpha fills.
-    line_col = _darken_rgba(col_bg, int(max(10, int(darken_delta) + 6)), min_alpha=max(176, int(stripe_alpha)))
+    # Bright separators survive limited-range/YUV encoding better than very dark tones.
+    r_bg, g_bg, b_bg, _a_bg = bg_rgba
+    line_col = (
+        min(255, int(r_bg) + 56),
+        min(255, int(g_bg) + 56),
+        min(255, int(b_bg) + 56),
+        max(196, int(stripe_alpha)),
+    )
     for y_line in ys[1:-1]:
         try:
             dr.line([(int(x0), int(y_line)), (x1, int(y_line))], fill=line_col, width=1)

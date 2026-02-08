@@ -2963,8 +2963,13 @@ def _render_hud_scroll_frames_png(
                                     fill=(max(0, COL_HUD_BG[0] - 12), max(0, COL_HUD_BG[1] - 12), max(0, COL_HUD_BG[2] - 12), int(stripe_a)),
                                 )
                         try:
-                            sep_a = max(int(COL_HUD_BG[3]), min(200, int(COL_HUD_BG[3]) + 96))
-                            sep_col = (max(0, COL_HUD_BG[0] - 20), max(0, COL_HUD_BG[1] - 20), max(0, COL_HUD_BG[2] - 20), int(sep_a))
+                            sep_a = max(int(COL_HUD_BG[3]), min(220, int(COL_HUD_BG[3]) + 120))
+                            sep_col = (
+                                min(255, int(COL_HUD_BG[0]) + 56),
+                                min(255, int(COL_HUD_BG[1]) + 56),
+                                min(255, int(COL_HUD_BG[2]) + 56),
+                                int(sep_a),
+                            )
                             for y_sep in y_bounds[1:-1]:
                                 static_dr_local.line([(x0s, int(y_sep)), (x1s, int(y_sep))], fill=sep_col, width=1)
                         except Exception:
@@ -5055,7 +5060,14 @@ def _render_hud_scroll_frames_png(
 
 
         fn = out_dir / f"hud_{j:06d}.png"
-        img.save(fn)
+        try:
+            # Flatten HUD over black before saving so ffmpeg overlay does not rely on semi-transparent alpha details.
+            save_img = Image.new("RGB", (int(geom.hud), int(geom.H)), (0, 0, 0))
+            src_rgba = img if getattr(img, "mode", "") == "RGBA" else img.convert("RGBA")
+            save_img.paste(src_rgba, (0, 0), src_rgba)
+            save_img.save(fn)
+        except Exception:
+            img.save(fn)
 
         # ZusÃ¤tzlich: 1 Sample pro Sekunde kopieren
         try:
