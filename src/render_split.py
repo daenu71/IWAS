@@ -3093,9 +3093,13 @@ def _render_hud_scroll_frames_png(
 
                     st_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
                     st_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                    st_font_axis_sz = max(8, int(st_font_sz - 2))
+                    st_font_axis_small_sz = max(7, int(st_font_sz - 3))
                     st_layout = {
                         "font_title": _st_load_font(st_font_sz),
                         "font_val": _st_load_font(st_font_val_sz),
+                        "font_axis": _st_load_font(st_font_axis_sz),
+                        "font_axis_small": _st_load_font(st_font_axis_small_sz),
                         "y_txt": int(4),
                         "mx": int(st_mx),
                         "y_mid": int(round(st_mid_y)),
@@ -3197,6 +3201,64 @@ def _render_hud_scroll_frames_png(
                         static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         static_dr_local = ImageDraw.Draw(static_img_local)
                         static_dr_local.rectangle([0, 0, int(w) - 1, int(h) - 1], fill=COL_HUD_BG)
+                        axis_labels_st: list[tuple[int, str]] = []
+                        try:
+                            st_abs_deg = abs(float(steer_abs_max) * 180.0 / math.pi)
+                            if (not math.isfinite(st_abs_deg)) or st_abs_deg < 1e-6:
+                                st_abs_deg = 1.0
+
+                            def _st_y_from_deg(v_deg: float) -> int:
+                                return int(_st_y_from_norm(float(v_deg) / float(st_abs_deg)))
+
+                            step_st = choose_tick_step(-st_abs_deg, st_abs_deg, min_segments=2, max_segments=5, target_segments=5)
+                            if step_st is not None:
+                                val_bounds_st = build_value_boundaries(-st_abs_deg, st_abs_deg, float(step_st), anchor="top")
+                                y_bounds_st = value_boundaries_to_y(
+                                    val_bounds_st,
+                                    _st_y_from_deg,
+                                    int(0),
+                                    int(h) - 1,
+                                )
+                                draw_stripe_grid(
+                                    static_dr_local,
+                                    int(0),
+                                    int(w),
+                                    int(0),
+                                    int(h) - 1,
+                                    y_bounds_st,
+                                    col_bg=COL_HUD_BG,
+                                    darken_delta=6,
+                                )
+                                for vv in val_bounds_st:
+                                    if should_suppress_boundary_label(float(vv), -st_abs_deg, st_abs_deg, suppress_zero=True):
+                                        continue
+                                    axis_labels_st.append(
+                                        (
+                                            int(_st_y_from_deg(float(vv))),
+                                            format_value_for_step(float(vv), float(step_st), min_decimals=0),
+                                        )
+                                    )
+                        except Exception:
+                            pass
+                        axis_labels_st = filter_axis_labels_by_position(
+                            axis_labels_st,
+                            int(0),
+                            int(h) - 1,
+                            zero_y=int(st_layout["y_mid"]),
+                            pad_px=2,
+                        )
+                        draw_left_axis_labels(
+                            static_dr_local,
+                            int(0),
+                            int(w),
+                            int(0),
+                            int(h) - 1,
+                            axis_labels_st,
+                            st_layout.get("font_axis"),
+                            col_text=COL_WHITE,
+                            x_pad=6,
+                            fallback_font_obj=st_layout.get("font_axis_small"),
+                        )
                         try:
                             static_dr_local.line(
                                 [(0, int(st_layout["y_mid"])), (int(w) - 1, int(st_layout["y_mid"]))],
@@ -3293,6 +3355,8 @@ def _render_hud_scroll_frames_png(
 
                     d_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
                     d_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                    d_font_axis_sz = max(8, int(d_font_sz - 2))
+                    d_font_axis_small_sz = max(7, int(d_font_sz - 3))
                     d_top_pad = int(round(max(14.0, float(d_font_sz) + 8.0)))
                     d_plot_y0 = int(d_top_pad)
                     d_plot_y1 = int(h - 2)
@@ -3306,6 +3370,8 @@ def _render_hud_scroll_frames_png(
                     d_layout = {
                         "font_title": _d_load_font(d_font_sz),
                         "font_val": _d_load_font(d_font_val_sz),
+                        "font_axis": _d_load_font(d_font_axis_sz),
+                        "font_axis_small": _d_load_font(d_font_axis_small_sz),
                         "y_txt": int(2),
                         "mx": int(d_mx),
                         "marker_xf": float(d_marker_xf),
@@ -3466,12 +3532,72 @@ def _render_hud_scroll_frames_png(
                         static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         static_dr_local = ImageDraw.Draw(static_img_local)
                         static_dr_local.rectangle([0, 0, int(w) - 1, int(h) - 1], fill=COL_HUD_BG)
+                        axis_labels_d: list[tuple[int, str]] = []
+                        try:
+                            d_val_min = -float(d_range_neg) if bool(delta_has_neg) else 0.0
+                            d_val_max = float(d_range_pos)
+                            if d_val_max <= d_val_min + 1e-9:
+                                d_val_max = d_val_min + 1e-6
+                            step_d = choose_tick_step(d_val_min, d_val_max, min_segments=2, max_segments=5, target_segments=5)
+                            if step_d is not None:
+                                val_bounds_d = build_value_boundaries(d_val_min, d_val_max, float(step_d), anchor="top")
+                                y_bounds_d = value_boundaries_to_y(
+                                    val_bounds_d,
+                                    _d_y_from_delta,
+                                    int(d_layout["plot_y0"]),
+                                    int(d_layout["plot_y1"]),
+                                )
+                                draw_stripe_grid(
+                                    static_dr_local,
+                                    int(0),
+                                    int(w),
+                                    int(d_layout["plot_y0"]),
+                                    int(d_layout["plot_y1"]),
+                                    y_bounds_d,
+                                    col_bg=COL_HUD_BG,
+                                    darken_delta=6,
+                                )
+                                for vv in val_bounds_d:
+                                    if should_suppress_boundary_label(float(vv), d_val_min, d_val_max, suppress_zero=True):
+                                        continue
+                                    axis_labels_d.append(
+                                        (
+                                            int(_d_y_from_delta(float(vv))),
+                                            format_value_for_step(float(vv), float(step_d), min_decimals=0),
+                                        )
+                                    )
+                        except Exception:
+                            pass
+                        axis_labels_d = filter_axis_labels_by_position(
+                            axis_labels_d,
+                            int(d_layout["plot_y0"]),
+                            int(d_layout["plot_y1"]),
+                            zero_y=int(d_y_zero),
+                            pad_px=2,
+                        )
+                        draw_left_axis_labels(
+                            static_dr_local,
+                            int(0),
+                            int(w),
+                            int(d_layout["plot_y0"]),
+                            int(d_layout["plot_y1"]),
+                            axis_labels_d,
+                            d_layout.get("font_axis"),
+                            col_text=COL_WHITE,
+                            x_pad=6,
+                            fallback_font_obj=d_layout.get("font_axis_small"),
+                        )
                         try:
                             static_dr_local.line(
                                 [(0, int(d_y_zero)), (int(w) - 1, int(d_y_zero))],
                                 fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
                                 width=1,
                             )
+                        except Exception:
+                            pass
+                        try:
+                            mx_s = int(d_layout["mx"])
+                            static_dr_local.rectangle([mx_s, 0, mx_s + 1, int(h)], fill=(255, 255, 255, 230))
                         except Exception:
                             pass
                         return static_img_local
