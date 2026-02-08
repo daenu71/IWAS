@@ -211,19 +211,18 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
         table_bottom = int(table_y1 - 1)
         if table_bottom <= table_top:
             table_bottom = int(table_top + 1)
-        row_sep = int(round((float(table_top) + float(table_bottom)) / 2.0))
-        if row_sep <= table_top:
-            row_sep = int(table_top + 1)
-        if row_sep >= table_bottom:
-            row_sep = int(table_bottom - 1)
 
+        table_h = int(max(2, table_bottom - table_top + 1))
         cell_pad_y = int(max(1, min(4, round(float(h) * 0.01))))
         col_w = float(table_w) / 3.0
         cell_pad_x = int(max(2, min(8, round(col_w * 0.08))))
-
-        header_fit_h = int(max(8, (row_sep - table_top + 1) - (2 * cell_pad_y)))
-        value_fit_h = int(max(8, (table_bottom - row_sep + 1) - (2 * cell_pad_y)))
         fit_w = int(max(8, round(col_w) - (2 * cell_pad_x)))
+
+        header_pad_top = 1
+        header_pad_bottom = 1
+        header_row_cap = int(max(1, math.floor(float(table_h) * 0.35)))
+        header_fit_h = int(max(8, int(round(float(table_h) * 0.5)) - (2 * cell_pad_y)))
+        header_hard_fit_h = int(max(1, header_row_cap - (header_pad_top + header_pad_bottom)))
 
         max_header_font = int(max(9, min(72, header_fit_h)))
         min_header_font = 9
@@ -241,6 +240,49 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
             if ok:
                 font_title = fnt
                 break
+
+        header_text_h = _text_wh("Max. Speed", font_title)[1]
+        if header_text_h > header_hard_fit_h:
+            for sz in range(max_header_font, min_header_font - 1, -1):
+                fnt = _load_font(sz)
+                if fnt is None:
+                    continue
+                ok = True
+                for lbl in header_labels:
+                    tw, th = _text_wh(lbl, fnt)
+                    if tw > fit_w or th > header_hard_fit_h:
+                        ok = False
+                        break
+                if ok:
+                    font_title = fnt
+                    header_text_h = _text_wh("Max. Speed", font_title)[1]
+                    break
+        header_row_h = int(header_text_h + header_pad_top + header_pad_bottom)
+        if header_row_h > header_row_cap:
+            header_row_h = int(header_row_cap)
+        if table_h > 1:
+            header_row_h = int(max(1, min(header_row_h, table_h - 1)))
+        else:
+            header_row_h = 1
+        value_row_h = int(max(1, table_h - header_row_h))
+
+        row_sep = int(table_top + header_row_h - 1)
+        if row_sep > table_bottom:
+            row_sep = int(table_bottom)
+
+        header_text_top = int(table_top)
+        header_text_bottom = int(row_sep - 1)
+        if header_text_bottom < header_text_top:
+            header_text_bottom = int(header_text_top)
+
+        value_text_top = int(row_sep + 1)
+        if value_text_top > table_bottom:
+            value_text_top = int(table_bottom)
+        value_text_bottom = int(table_bottom)
+
+        value_pad_top = cell_pad_y
+        value_pad_bottom = cell_pad_y
+        value_fit_h = int(max(1, value_row_h - (value_pad_top + value_pad_bottom)))
 
         probe_values = list(slow_values) + list(fast_values)
         max_font = int(max(10, min(120, value_fit_h)))
@@ -303,11 +345,29 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
 
             for c, lbl in enumerate(header_labels):
                 x_l, x_r = cell_x_ranges[c]
-                _draw_centered_text(x_l, table_top, x_r, row_sep, lbl, font_title, col, pad_y=cell_pad_y)
+                _draw_centered_text(
+                    x_l,
+                    header_text_top,
+                    x_r,
+                    header_text_bottom,
+                    lbl,
+                    font_title,
+                    col,
+                    pad_y=0,
+                )
 
             for c, txt in enumerate(vals):
                 x_l, x_r = cell_x_ranges[c]
-                _draw_centered_text(x_l, row_sep, x_r, table_bottom, txt, font_val, col, pad_y=cell_pad_y)
+                _draw_centered_text(
+                    x_l,
+                    value_text_top,
+                    x_r,
+                    value_text_bottom,
+                    txt,
+                    font_val,
+                    col,
+                    pad_y=cell_pad_y,
+                )
 
         _draw_table(left_x, slow_values, col_slow_darkred)
         _draw_table(right_x, fast_values, col_fast_darkblue)
