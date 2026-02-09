@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import math
 import re
 import subprocess
 import threading
@@ -73,15 +74,15 @@ def _map_render_progress(pct: float, preparing_pct: float) -> float:
 
 class _HudPreparingMonitor:
     POLL_INTERVAL = 0.35
+    STEP_COUNT = 20
 
     def __init__(self, project_root: Path, target_pct: float):
         self._target_pct = float(max(0.0, min(100.0, target_pct)))
         self._hud_dir = project_root / "output" / "debug" / "hud_frames"
         self._sync_cache_path = project_root / "output" / "debug" / "sync_cache.json"
         self._expected_frames = 0
-        self._update_step = 1
         self._last_pct = 0.0
-        self._last_emitted_count = 0
+        self._last_step = 0
         self._last_check = 0.0
         self._sync_cache_mtime = 0.0
         self._done = False
@@ -118,11 +119,8 @@ class _HudPreparingMonitor:
         if candidate <= 0:
             return
         self._expected_frames = candidate
-        self._update_step = max(1, self._expected_frames // 20)
-        if self._update_step <= 0:
-            self._update_step = 1
-        self._last_emitted_count = 0
         self._last_pct = 0.0
+        self._last_step = 0
 
     def _count_hud_pngs(self) -> int:
         try:
@@ -154,24 +152,22 @@ class _HudPreparingMonitor:
             return None, False
         if current > self._expected_frames:
             current = self._expected_frames
-        delta = current - self._last_emitted_count
-        if delta <= 0:
+        step = int(current * self.STEP_COUNT // self._expected_frames)
+        if current >= self._expected_frames:
+            step = self.STEP_COUNT
+        step = max(0, min(self.STEP_COUNT, step))
+        if step <= self._last_step:
             return None, False
-        if current >= self._expected_frames or delta >= self._update_step:
-            frac = float(current) / float(self._expected_frames)
-            frac = max(0.0, min(1.0, frac))
-            pct = frac * self._target_pct
-            if current >= self._expected_frames:
-                pct = self._target_pct
-            if pct < self._last_pct:
-                pct = self._last_pct
-            self._last_pct = pct
-            self._last_emitted_count = current
-            if current >= self._expected_frames:
-                self._done = True
-                return pct, True
-            return pct, False
-        return None, False
+        self._last_step = step
+        frac = float(step) / float(self.STEP_COUNT)
+        pct = frac * self._target_pct
+        if pct < self._last_pct:
+            pct = self._last_pct
+        self._last_pct = pct
+        if step >= self.STEP_COUNT:
+            self._done = True
+            return pct, True
+        return pct, False
 
 
 def _write_duration_line(log_file: Path | None, step: str, seconds: float) -> None:
