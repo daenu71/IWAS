@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Any
 
 from huds.common import (
@@ -14,6 +15,27 @@ from huds.common import (
     should_suppress_boundary_label,
     value_boundaries_to_y,
 )
+
+_UO_HUD_DEBUG_LOGGED = False
+
+
+def _clamp_float(value: float, lo: float, hi: float) -> float:
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+
+def _uo_debug_enabled() -> bool:
+    raw = (os.environ.get("IRVC_DEBUG_UO") or "").strip()
+    if raw == "":
+        return False
+    try:
+        lvl = int(float(raw))
+    except Exception:
+        lvl = 1
+    return lvl >= 1
 
 
 def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:
@@ -69,6 +91,14 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
         plot_y0 = int(y0) + 2
         plot_y1 = int(y0 + h - 2)
 
+    curve_margin = 2
+    curve_top = int(plot_y0 + curve_margin)
+    curve_bottom = int(plot_y1 - curve_margin)
+    if curve_bottom <= curve_top:
+        curve_top = int(plot_y0)
+        curve_bottom = int(plot_y1)
+    curve_height = float(max(1, curve_bottom - curve_top))
+
     y_abs = 0.0
     try:
         y_abs = abs(float(y_abs_in))
@@ -90,7 +120,9 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
         if vv > y_max:
             vv = y_max
         frac = (vv - y_min) / den
-        yy = float(plot_y1) - (frac * float(plot_y1 - plot_y0))
+        span = float(curve_bottom - curve_top)
+        yy = float(curve_bottom) - (frac * span)
+        yy = _clamp_float(yy, float(curve_top), float(curve_bottom))
         return int(round(yy))
 
     label_x = int(x0 + 4)
@@ -139,6 +171,51 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
     fast_series = fast_vals if isinstance(fast_vals, list) else []
     n_s = len(slow_series)
     n_f = len(fast_series)
+
+    debug_enabled = _uo_debug_enabled()
+    global _UO_HUD_DEBUG_LOGGED
+    if debug_enabled and not _UO_HUD_DEBUG_LOGGED:
+        slow_peak_val = 0.0
+        slow_peak_abs = 0.0
+        for val in slow_series:
+            if not math.isfinite(val):
+                continue
+            av = abs(float(val))
+            if av > slow_peak_abs:
+                slow_peak_abs = av
+                slow_peak_val = float(val)
+        fast_peak_val = 0.0
+        fast_peak_abs = 0.0
+        for val in fast_series:
+            if not math.isfinite(val):
+                continue
+            av = abs(float(val))
+            if av > fast_peak_abs:
+                fast_peak_abs = av
+                fast_peak_val = float(val)
+        slow_peak_y = None
+        fast_peak_y = None
+        if slow_series:
+            slow_peak_y = _y_from_val(slow_peak_val)
+        if fast_series:
+            fast_peak_y = _y_from_val(fast_peak_val)
+        print(
+            f"[uo-hud] y_abs={y_abs:.6f} plot_bounds={plot_y0}..{plot_y1} "
+            f"curve_bounds={curve_top}..{curve_bottom} curve_height={curve_height:.6f} margin={curve_margin}"
+        )
+        if slow_series:
+            slow_in_bounds = slow_peak_y is not None and curve_top <= slow_peak_y <= curve_bottom
+            print(
+                f"[uo-hud] slow peak={slow_peak_val:+.6f} abs={slow_peak_abs:.6f} mapped_y={slow_peak_y} "
+                f"in_bounds={slow_in_bounds}"
+            )
+        if fast_series:
+            fast_in_bounds = fast_peak_y is not None and curve_top <= fast_peak_y <= curve_bottom
+            print(
+                f"[uo-hud] fast peak={fast_peak_val:+.6f} abs={fast_peak_abs:.6f} mapped_y={fast_peak_y} "
+                f"in_bounds={fast_in_bounds}"
+            )
+        _UO_HUD_DEBUG_LOGGED = True
 
     pts_slow: list[tuple[int, int]] = []
     pts_fast: list[tuple[int, int]] = []
