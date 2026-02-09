@@ -1405,24 +1405,18 @@ def _build_under_oversteer_proxy_frames_from_csv(
         if y_abs_base < 1e-6:
             y_abs_base = 0.05
 
-        slow_clamped_count = 0
-        fast_clamped_count = 0
-        slow_err_clamped: list[float] = []
-        fast_err_clamped: list[float] = []
-        y_min = -float(y_abs_base)
-        y_max = float(y_abs_base)
-        for v in slow_err:
-            fv = float(v)
-            if dbg_enabled and (fv < y_min or fv > y_max):
-                slow_clamped_count += 1
-            slow_err_clamped.append(float(_clamp(fv, y_min, y_max)))
-        for v in fast_err:
-            fv = float(v)
-            if dbg_enabled and (fv < y_min or fv > y_max):
-                fast_clamped_count += 1
-            fast_err_clamped.append(float(_clamp(fv, y_min, y_max)))
-        slow_err = slow_err_clamped
-        fast_err = fast_err_clamped
+        slow_outside_base = 0
+        fast_outside_base = 0
+        if dbg_enabled:
+            for v in slow_err:
+                if abs(float(v)) > float(y_abs_base):
+                    slow_outside_base += 1
+            for v in fast_err:
+                if abs(float(v)) > float(y_abs_base):
+                    fast_outside_base += 1
+
+        headroom_ratio = 0.15
+        y_abs = float(y_abs_base) * (1.0 + headroom_ratio)
 
         curve_center_pct = 0.0
         try:
@@ -1432,13 +1426,30 @@ def _build_under_oversteer_proxy_frames_from_csv(
         curve_center_pct = float(_clamp(curve_center_pct, -50.0, 50.0))
         offset_units = (float(curve_center_pct) / 100.0) * (2.0 * float(y_abs_base))
         if abs(float(offset_units)) > 0.0:
-            slow_err = [float(_clamp(float(v) + float(offset_units), y_min, y_max)) for v in slow_err]
-            fast_err = [float(_clamp(float(v) + float(offset_units), y_min, y_max)) for v in fast_err]
+            slow_err = [float(_clamp(float(v) + float(offset_units), -y_abs, y_abs)) for v in slow_err]
+            fast_err = [float(_clamp(float(v) + float(offset_units), -y_abs, y_abs)) for v in fast_err]
         if hud_dbg:
             _log_print(
                 f"[uo] curve_center_pct={curve_center_pct:+.6f} offset_units={offset_units:+.6f} y_abs_base={float(y_abs_base):+.6f}",
                 log_file,
             )
+
+        slow_clamped_count = 0
+        fast_clamped_count = 0
+        slow_err_clamped: list[float] = []
+        fast_err_clamped: list[float] = []
+        for v in slow_err:
+            fv = float(v)
+            if fv < -y_abs or fv > y_abs:
+                slow_clamped_count += 1
+            slow_err_clamped.append(float(_clamp(fv, -y_abs, y_abs)))
+        for v in fast_err:
+            fv = float(v)
+            if fv < -y_abs or fv > y_abs:
+                fast_clamped_count += 1
+            fast_err_clamped.append(float(_clamp(fv, -y_abs, y_abs)))
+        slow_err = slow_err_clamped
+        fast_err = fast_err_clamped
 
         slow_max_abs_after_clamp = 0.0
         fast_max_abs_after_clamp = 0.0
@@ -1452,19 +1463,17 @@ def _build_under_oversteer_proxy_frames_from_csv(
                 if math.isfinite(av) and av > fast_max_abs_after_clamp:
                     fast_max_abs_after_clamp = float(av)
 
-        headroom_ratio = 0.15
-        y_abs = float(y_abs_base) * (1.0 + headroom_ratio)
         if dbg_enabled:
             _uo_log(
                 f"[scale] y_abs_base_p99={y_abs_base:+.6f} y_abs={y_abs:+.6f} headroom_ratio={headroom_ratio:.3f}"
             )
             _uo_log(
                 f"[slow] max_abs_before_clamp={slow_max_abs_before_clamp:+.6f} max_abs_after_clamp={slow_max_abs_after_clamp:+.6f} "
-                + f"clamped_points={slow_clamped_count}/{len(slow_err)}"
+                + f"clamped_points={slow_clamped_count}/{len(slow_err)} outliers_above_base={slow_outside_base}"
             )
             _uo_log(
                 f"[fast] max_abs_before_clamp={fast_max_abs_before_clamp:+.6f} max_abs_after_clamp={fast_max_abs_after_clamp:+.6f} "
-                + f"clamped_points={fast_clamped_count}/{len(fast_err)}"
+                + f"clamped_points={fast_clamped_count}/{len(fast_err)} outliers_above_base={fast_outside_base}"
             )
 
         if dbg_spam:
