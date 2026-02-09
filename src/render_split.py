@@ -1391,19 +1391,26 @@ def _build_under_oversteer_proxy_frames_from_csv(
                 if math.isfinite(av) and av > fast_max_abs_before_clamp:
                     fast_max_abs_before_clamp = float(av)
 
+        slow_max_abs_before_clamp = 0.0
+        fast_max_abs_before_clamp = 0.0
         abs_vals: list[float] = []
         for v in slow_err:
             av = abs(float(v))
             if math.isfinite(av):
                 abs_vals.append(float(av))
+                if av > slow_max_abs_before_clamp:
+                    slow_max_abs_before_clamp = float(av)
         for v in fast_err:
             av = abs(float(v))
             if math.isfinite(av):
                 abs_vals.append(float(av))
+                if av > fast_max_abs_before_clamp:
+                    fast_max_abs_before_clamp = float(av)
         abs_vals.sort()
         y_abs_base = _percentile_sorted(abs_vals, 99.0)
         if y_abs_base < 1e-6:
             y_abs_base = 0.05
+        max_abs_for_scale = max(y_abs_base, slow_max_abs_before_clamp, fast_max_abs_before_clamp)
 
         slow_outside_base = 0
         fast_outside_base = 0
@@ -1416,7 +1423,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
                     fast_outside_base += 1
 
         headroom_ratio = 0.15
-        y_abs = float(y_abs_base) * (1.0 + headroom_ratio)
+        y_abs = float(max_abs_for_scale) * (1.0 + headroom_ratio)
 
         curve_center_pct = 0.0
         try:
@@ -1465,7 +1472,7 @@ def _build_under_oversteer_proxy_frames_from_csv(
 
         if dbg_enabled:
             _uo_log(
-                f"[scale] y_abs_base_p99={y_abs_base:+.6f} y_abs={y_abs:+.6f} headroom_ratio={headroom_ratio:.3f}"
+                f"[scale] y_abs_base_p99={y_abs_base:+.6f} max_abs_for_scale={max_abs_for_scale:+.6f} y_abs={y_abs:+.6f} headroom_ratio={headroom_ratio:.3f}"
             )
             _uo_log(
                 f"[slow] max_abs_before_clamp={slow_max_abs_before_clamp:+.6f} max_abs_after_clamp={slow_max_abs_after_clamp:+.6f} "
