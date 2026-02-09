@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,9 +23,18 @@ class Logger:
             f.write(line.rstrip("\n") + "\n")
 
 
-def make_logger(project_root: str | Path, name: str = "main") -> Logger:
+def build_log_file_path(project_root: str | Path, name: str = "main") -> Path:
     root = Path(project_root).resolve()
     logs_dir = root / "_logs"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_file = logs_dir / f"{ts}_{name}.txt"
+    return logs_dir / f"{ts}_{name}.txt"
+
+
+def make_logger(project_root: str | Path, name: str = "main", log_file: Path | None = None) -> Logger:
+    if log_file is None:
+        env_path = str(os.environ.get("IRVC_LOG_FILE") or "").strip()
+        if env_path:
+            log_file = Path(env_path)
+        else:
+            log_file = build_log_file_path(project_root, name)
     return Logger(log_file=log_file)

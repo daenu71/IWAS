@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core import persistence
+from core.log import build_log_file_path
 from core.models import AppModel, OutputFormat, RenderPayload
 
 
@@ -34,6 +35,61 @@ def _emit_progress(
         return
     try:
         on_progress(float(pct), str(text))
+    except Exception:
+        pass
+
+
+PREP_TEXT = "Preparing HUDs..."
+RENDER_TEXT = "Rendering in progress..."
+FINAL_TEXT = "Finalizing..."
+DONE_TEXT = "Done."
+
+PROGRESS_PREP_START = 5.0
+PROGRESS_PREP_END = 30.0
+PROGRESS_RENDER_END = 95.0
+PROGRESS_FINAL_END = 100.0
+
+
+def _map_render_progress(pct: float) -> float:
+    span = PROGRESS_RENDER_END - PROGRESS_PREP_END
+    mapped = PROGRESS_PREP_END + (pct / 100.0) * span
+    if mapped < PROGRESS_PREP_END:
+        return PROGRESS_PREP_END
+    if mapped > PROGRESS_RENDER_END:
+        return PROGRESS_RENDER_END
+    return mapped
+
+
+def _write_duration_line(log_file: Path | None, step: str, seconds: float) -> None:
+    if log_file is None:
+        return
+    try:
+        line = f"[Duration][{step}] {seconds:.3f}s"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _log_stage_durations(
+    log_file: Path | None,
+    start: float,
+    prep_end: float | None,
+    render_start: float | None,
+    render_end: float | None,
+    final_end: float,
+) -> None:
+    if log_file is None:
+        return
+    try:
+        if prep_end is not None:
+            _write_duration_line(log_file, "Preparing HUDs", max(0.0, prep_end - start))
+        if render_start is not None and render_end is not None:
+            _write_duration_line(log_file, "Rendering", max(0.0, render_end - render_start))
+        if render_end is not None and final_end is not None and final_end >= render_end:
+            _write_duration_line(log_file, "Finalizing", max(0.0, final_end - render_end))
+        _write_duration_line(log_file, "Total", max(0.0, final_end - start))
     except Exception:
         pass
 
@@ -270,11 +326,25 @@ def start_render(
     is_cancelled: Callable[[], bool] | None = None,
     on_progress: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
+    log_file_path: Path | None = None
+    try:
+        log_file_path = build_log_file_path(project_root, name="video_compare")
+    except Exception:
+        log_file_path = None
+
+    start_time = time.time()
+    prep_end: float | None = None
+    render_start: float | None = None
+    render_end: float | None = None
+    final_end: float | None = None
+
     run_json_path = project_root / "config" / "ui_last_run.json"
     try:
         run_json_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
+
+    _emit_progress(on_progress, PROGRESS_PREP_START, PREP_TEXT)
 
     payload = build_payload(
         videos=videos,
@@ -306,10 +376,17 @@ def start_render(
     if not main_py.exists():
         return {"status": "error", "error": "main_py_not_found"}
 
+    prep_end = time.time()
+    render_start = prep_end
+    _emit_progress(on_progress, PROGRESS_PREP_END, RENDER_TEXT)
+
+    env = os.environ.copy()
+    if log_file_path is not None:
+        env["IRVC_LOG_FILE"] = str(log_file_path)
+
     p = None
     try:
-        _emit_progress(on_progress, 0.0, "main.py l\u00e4uft\u2026 (Abbruch m\u00f6glich)")
-
+        cancelled = False
         total_ms_a = _extract_time_ms(slow_p) or 0
         total_ms_b = _extract_time_ms(fast_p) or 0
         total_ms = int(max(total_ms_a, total_ms_b))
@@ -325,6 +402,7 @@ def start_render(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=env,
         )
 
         q_lines: "queue.Queue[str]" = queue.Queue()
@@ -342,7 +420,7 @@ def start_render(
 
         last_ui_update = 0.0
         last_sec = 0.0
-        last_pct = -1.0
+        last_pct = PROGRESS_PREP_END
 
         time_re = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
         out_time_ms_re = re.compile(r"out_time_ms=(\d+)")
@@ -360,7 +438,8 @@ def start_render(
 
         while True:
             if is_cancelled is not None and is_cancelled():
-                _emit_progress(on_progress, max(0.0, last_pct), "Abbruch\u2026")
+                cancelled = True
+                _emit_progress(on_progress, max(0.0, last_pct), "Canceling…")
                 try:
                     if p is not None and p.pid:
                         subprocess.run(
@@ -436,15 +515,17 @@ def start_render(
                 if pct > 100.0:
                     pct = 100.0
 
-                if abs(pct - last_pct) >= 0.5 or pct >= 100.0:
-                    _emit_progress(on_progress, float(pct), f"Render l\u00e4uft\u2026 {pct:.0f}%")
-                    last_pct = pct
+                overall_pct = _map_render_progress(pct)
+                if abs(overall_pct - last_pct) >= 0.5 or overall_pct >= PROGRESS_RENDER_END:
+                    _emit_progress(on_progress, float(overall_pct), f"{RENDER_TEXT} {pct:.0f}%")
+                    last_pct = overall_pct
 
                 last_ui_update = now
 
+        render_end = time.time()
         cancelled = is_cancelled is not None and is_cancelled()
         if not cancelled:
-            _emit_progress(on_progress, 100.0, "")
+            _emit_progress(on_progress, PROGRESS_RENDER_END, FINAL_TEXT)
 
         try:
             if p is not None:
@@ -454,6 +535,9 @@ def start_render(
 
         if cancelled:
             return {"status": "cancelled"}
+
+        final_end = time.time()
+        _emit_progress(on_progress, PROGRESS_FINAL_END, DONE_TEXT)
         return {"status": "ok"}
     except Exception:
         return {"status": "error", "error": "render_failed"}
@@ -463,3 +547,7 @@ def start_render(
                 p.kill()
         except Exception:
             pass
+        final_end = final_end or time.time()
+        if render_end is None:
+            render_end = final_end
+        _log_stage_durations(log_file_path, start_time, prep_end, render_start, render_end, final_end)
