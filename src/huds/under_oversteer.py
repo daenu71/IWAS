@@ -91,13 +91,19 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
         plot_y0 = int(y0) + 2
         plot_y1 = int(y0 + h - 2)
 
-    curve_margin = 2
+    line_width = 2
+    curve_margin = max(3, int(line_width) + 1)
     curve_top = int(plot_y0 + curve_margin)
     curve_bottom = int(plot_y1 - curve_margin)
     if curve_bottom <= curve_top:
         curve_top = int(plot_y0)
         curve_bottom = int(plot_y1)
     curve_height = float(max(1, curve_bottom - curve_top))
+    pad_frac = max(
+        0.02,
+        min(0.06, (float(curve_margin) + 1.0) / max(1.0, curve_height)),
+    )
+    usable_frac_span = max(0.0, 1.0 - 2.0 * pad_frac)
 
     y_abs = 0.0
     try:
@@ -120,8 +126,10 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
         if vv > y_max:
             vv = y_max
         frac = (vv - y_min) / den
+        frac = _clamp_float(frac, 0.0, 1.0)
+        scaled_frac = pad_frac + frac * usable_frac_span
         span = float(curve_bottom - curve_top)
-        yy = float(curve_bottom) - (frac * span)
+        yy = float(curve_bottom) - (scaled_frac * span)
         yy = _clamp_float(yy, float(curve_top), float(curve_bottom))
         return int(round(yy))
 
@@ -289,13 +297,13 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
 
     if len(pts_slow) >= 2:
         try:
-            dr.line(pts_slow, fill=COL_SLOW_DARKRED, width=2)  # slow = red
+            dr.line(pts_slow, fill=COL_SLOW_DARKRED, width=line_width)  # slow = red
         except Exception:
             pass
 
     if len(pts_fast) >= 2:
         try:
-            dr.line(pts_fast, fill=COL_FAST_DARKBLUE, width=2)  # fast = blue
+            dr.line(pts_fast, fill=COL_FAST_DARKBLUE, width=line_width)  # fast = blue
         except Exception:
             pass
 
