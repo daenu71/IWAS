@@ -370,7 +370,8 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                 fallback_font_obj=font_axis_small,
             )
             try:
-                dr.text((int(x0 + 4), int(y0 + 2)), "Time delta", fill=COL_WHITE, font=font_title)
+                # Visible title is "Time Delta"; HUD key remains "Delta" (API contract).
+                dr.text((int(x0 + 4), int(y0 + 2)), "Time Delta", fill=COL_WHITE, font=font_title)
             except Exception as e:
                 if hud_dbg:
                     try:

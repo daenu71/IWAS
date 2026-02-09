@@ -3601,6 +3601,16 @@ def _render_hud_scroll_frames_png(
                             fallback_font_obj=d_layout.get("font_axis_small"),
                         )
                         try:
+                            # Visible title is "Time Delta"; HUD key remains "Delta" (API contract).
+                            static_dr_local.text(
+                                (4, int(d_layout["y_txt"])),
+                                "Time Delta",
+                                fill=COL_WHITE,
+                                font=d_layout.get("font_title"),
+                            )
+                        except Exception:
+                            pass
+                        try:
                             static_dr_local.line(
                                 [(0, int(d_y_zero)), (int(w) - 1, int(d_y_zero))],
                                 fill=(COL_SLOW_DARKRED[0], COL_SLOW_DARKRED[1], COL_SLOW_DARKRED[2], 200),
