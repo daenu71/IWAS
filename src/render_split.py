@@ -3311,8 +3311,8 @@ def _render_hud_scroll_frames_png(
 
                         sdeg = int(round(float(sv_cur) * 180.0 / math.pi))
                         fdeg = int(round(float(fv_cur) * 180.0 / math.pi))
-                        s_txt = f"{sdeg:+04d} deg"
-                        f_txt = f"{fdeg:+04d} deg"
+                        s_txt = f"{sdeg:+04d}°"
+                        f_txt = f"{fdeg:+04d}°"
 
                         gap_txt = 12
                         mx_txt = int(base_x) + int(st_layout["mx"])
