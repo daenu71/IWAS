@@ -44,20 +44,134 @@ RENDER_TEXT = "Rendering in progress..."
 FINAL_TEXT = "Finalizing..."
 DONE_TEXT = "Done."
 
-PROGRESS_PREP_START = 5.0
-PROGRESS_PREP_END = 30.0
-PROGRESS_RENDER_END = 95.0
 PROGRESS_FINAL_END = 100.0
 
 
-def _map_render_progress(pct: float) -> float:
-    span = PROGRESS_RENDER_END - PROGRESS_PREP_END
-    mapped = PROGRESS_PREP_END + (pct / 100.0) * span
-    if mapped < PROGRESS_PREP_END:
-        return PROGRESS_PREP_END
-    if mapped > PROGRESS_RENDER_END:
-        return PROGRESS_RENDER_END
+def _load_preparing_pct() -> float:
+    try:
+        raw = persistence._cfg_int("video_compare", "progress_preparing_time", 80)
+        pct = int(raw)
+    except Exception:
+        pct = 80
+    if pct < 0:
+        pct = 0
+    if pct > 100:
+        pct = 100
+    return float(pct)
+
+
+def _map_render_progress(pct: float, preparing_pct: float) -> float:
+    start = max(0.0, min(100.0, float(preparing_pct)))
+    span = max(0.0, PROGRESS_FINAL_END - start)
+    mapped = start + (pct / 100.0) * span
+    if mapped < start:
+        return start
+    if mapped > PROGRESS_FINAL_END:
+        return PROGRESS_FINAL_END
     return mapped
+
+
+class _HudPreparingMonitor:
+    POLL_INTERVAL = 0.35
+
+    def __init__(self, project_root: Path, target_pct: float):
+        self._target_pct = float(max(0.0, min(100.0, target_pct)))
+        self._hud_dir = project_root / "output" / "debug" / "hud_frames"
+        self._sync_cache_path = project_root / "output" / "debug" / "sync_cache.json"
+        self._expected_frames = 0
+        self._update_step = 1
+        self._last_pct = 0.0
+        self._last_emitted_count = 0
+        self._last_check = 0.0
+        self._sync_cache_mtime = 0.0
+        self._done = False
+
+    def _to_int(self, value: Any) -> int:
+        try:
+            return int(float(value))
+        except Exception:
+            return 0
+
+    def _refresh_expected_frames(self) -> None:
+        if self._target_pct <= 0.0 or self._done:
+            return
+        try:
+            stat = self._sync_cache_path.stat()
+        except Exception:
+            return
+        mtime = float(stat.st_mtime)
+        if mtime <= self._sync_cache_mtime:
+            return
+        self._sync_cache_mtime = mtime
+        try:
+            data = json.loads(self._sync_cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        cut_i0 = self._to_int(data.get("cut_i0", 0))
+        cut_i1 = self._to_int(data.get("cut_i1", 0))
+        frame_count = self._to_int(data.get("frame_count", 0))
+        candidate = max(0, cut_i1 - cut_i0)
+        if candidate <= 0 and frame_count > 0:
+            candidate = frame_count
+        if candidate <= 0:
+            candidate = self._to_int(data.get("frames", 0))
+        if candidate <= 0:
+            return
+        self._expected_frames = candidate
+        self._update_step = max(1, self._expected_frames // 20)
+        if self._update_step <= 0:
+            self._update_step = 1
+        self._last_emitted_count = 0
+        self._last_pct = 0.0
+
+    def _count_hud_pngs(self) -> int:
+        try:
+            if not self._hud_dir.exists():
+                return 0
+            count = 0
+            for entry in self._hud_dir.iterdir():
+                if not entry.is_file():
+                    continue
+                name = entry.name
+                if not name.startswith("hud_") or entry.suffix.lower() != ".png":
+                    continue
+                count += 1
+            return count
+        except Exception:
+            return 0
+
+    def poll(self, now: float) -> tuple[float | None, bool]:
+        if self._done or self._target_pct <= 0.0:
+            return None, False
+        if (now - self._last_check) < self.POLL_INTERVAL:
+            return None, False
+        self._last_check = now
+        self._refresh_expected_frames()
+        if self._expected_frames <= 0:
+            return None, False
+        current = self._count_hud_pngs()
+        if current <= 0:
+            return None, False
+        if current > self._expected_frames:
+            current = self._expected_frames
+        delta = current - self._last_emitted_count
+        if delta <= 0:
+            return None, False
+        if current >= self._expected_frames or delta >= self._update_step:
+            frac = float(current) / float(self._expected_frames)
+            frac = max(0.0, min(1.0, frac))
+            pct = frac * self._target_pct
+            if current >= self._expected_frames:
+                pct = self._target_pct
+            if pct < self._last_pct:
+                pct = self._last_pct
+            self._last_pct = pct
+            self._last_emitted_count = current
+            if current >= self._expected_frames:
+                self._done = True
+                return pct, True
+            return pct, False
+        return None, False
 
 
 def _write_duration_line(log_file: Path | None, step: str, seconds: float) -> None:
@@ -338,13 +452,21 @@ def start_render(
     render_end: float | None = None
     final_end: float | None = None
 
+    preparing_pct = _load_preparing_pct()
+    preparing_done = preparing_pct <= 0.0
+    hud_monitor = _HudPreparingMonitor(project_root, target_pct=preparing_pct)
+    if preparing_done:
+        prep_end = start_time
+        render_start = start_time
+        _emit_progress(on_progress, 0.0, RENDER_TEXT)
+    else:
+        _emit_progress(on_progress, 0.0, PREP_TEXT)
+
     run_json_path = project_root / "config" / "ui_last_run.json"
     try:
         run_json_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-
-    _emit_progress(on_progress, PROGRESS_PREP_START, PREP_TEXT)
 
     payload = build_payload(
         videos=videos,
@@ -375,10 +497,6 @@ def start_render(
     main_py = project_root / "src" / "main.py"
     if not main_py.exists():
         return {"status": "error", "error": "main_py_not_found"}
-
-    prep_end = time.time()
-    render_start = prep_end
-    _emit_progress(on_progress, PROGRESS_PREP_END, RENDER_TEXT)
 
     env = os.environ.copy()
     if log_file_path is not None:
@@ -420,7 +538,7 @@ def start_render(
 
         last_ui_update = 0.0
         last_sec = 0.0
-        last_pct = PROGRESS_PREP_END
+        last_pct = float(preparing_pct if preparing_done else 0.0)
 
         time_re = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
         out_time_ms_re = re.compile(r"out_time_ms=(\d+)")
@@ -508,24 +626,45 @@ def start_render(
                         pass
 
             now = time.time()
-            if total_sec > 0 and (now - last_ui_update) >= 1.0:
+            if not preparing_done:
+                prep_pct, finished = hud_monitor.poll(now)
+                if prep_pct is not None:
+                    _emit_progress(on_progress, float(prep_pct), PREP_TEXT)
+                    if prep_pct > last_pct:
+                        last_pct = float(prep_pct)
+                if finished:
+                    preparing_done = True
+                    prep_end = now
+                    if render_start is None:
+                        render_start = now
+                    _emit_progress(on_progress, float(preparing_pct), RENDER_TEXT)
+                    last_pct = float(preparing_pct)
+            if preparing_done and total_sec > 0 and preparing_pct < PROGRESS_FINAL_END and (now - last_ui_update) >= 1.0:
                 pct = (last_sec / total_sec) * 100.0
                 if pct < 0.0:
                     pct = 0.0
                 if pct > 100.0:
                     pct = 100.0
 
-                overall_pct = _map_render_progress(pct)
-                if abs(overall_pct - last_pct) >= 0.5 or overall_pct >= PROGRESS_RENDER_END:
+                overall_pct = _map_render_progress(pct, preparing_pct)
+                if abs(overall_pct - last_pct) >= 0.5 or overall_pct >= PROGRESS_FINAL_END:
                     _emit_progress(on_progress, float(overall_pct), f"{RENDER_TEXT} {pct:.0f}%")
                     last_pct = overall_pct
 
                 last_ui_update = now
 
+        if not preparing_done and preparing_pct > 0.0:
+            now = time.time()
+            prep_end = prep_end or now
+            render_start = render_start or now
+            preparing_done = True
+            _emit_progress(on_progress, float(preparing_pct), RENDER_TEXT)
+            last_pct = float(preparing_pct)
+
         render_end = time.time()
         cancelled = is_cancelled is not None and is_cancelled()
         if not cancelled:
-            _emit_progress(on_progress, PROGRESS_RENDER_END, FINAL_TEXT)
+            _emit_progress(on_progress, PROGRESS_FINAL_END, FINAL_TEXT)
 
         try:
             if p is not None:
