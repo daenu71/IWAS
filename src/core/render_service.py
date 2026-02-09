@@ -182,6 +182,38 @@ def _write_duration_line(log_file: Path | None, step: str, seconds: float) -> No
         pass
 
 
+def _log_cleanup_error(log_file: Path | None, message: str) -> None:
+    if log_file is None:
+        return
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(f"[Cleanup HUD Frames] {message}\n")
+    except Exception:
+        pass
+
+
+def _cleanup_hud_frames_dir(hud_dir: Path, log_file: Path | None) -> None:
+    start = time.perf_counter()
+    try:
+        if not hud_dir.exists() or not hud_dir.is_dir():
+            return
+        for entry in hud_dir.iterdir():
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() != ".png":
+                continue
+            try:
+                entry.unlink()
+            except Exception as exc:  # pylint: disable=broad-except
+                _log_cleanup_error(log_file, f"failed to delete {entry.name}: {exc}")
+    except Exception as exc:  # pylint: disable=broad-except
+        _log_cleanup_error(log_file, f"failed to list {hud_dir}: {exc}")
+    finally:
+        duration = time.perf_counter() - start
+        _write_duration_line(log_file, "Cleanup HUD Frames", duration)
+
+
 def _log_stage_durations(
     log_file: Path | None,
     start: float,
@@ -443,6 +475,7 @@ def start_render(
         log_file_path = None
 
     start_time = time.time()
+    hud_frames_dir = project_root / "output" / "debug" / "hud_frames"
     prep_end: float | None = None
     render_start: float | None = None
     render_end: float | None = None
@@ -673,6 +706,10 @@ def start_render(
 
         final_end = time.time()
         _emit_progress(on_progress, PROGRESS_FINAL_END, DONE_TEXT)
+        if out_path.exists():
+            _cleanup_hud_frames_dir(hud_frames_dir, log_file_path)
+        else:
+            _log_cleanup_error(log_file_path, f"skipping cleanup because output missing: {out_path}")
         return {"status": "ok"}
     except Exception:
         return {"status": "error", "error": "render_failed"}
