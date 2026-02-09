@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core import persistence
-from core.log import build_log_file_path
+from log import build_log_file_path
 from core.models import AppModel, OutputFormat, RenderPayload
 
 
