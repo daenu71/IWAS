@@ -513,45 +513,38 @@ def _csv_time_axis_or_fallback(run, duration_s: float) -> list[float]:
         out.append(float(i) * dt)
     return out
 
-def _sample_csv_col_to_frames_float(csv_path: Path, duration_s: float, fps: float, col: str) -> list[float]:
-    from csv_g61 import get_float_col, has_col, load_g61_csv
-    run = load_g61_csv(csv_path)
+def _sample_csv_col_to_frames_float(run: Any, duration_s: float, fps: float, col: str) -> list[float]:
+    from csv_g61 import has_col, sample_float_cols_to_frames
+    if run is None:
+        return []
     if not has_col(run, col):
         return []
     t = _force_strictly_increasing(_csv_time_axis_or_fallback(run, duration_s))
-    y = get_float_col(run, col)
-    if not t or not y or len(t) != len(y):
+    if not t:
         return []
-    n_frames = int(math.floor(max(0.0, float(duration_s)) * float(fps)))
-    if n_frames <= 0:
-        n_frames = 1
+    sampled = sample_float_cols_to_frames(
+        run,
+        time_axis_s=t,
+        duration_s=duration_s,
+        fps=fps,
+        cols=[col],
+    )
+    arr = sampled.get(str(col))
+    if arr is None:
+        return []
+    try:
+        n = int(arr.size)
+    except Exception:
+        n = len(arr) if isinstance(arr, list) else 0
+    if n <= 0:
+        return []
+    try:
+        return [float(v) for v in arr.tolist()]
+    except Exception:
+        return [float(v) for v in arr]
 
-    out: list[float] = []
-    j = 0
-    for i in range(n_frames):
-        ti = float(i) / max(1.0, float(fps))
-        while (j + 1) < len(t) and t[j + 1] <= ti:
-            j += 1
-        if (j + 1) >= len(t):
-            out.append(float(y[-1]))
-            continue
-        t0 = float(t[j])
-        t1 = float(t[j + 1])
-        v0 = float(y[j])
-        v1 = float(y[j + 1])
-        if t1 <= t0:
-            out.append(v0)
-        else:
-            a = (ti - t0) / (t1 - t0)
-            if a < 0.0:
-                a = 0.0
-            if a > 1.0:
-                a = 1.0
-            out.append(v0 * (1.0 - a) + v1 * a)
-    return out
-
-def _sample_csv_col_to_frames_int_nearest(csv_path: Path, duration_s: float, fps: float, col: str) -> list[int]:
-    ys = _sample_csv_col_to_frames_float(csv_path, duration_s, fps, col)
+def _sample_csv_col_to_frames_int_nearest(run: Any, duration_s: float, fps: float, col: str) -> list[int]:
+    ys = _sample_csv_col_to_frames_float(run, duration_s, fps, col)
     if not ys:
         return []
     out: list[int] = []
@@ -572,8 +565,10 @@ def _build_line_delta_frames_from_csv(
     fps: float,
     slow_frame_to_fast_time_s: list[float] | None,
     frame_count_hint: int,
+    run_s: Any | None = None,
+    run_f: Any | None = None,
 ) -> list[float]:
-    from csv_g61 import get_float_col, has_col, load_g61_csv
+    from csv_g61 import has_col, load_g61_csv, sample_float_cols_to_frames
 
     def _is_finite(v: Any) -> bool:
         try:
@@ -683,8 +678,8 @@ def _build_line_delta_frames_from_csv(
         if n_out <= 0:
             return []
 
-        run_s = load_g61_csv(slow_csv)
-        run_f = load_g61_csv(fast_csv)
+        run_s = run_s if run_s is not None else load_g61_csv(slow_csv)
+        run_f = run_f if run_f is not None else load_g61_csv(fast_csv)
         for req in ("Lat", "Lon", "LapDistPct"):
             if not has_col(run_s, req):
                 return []
@@ -694,11 +689,27 @@ def _build_line_delta_frames_from_csv(
 
         t_s_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_s, slow_duration_s))
         t_f_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_f, fast_duration_s))
-        lat_s_raw = get_float_col(run_s, "Lat")
-        lon_s_raw = get_float_col(run_s, "Lon")
-        lat_f_raw = get_float_col(run_f, "Lat")
-        lon_f_raw = get_float_col(run_f, "Lon")
-        ld_s_raw = get_float_col(run_s, "LapDistPct")
+        sampled_s = sample_float_cols_to_frames(
+            run_s,
+            time_axis_s=t_s_raw,
+            duration_s=slow_duration_s,
+            fps=fps_safe,
+            cols=["Lat", "Lon", "LapDistPct"],
+            target_times_s=t_s_raw,
+        )
+        sampled_f = sample_float_cols_to_frames(
+            run_f,
+            time_axis_s=t_f_raw,
+            duration_s=fast_duration_s,
+            fps=fps_safe,
+            cols=["Lat", "Lon"],
+            target_times_s=t_f_raw,
+        )
+        lat_s_raw = [float(v) for v in sampled_s.get("Lat", []).tolist()] if "Lat" in sampled_s else []
+        lon_s_raw = [float(v) for v in sampled_s.get("Lon", []).tolist()] if "Lon" in sampled_s else []
+        lat_f_raw = [float(v) for v in sampled_f.get("Lat", []).tolist()] if "Lat" in sampled_f else []
+        lon_f_raw = [float(v) for v in sampled_f.get("Lon", []).tolist()] if "Lon" in sampled_f else []
+        ld_s_raw = [float(v) for v in sampled_s.get("LapDistPct", []).tolist()] if "LapDistPct" in sampled_s else []
 
         lat0 = None
         lon0 = None
@@ -816,8 +827,10 @@ def _build_under_oversteer_proxy_frames_from_csv(
     frame_count_hint: int,
     under_oversteer_curve_center: float = 0.0,
     log_file: Path | None = None,
+    run_s: Any | None = None,
+    run_f: Any | None = None,
 ) -> tuple[list[float], list[float], float]:
-    from csv_g61 import get_float_col, has_col, load_g61_csv
+    from csv_g61 import has_col, load_g61_csv, sample_float_cols_to_frames
 
     def _wrap_angle_pi(rad: float) -> float:
         two_pi = 2.0 * math.pi
@@ -1004,8 +1017,8 @@ def _build_under_oversteer_proxy_frames_from_csv(
             _uo_log("early_return reason=nonpositive_output_frames")
             return [], [], 1.0
 
-        run_s = load_g61_csv(slow_csv)
-        run_f = load_g61_csv(fast_csv)
+        run_s = run_s if run_s is not None else load_g61_csv(slow_csv)
+        run_f = run_f if run_f is not None else load_g61_csv(fast_csv)
 
         for req in ("Lat", "Lon", "Yaw"):
             has_s = bool(has_col(run_s, req))
@@ -1020,12 +1033,28 @@ def _build_under_oversteer_proxy_frames_from_csv(
 
         t_s_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_s, slow_duration_s))
         t_f_raw = _force_strictly_increasing(_csv_time_axis_or_fallback(run_f, fast_duration_s))
-        lat_s_raw = get_float_col(run_s, "Lat")
-        lon_s_raw = get_float_col(run_s, "Lon")
-        lat_f_raw = get_float_col(run_f, "Lat")
-        lon_f_raw = get_float_col(run_f, "Lon")
-        yaw_s_raw = get_float_col(run_s, "Yaw")
-        yaw_f_raw = get_float_col(run_f, "Yaw")
+        sampled_s = sample_float_cols_to_frames(
+            run_s,
+            time_axis_s=t_s_raw,
+            duration_s=slow_duration_s,
+            fps=fps_safe,
+            cols=["Lat", "Lon", "Yaw"],
+            target_times_s=t_s_raw,
+        )
+        sampled_f = sample_float_cols_to_frames(
+            run_f,
+            time_axis_s=t_f_raw,
+            duration_s=fast_duration_s,
+            fps=fps_safe,
+            cols=["Lat", "Lon", "Yaw"],
+            target_times_s=t_f_raw,
+        )
+        lat_s_raw = [float(v) for v in sampled_s.get("Lat", []).tolist()] if "Lat" in sampled_s else []
+        lon_s_raw = [float(v) for v in sampled_s.get("Lon", []).tolist()] if "Lon" in sampled_s else []
+        lat_f_raw = [float(v) for v in sampled_f.get("Lat", []).tolist()] if "Lat" in sampled_f else []
+        lon_f_raw = [float(v) for v in sampled_f.get("Lon", []).tolist()] if "Lon" in sampled_f else []
+        yaw_s_raw = [float(v) for v in sampled_s.get("Yaw", []).tolist()] if "Yaw" in sampled_s else []
+        yaw_f_raw = [float(v) for v in sampled_f.get("Yaw", []).tolist()] if "Yaw" in sampled_f else []
 
         if dbg_enabled:
             t_s_dt = _uo_inferred_dt(t_s_raw)
@@ -1606,14 +1635,16 @@ def _build_sync_cache_maps_from_csv(
     fps: float,
     slow_duration_s: float,
     fast_duration_s: float,
+    run_s: Any | None = None,
+    run_f: Any | None = None,
 ) -> tuple[list[int], list[float], list[float], list[float] | None]:
     # Wie bisher: Slow->Fast Mapping + LapDist pro Slow-Frame
     # Neu: zusÃ¤tzlich Fast-Zeit pro Slow-Frame (fÃ¼r Stream-Sync / Segment-Warp)
     # Neu: optional Speed-Differenz pro Slow-Frame (fÃ¼r dynamische Segmentierung)
     from csv_g61 import get_float_col, has_col, load_g61_csv
 
-    run_s = load_g61_csv(slow_csv)
-    run_f = load_g61_csv(fast_csv)
+    run_s = run_s if run_s is not None else load_g61_csv(slow_csv)
+    run_f = run_f if run_f is not None else load_g61_csv(fast_csv)
 
     ld_s = get_float_col(run_s, "LapDistPct")
     ld_f = get_float_col(run_f, "LapDistPct")
@@ -2623,6 +2654,69 @@ def _render_hud_scroll_frames_png(
         composed_region = Image.alpha_composite(dst_region, src_region)
         frame_img_local.paste(composed_region, (int(cx0), int(cy0)))
 
+    fps_mapping_safe = float(r) if float(r) > 1e-6 else 30.0
+    slow_frame_count_total = max(0, int(len(slow_frame_to_lapdist)))
+    fast_frame_hi = int(fast_frame_count) - 1 if int(fast_frame_count) > 0 else None
+    slow_to_fast_len = int(len(slow_to_fast_frame)) if slow_to_fast_frame else 0
+    slow_to_fast_time_len = int(len(slow_frame_to_fast_time_s)) if slow_frame_to_fast_time_s else 0
+
+    def _clamp_idx_int(v: int, lo: int, hi: int) -> int:
+        if v < int(lo):
+            return int(lo)
+        if v > int(hi):
+            return int(hi)
+        return int(v)
+
+    def _mapped_fast_idx_for_slow_idx(idx0: int) -> int:
+        ii = int(idx0)
+        fi = int(ii)
+        if slow_to_fast_frame and 0 <= int(ii) < int(slow_to_fast_len):
+            try:
+                fi = int(slow_to_fast_frame[ii])
+            except Exception:
+                fi = int(ii)
+        if fi < 0:
+            fi = 0
+        if fast_frame_hi is not None and fi > int(fast_frame_hi):
+            fi = int(fast_frame_hi)
+        return int(fi)
+
+    def _mapped_t_slow_for_slow_idx(idx0: int) -> float:
+        return float(int(idx0)) / float(fps_mapping_safe)
+
+    def _mapped_t_fast_for_slow_idx(idx0: int) -> float:
+        ii = int(idx0)
+        fi = _mapped_fast_idx_for_slow_idx(int(ii))
+        if slow_to_fast_time_len > 0 and 0 <= int(ii) < int(slow_to_fast_time_len):
+            try:
+                return float(slow_frame_to_fast_time_s[ii])
+            except Exception:
+                return float(fi) / float(fps_mapping_safe)
+        return float(fi) / float(fps_mapping_safe)
+
+    def _tb_fast_idx_for_slow_idx(idx0: int) -> int:
+        ii = int(idx0)
+        fi = _mapped_fast_idx_for_slow_idx(int(ii))
+        if slow_to_fast_frame and 0 <= int(ii) < int(slow_to_fast_len):
+            try:
+                fi = int(slow_to_fast_frame[ii])
+                if fi < 0:
+                    fi = 0
+            except Exception:
+                pass
+        return int(fi)
+
+    verify_frame_map = (os.environ.get("IRVC_VERIFY_FRAME_MAP") or "0").strip().lower() in ("1", "true", "yes", "on")
+    verify_js: set[int] = set()
+    if verify_frame_map and int(frames) > 0:
+        verify_js.add(0)
+        if int(frames) > 1:
+            verify_js.add(1)
+        if int(frames) > 2:
+            verify_js.add(2)
+        verify_js.add(int(frames) // 2)
+        verify_js.add(int(frames) - 1)
+
     for j in range(frames):
 
         
@@ -2635,17 +2729,43 @@ def _render_hud_scroll_frames_png(
 
         ld = float(slow_frame_to_lapdist[i]) % 1.0
         ld_mod = ld % step
-        frame_window_mapping = _build_frame_window_mapping(
-            i=int(i),
-            before_f=int(global_before_f),
-            after_f=int(global_after_f),
-            fps=float(r),
-            slow_frame_count=len(slow_frame_to_lapdist),
-            fast_frame_count=int(fast_frame_count),
-            slow_to_fast_frame=slow_to_fast_frame,
-            slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
-        )
-
+        if verify_frame_map and int(j) in verify_js:
+            old_map_dbg = _build_frame_window_mapping(
+                i=int(i),
+                before_f=int(global_before_f),
+                after_f=int(global_after_f),
+                fps=float(r),
+                slow_frame_count=len(slow_frame_to_lapdist),
+                fast_frame_count=int(fast_frame_count),
+                slow_to_fast_frame=slow_to_fast_frame,
+                slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
+            )
+            idxs_dbg = list(getattr(old_map_dbg, "idxs", []) or [])
+            ts_dbg = list(getattr(old_map_dbg, "t_slow", []) or [])
+            fi_dbg = list(getattr(old_map_dbg, "fast_idx", []) or [])
+            tf_dbg = list(getattr(old_map_dbg, "t_fast", []) or [])
+            n_dbg = int(len(idxs_dbg))
+            if not (int(len(ts_dbg)) == n_dbg and int(len(fi_dbg)) == n_dbg and int(len(tf_dbg)) == n_dbg):
+                raise AssertionError(f"[verify-map] inconsistent old mapping lengths at j={int(j)} i={int(i)}")
+            for k_dbg in range(n_dbg):
+                idx_dbg = int(idxs_dbg[k_dbg])
+                fi_old = int(fi_dbg[k_dbg])
+                ts_old = float(ts_dbg[k_dbg])
+                tf_old = float(tf_dbg[k_dbg])
+                fi_new = int(_mapped_fast_idx_for_slow_idx(int(idx_dbg)))
+                ts_new = float(_mapped_t_slow_for_slow_idx(int(idx_dbg)))
+                tf_new = float(_mapped_t_fast_for_slow_idx(int(idx_dbg)))
+                if (
+                    int(fi_new) != int(fi_old)
+                    or abs(float(ts_new) - float(ts_old)) > 1e-12
+                    or abs(float(tf_new) - float(tf_old)) > 1e-12
+                ):
+                    raise AssertionError(
+                        f"[verify-map] mismatch j={int(j)} i={int(i)} idx={int(idx_dbg)} "
+                        f"fi_old={int(fi_old)} fi_new={int(fi_new)} "
+                        f"ts_old={float(ts_old):+.12f} ts_new={float(ts_new):+.12f} "
+                        f"tf_old={float(tf_old):+.12f} tf_new={float(tf_new):+.12f}"
+                    )
 
         # Table-HUDs (Speed, Gear & RPM) als Text
         if table_items and slow_to_fast_frame and i < len(slow_to_fast_frame):
@@ -2755,9 +2875,6 @@ def _render_hud_scroll_frames_png(
                 is_line_delta = str(hud_key) == "Line Delta"
                 is_under_oversteer = str(hud_key) == "Under-/Oversteer"
                 tb_layout: dict[str, Any] = {}
-                tb_map_idx_to_t_slow: dict[int, float] = {}
-                tb_map_idx_to_t_fast: dict[int, float] = {}
-                tb_map_idx_to_fast_idx: dict[int, int] = {}
                 tb_seconds_per_col = 0.0
                 tb_abs_window_s = 0.0
                 tb_fps_safe = 30.0
@@ -2789,20 +2906,6 @@ def _render_hud_scroll_frames_png(
                         ):
                             use_cached_tb = True
                 if is_throttle_brake and use_cached_tb:
-                    map_idxs_all_tb = list(getattr(frame_window_mapping, "idxs", []) or [])
-                    map_t_slow_all_tb = list(getattr(frame_window_mapping, "t_slow", []) or [])
-                    map_t_fast_all_tb = list(getattr(frame_window_mapping, "t_fast", []) or [])
-                    map_fast_idx_all_tb = list(getattr(frame_window_mapping, "fast_idx", []) or [])
-                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_slow_all_tb):
-                        for idx_m, ts_m in zip(map_idxs_all_tb, map_t_slow_all_tb):
-                            tb_map_idx_to_t_slow[int(idx_m)] = float(ts_m)
-                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_fast_all_tb):
-                        for idx_m, tf_m in zip(map_idxs_all_tb, map_t_fast_all_tb):
-                            tb_map_idx_to_t_fast[int(idx_m)] = float(tf_m)
-                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_fast_idx_all_tb):
-                        for idx_m, fi_m in zip(map_idxs_all_tb, map_fast_idx_all_tb):
-                            tb_map_idx_to_fast_idx[int(idx_m)] = int(fi_m)
-
                     tb_fps_safe = float(fps) if (math.isfinite(float(fps)) and float(fps) > 1e-6) else 30.0
                     tb_abs_window_s = float(max(0, int(hud_pedals_abs_debounce_ms))) / 1000.0
                     tb_seconds_per_col = float(window_frames) / max(1.0, float(w)) / max(1e-6, float(tb_fps_safe))
@@ -2838,20 +2941,6 @@ def _render_hud_scroll_frames_png(
                             tb_fast_abs_prefix.append(acc_f_pref)
 
                 if is_throttle_brake and (not use_cached_tb):
-                    map_idxs_all_tb = list(getattr(frame_window_mapping, "idxs", []) or [])
-                    map_t_slow_all_tb = list(getattr(frame_window_mapping, "t_slow", []) or [])
-                    map_t_fast_all_tb = list(getattr(frame_window_mapping, "t_fast", []) or [])
-                    map_fast_idx_all_tb = list(getattr(frame_window_mapping, "fast_idx", []) or [])
-                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_slow_all_tb):
-                        for idx_m, ts_m in zip(map_idxs_all_tb, map_t_slow_all_tb):
-                            tb_map_idx_to_t_slow[int(idx_m)] = float(ts_m)
-                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_fast_all_tb):
-                        for idx_m, tf_m in zip(map_idxs_all_tb, map_t_fast_all_tb):
-                            tb_map_idx_to_t_fast[int(idx_m)] = float(tf_m)
-                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_fast_idx_all_tb):
-                        for idx_m, fi_m in zip(map_idxs_all_tb, map_fast_idx_all_tb):
-                            tb_map_idx_to_fast_idx[int(idx_m)] = int(fi_m)
-
                     tb_fps_safe = float(fps) if (math.isfinite(float(fps)) and float(fps) > 1e-6) else 30.0
                     tb_abs_window_s = float(max(0, int(hud_pedals_abs_debounce_ms))) / 1000.0
                     tb_seconds_per_col = float(window_frames) / max(1.0, float(w)) / max(1e-6, float(tb_fps_safe))
@@ -3046,18 +3135,9 @@ def _render_hud_scroll_frames_png(
                         if idx_slow >= len(slow_frame_to_lapdist):
                             idx_slow = len(slow_frame_to_lapdist) - 1
 
-                        t_slow = float(tb_map_idx_to_t_slow.get(int(idx_slow), float(idx_slow) / float(tb_fps_safe)))
-                        t_fast = float(tb_map_idx_to_t_fast.get(int(idx_slow), _tb_fast_time_from_slow_idx(int(idx_slow))))
-                        fi_map = int(tb_map_idx_to_fast_idx.get(int(idx_slow), int(idx_slow)))
-                        if fi_map < 0:
-                            fi_map = 0
-                        if slow_to_fast_frame and int(idx_slow) < len(slow_to_fast_frame):
-                            try:
-                                fi_map = int(slow_to_fast_frame[int(idx_slow)])
-                                if fi_map < 0:
-                                    fi_map = 0
-                            except Exception:
-                                pass
+                        t_slow = float(_mapped_t_slow_for_slow_idx(int(idx_slow)))
+                        t_fast = float(_mapped_t_fast_for_slow_idx(int(idx_slow)))
+                        fi_map = int(_tb_fast_idx_for_slow_idx(int(idx_slow)))
 
                         if hud_pedals_sample_mode == "time":
                             s_t = _tb_sample_linear_time(slow_throttle_frames, float(t_slow))
@@ -3314,22 +3394,7 @@ def _render_hud_scroll_frames_png(
                             and st_layout
                         ):
                             use_cached_st = True
-                if is_steering and use_cached_st:
-                    st_map_idx_to_fast_idx = {}
-                    map_idxs_all_st = list(getattr(frame_window_mapping, "idxs", []) or [])
-                    map_fast_idx_all_st = list(getattr(frame_window_mapping, "fast_idx", []) or [])
-                    if map_idxs_all_st and len(map_idxs_all_st) == len(map_fast_idx_all_st):
-                        for idx_m_st, fi_m_st in zip(map_idxs_all_st, map_fast_idx_all_st):
-                            st_map_idx_to_fast_idx[int(idx_m_st)] = int(fi_m_st)
-
                 if is_steering and (not use_cached_st):
-                    st_map_idx_to_fast_idx: dict[int, int] = {}
-                    map_idxs_all_st = list(getattr(frame_window_mapping, "idxs", []) or [])
-                    map_fast_idx_all_st = list(getattr(frame_window_mapping, "fast_idx", []) or [])
-                    if map_idxs_all_st and len(map_idxs_all_st) == len(map_fast_idx_all_st):
-                        for idx_m_st, fi_m_st in zip(map_idxs_all_st, map_fast_idx_all_st):
-                            st_map_idx_to_fast_idx[int(idx_m_st)] = int(fi_m_st)
-
                     st_layout_sig = (int(w), int(h))
                     if renderer_state.helpers.get("st_layout_sig") != st_layout_sig or ("st" not in renderer_state.layout):
                         try:
@@ -3393,18 +3458,7 @@ def _render_hud_scroll_frames_png(
                         ii = int(idx0)
                         if ii < 0:
                             ii = 0
-                        has_map = int(ii) in st_map_idx_to_fast_idx
-                        fi_map = int(st_map_idx_to_fast_idx.get(int(ii), int(ii)))
-                        if fi_map < 0:
-                            fi_map = 0
-                        if (not has_map) and slow_to_fast_frame and int(ii) < len(slow_to_fast_frame):
-                            try:
-                                fi_map = int(slow_to_fast_frame[int(ii)])
-                                if fi_map < 0:
-                                    fi_map = 0
-                            except Exception:
-                                pass
-                        return int(fi_map)
+                        return int(_mapped_fast_idx_for_slow_idx(int(ii)))
 
                     def _st_sample_legacy(vals: list[float] | None, idx_base: int, scale: float) -> float:
                         if not vals:
@@ -3625,32 +3679,7 @@ def _render_hud_scroll_frames_png(
                             and d_layout
                         ):
                             use_cached_d = True
-                if is_delta and use_cached_d:
-                    d_map_idx_to_t_slow = {}
-                    d_map_idx_to_t_fast = {}
-                    map_idxs_all_d = list(getattr(frame_window_mapping, "idxs", []) or [])
-                    map_t_slow_all_d = list(getattr(frame_window_mapping, "t_slow", []) or [])
-                    map_t_fast_all_d = list(getattr(frame_window_mapping, "t_fast", []) or [])
-                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_slow_all_d):
-                        for idx_m_d, ts_m_d in zip(map_idxs_all_d, map_t_slow_all_d):
-                            d_map_idx_to_t_slow[int(idx_m_d)] = float(ts_m_d)
-                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_fast_all_d):
-                        for idx_m_d, tf_m_d in zip(map_idxs_all_d, map_t_fast_all_d):
-                            d_map_idx_to_t_fast[int(idx_m_d)] = float(tf_m_d)
-
                 if is_delta and (not use_cached_d):
-                    d_map_idx_to_t_slow: dict[int, float] = {}
-                    d_map_idx_to_t_fast: dict[int, float] = {}
-                    map_idxs_all_d = list(getattr(frame_window_mapping, "idxs", []) or [])
-                    map_t_slow_all_d = list(getattr(frame_window_mapping, "t_slow", []) or [])
-                    map_t_fast_all_d = list(getattr(frame_window_mapping, "t_fast", []) or [])
-                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_slow_all_d):
-                        for idx_m_d, ts_m_d in zip(map_idxs_all_d, map_t_slow_all_d):
-                            d_map_idx_to_t_slow[int(idx_m_d)] = float(ts_m_d)
-                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_fast_all_d):
-                        for idx_m_d, tf_m_d in zip(map_idxs_all_d, map_t_fast_all_d):
-                            d_map_idx_to_t_fast[int(idx_m_d)] = float(tf_m_d)
-
                     d_layout_sig = (int(w), int(h))
                     if renderer_state.helpers.get("d_layout_sig") != d_layout_sig or ("d" not in renderer_state.layout):
                         d_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
@@ -3734,17 +3763,12 @@ def _render_hud_scroll_frames_png(
                     d_fps_safe = float(fps) if float(fps) > 0.1 else 30.0
 
                     def _d_delta_at_slow_frame(idx0: int) -> float:
-                        ii = int(idx0)
-                        if ii in d_map_idx_to_t_slow and ii in d_map_idx_to_t_fast:
-                            return float(d_map_idx_to_t_slow[ii] - d_map_idx_to_t_fast[ii])
-                        if not slow_frame_to_fast_time_s:
+                        if int(slow_frame_count_total) <= 0:
                             return 0.0
-                        if ii < 0:
-                            ii = 0
-                        if ii >= len(slow_frame_to_fast_time_s):
-                            ii = len(slow_frame_to_fast_time_s) - 1
-                        slow_t = float(ii) / float(d_fps_safe)
-                        fast_t = float(slow_frame_to_fast_time_s[ii])
+                        ii = int(idx0)
+                        ii = _clamp_idx_int(int(ii), 0, int(slow_frame_count_total) - 1)
+                        slow_t = float(_mapped_t_slow_for_slow_idx(int(ii)))
+                        fast_t = float(_mapped_t_fast_for_slow_idx(int(ii)))
                         return float(slow_t - fast_t)
 
                     def _d_sign_from_delta(dsec: float) -> int:
@@ -4590,7 +4614,7 @@ def _render_hud_scroll_frames_png(
                             "scroll_pos_px": scroll_pos_px_local,
                             "scroll_shift_int": shift_int_local,
                             "right_edge_cols": right_edge_cols_local,
-                            "frame_window_mapping": frame_window_mapping,
+                            "frame_window_mapping": None,
                             "fps": fps,
                             "_idx_to_x": _idx_to_x_local,
                             "_clamp": _clamp,
@@ -4627,7 +4651,7 @@ def _render_hud_scroll_frames_png(
                             "scroll_pos_px": scroll_pos_px_local,
                             "scroll_shift_int": shift_int_local,
                             "right_edge_cols": right_edge_cols_local,
-                            "frame_window_mapping": frame_window_mapping,
+                            "frame_window_mapping": None,
                             "mx": mx_local,
                             "_idx_to_x": _idx_to_x_local,
                             "slow_frame_to_fast_time_s": slow_frame_to_fast_time_s,
@@ -4656,7 +4680,7 @@ def _render_hud_scroll_frames_png(
                             "scroll_pos_px": scroll_pos_px_local,
                             "scroll_shift_int": shift_int_local,
                             "right_edge_cols": right_edge_cols_local,
-                            "frame_window_mapping": frame_window_mapping,
+                            "frame_window_mapping": None,
                             "slow_to_fast_frame": slow_to_fast_frame,
                             "slow_steer_frames": slow_steer_frames,
                             "fast_steer_frames": fast_steer_frames,
@@ -4700,7 +4724,7 @@ def _render_hud_scroll_frames_png(
                             "scroll_pos_px": scroll_pos_px_local,
                             "scroll_shift_int": shift_int_local,
                             "right_edge_cols": right_edge_cols_local,
-                            "frame_window_mapping": frame_window_mapping,
+                            "frame_window_mapping": None,
                             "line_delta_m_frames": line_delta_m_frames,
                             "line_delta_y_abs_m": line_delta_y_abs_m,
                             "COL_WHITE": COL_WHITE,
@@ -4719,7 +4743,7 @@ def _render_hud_scroll_frames_png(
                             "scroll_pos_px": scroll_pos_px_local,
                             "scroll_shift_int": shift_int_local,
                             "right_edge_cols": right_edge_cols_local,
-                            "frame_window_mapping": frame_window_mapping,
+                            "frame_window_mapping": None,
                             "under_oversteer_slow_frames": under_oversteer_slow_frames,
                             "under_oversteer_fast_frames": under_oversteer_fast_frames,
                             "under_oversteer_y_abs": under_oversteer_y_abs,
@@ -5650,6 +5674,21 @@ def render_split_screen_sync(
     outp = Path(outp).resolve()
     outp.parent.mkdir(parents=True, exist_ok=True)
 
+    from csv_g61 import load_g61_csv
+    csv_load_debug = (os.environ.get("IRVC_DEBUG_CSV_LOADS") or "").strip().lower() in ("1", "true", "yes", "on")
+    csv_load_counts: dict[str, int] = {}
+
+    def _load_run_once(label: str, path: Path):
+        run = load_g61_csv(path)
+        k = str(path)
+        csv_load_counts[k] = int(csv_load_counts.get(k, 0)) + 1
+        if csv_load_debug:
+            _log_print(f"[csv] load label={label} count={csv_load_counts[k]} path={k}", log_file)
+        return run
+
+    run_slow = _load_run_once("slow", scsv)
+    run_fast = _load_run_once("fast", fcsv)
+
     ms = probe_video_meta(slow)
     mf = probe_video_meta(fast)
 
@@ -5692,6 +5731,8 @@ def render_split_screen_sync(
         fps=float(fps_int),
         slow_duration_s=ms.duration_s,
         fast_duration_s=mf.duration_s,
+        run_s=run_slow,
+        run_f=run_fast,
     )
     
     # Debug: Sync-Map / Delta-Grundlage prÃ¼fen (warum Delta ggf. ~0 ist)
@@ -5731,22 +5772,22 @@ def render_split_screen_sync(
     
     
     # Story 5/6: Table-HUD Daten pro Frame (ohne Fenster)
-    slow_speed_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "Speed")
-    fast_speed_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "Speed")
-    slow_gear_frames = _sample_csv_col_to_frames_int_nearest(scsv, ms.duration_s, float(fps_int), "Gear")
-    fast_gear_frames = _sample_csv_col_to_frames_int_nearest(fcsv, mf.duration_s, float(fps_int), "Gear")
-    slow_rpm_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "RPM")
-    fast_rpm_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "RPM")
+    slow_speed_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "Speed")
+    fast_speed_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "Speed")
+    slow_gear_frames = _sample_csv_col_to_frames_int_nearest(run_slow, ms.duration_s, float(fps_int), "Gear")
+    fast_gear_frames = _sample_csv_col_to_frames_int_nearest(run_fast, mf.duration_s, float(fps_int), "Gear")
+    slow_rpm_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "RPM")
+    fast_rpm_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "RPM")
     # Story 3: Steering pro Frame (Scroll-HUD)
-    slow_steer_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "SteeringWheelAngle")
-    fast_steer_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "SteeringWheelAngle")
+    slow_steer_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "SteeringWheelAngle")
+    fast_steer_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "SteeringWheelAngle")
     # Story 4: Throttle / Brake / ABS pro Frame (Scroll-HUD)
-    slow_throttle_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "Throttle")
-    fast_throttle_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "Throttle")
-    slow_brake_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "Brake")
-    fast_brake_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "Brake")
-    slow_abs_frames = _sample_csv_col_to_frames_float(scsv, ms.duration_s, float(fps_int), "ABSActive")
-    fast_abs_frames = _sample_csv_col_to_frames_float(fcsv, mf.duration_s, float(fps_int), "ABSActive")
+    slow_throttle_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "Throttle")
+    fast_throttle_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "Throttle")
+    slow_brake_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "Brake")
+    fast_brake_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "Brake")
+    slow_abs_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "ABSActive")
+    fast_abs_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "ABSActive")
     line_delta_m_frames: list[float] = []
     line_delta_y_abs_m = 0.0
     under_oversteer_slow_frames: list[float] = []
@@ -5844,6 +5885,8 @@ def render_split_screen_sync(
                 fps=float(fps_int),
                 slow_frame_to_fast_time_s=slow_frame_to_fast_time_s,
                 frame_count_hint=len(slow_frame_to_lapdist),
+                run_s=run_slow,
+                run_f=run_fast,
             )
             abs_global_max = 0.0
             for dv in line_delta_m_frames:
@@ -5869,6 +5912,8 @@ def render_split_screen_sync(
                 frame_count_hint=len(slow_frame_to_lapdist),
                 under_oversteer_curve_center=float(under_oversteer_curve_center),
                 log_file=log_file,
+                run_s=run_slow,
+                run_f=run_fast,
             )
 
         # Story 4.2: per-HUD Overrides sind inaktiv; alle Scroll-HUDs nutzen globales Fenster.
@@ -6035,6 +6080,18 @@ def render_split_screen_sync(
     print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
 
     # 5) FFmpeg Run
+    if csv_load_debug:
+        parts: list[str] = []
+        for k in sorted(csv_load_counts.keys()):
+            parts.append(f"{k}={int(csv_load_counts[k])}")
+        summary = ", ".join(parts) if parts else "<none>"
+        _log_print(f"[csv] load_counts {summary}", log_file)
+        over = [k for k, v in csv_load_counts.items() if int(v) > 1]
+        if over:
+            _log_print(f"[csv] WARN more_than_once={','.join(over)}", log_file)
+        else:
+            _log_print("[csv] OK each_source_loaded_once", log_file)
+
     specs_by_vcodec = {enc.vcodec: enc for enc in encode_candidates}
 
     def _run_one_encoder(vcodec: str) -> tuple[int, bool]:
