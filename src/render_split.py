@@ -5,7 +5,7 @@ import math
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from encoders import (
@@ -246,6 +246,42 @@ class FrameWindowMapping:
     t_slow: list[float]
     fast_idx: list[int]
     t_fast: list[float]
+
+
+@dataclass
+class HudRendererState:
+    hud_key: str
+    x0: int
+    y0: int
+    w: int
+    h: int
+    geometry_signature: tuple[Any, ...]
+    first_frame: bool = True
+    fonts: dict[str, Any] = field(default_factory=dict)
+    layout: dict[str, Any] = field(default_factory=dict)
+    static_primitives: dict[str, Any] = field(default_factory=dict)
+    helpers: dict[str, Any] = field(default_factory=dict)
+
+
+def _load_hud_font(sz: int) -> Any:
+    try:
+        from PIL import ImageFont
+    except Exception:
+        ImageFont = None  # type: ignore
+    if ImageFont is None:
+        return None
+    try:
+        return ImageFont.truetype("arial.ttf", sz)
+    except Exception:
+        pass
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", sz)
+    except Exception:
+        pass
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
 
 
 def parse_output_preset(preset: str) -> tuple[int, int]:
@@ -2481,6 +2517,111 @@ def _render_hud_scroll_frames_png(
     # Story 2.2: Persistenter Subpixel-Scrollzustand pro Scroll-HUD-Instanz.
     # Key basiert auf HUD-Key + Box-Geometrie innerhalb der HUD-Spalte.
     scroll_state_by_hud: dict[str, dict[str, Any]] = {}
+    renderer_state_by_hud: dict[str, HudRendererState] = {}
+    active_table_items = _active_hud_items_for_frame(table_items)
+    active_scroll_items = _active_hud_items_for_frame(hud_items)
+    global_before_f = 1
+    global_after_f = 1
+    if active_scroll_items:
+        for hud_name_local, _x0, _y0, _w, _h in active_scroll_items:
+            b_s_h, a_s_h = _resolve_hud_window_seconds(str(hud_name_local))
+            bf_h = max(1, int(round(float(b_s_h) * float(r))))
+            af_h = max(1, int(round(float(a_s_h) * float(r))))
+            if bf_h > global_before_f:
+                global_before_f = int(bf_h)
+            if af_h > global_after_f:
+                global_after_f = int(af_h)
+
+    for hud_key_s, x0_s, y0_s, w_s, h_s in active_table_items:
+        hud_state_key_s = f"{str(hud_key_s)}|{int(x0_s)}|{int(y0_s)}|{int(w_s)}|{int(h_s)}"
+        renderer_state_by_hud[hud_state_key_s] = HudRendererState(
+            hud_key=str(hud_key_s),
+            x0=int(x0_s),
+            y0=int(y0_s),
+            w=int(w_s),
+            h=int(h_s),
+            geometry_signature=(int(w_s), int(h_s), float(r), 0, 0),
+            first_frame=True,
+        )
+
+    for hud_key_s, x0_s, y0_s, w_s, h_s in active_scroll_items:
+        before_s_h_s, after_s_h_s = _resolve_hud_window_seconds(str(hud_key_s))
+        before_f_s = max(1, int(round(float(before_s_h_s) * float(r))))
+        after_f_s = max(1, int(round(float(after_s_h_s) * float(r))))
+        if before_f_s != after_f_s:
+            win_f_s = max(int(before_f_s), int(after_f_s))
+            before_f_s = int(win_f_s)
+            after_f_s = int(win_f_s)
+        hud_state_key_s = f"{str(hud_key_s)}|{int(x0_s)}|{int(y0_s)}|{int(w_s)}|{int(h_s)}"
+        renderer_state_by_hud[hud_state_key_s] = HudRendererState(
+            hud_key=str(hud_key_s),
+            x0=int(x0_s),
+            y0=int(y0_s),
+            w=int(w_s),
+            h=int(h_s),
+            geometry_signature=(int(w_s), int(h_s), float(r), int(before_f_s), int(after_f_s)),
+            first_frame=True,
+        )
+
+    def _compose_hud_layers_local(
+        w_local: int,
+        h_local: int,
+        static_layer_local: Any | None,
+        dynamic_layer_local: Any | None,
+        value_layer_local: Any | None,
+    ) -> Any:
+        composed_local = Image.new("RGBA", (int(w_local), int(h_local)), (0, 0, 0, 0))
+        for layer_local in (static_layer_local, dynamic_layer_local, value_layer_local):
+            if layer_local is None:
+                continue
+            layer_rgba = layer_local if getattr(layer_local, "mode", "") == "RGBA" else layer_local.convert("RGBA")
+            if layer_rgba.size != composed_local.size:
+                fixed_layer = Image.new("RGBA", composed_local.size, (0, 0, 0, 0))
+                try:
+                    fixed_layer.paste(layer_rgba, (0, 0), layer_rgba)
+                except Exception:
+                    fixed_layer.paste(layer_rgba, (0, 0))
+                layer_rgba = fixed_layer
+            composed_local = Image.alpha_composite(composed_local, layer_rgba)
+        return composed_local
+
+    def _render_value_layer_local(w_local: int, h_local: int, draw_values_fn: Any | None) -> Any:
+        value_img_local = Image.new("RGBA", (int(w_local), int(h_local)), (0, 0, 0, 0))
+        if draw_values_fn is None:
+            return value_img_local
+        try:
+            value_dr_local = ImageDraw.Draw(value_img_local)
+            draw_values_fn(value_dr_local, 0, 0)
+        except Exception:
+            pass
+        return value_img_local
+
+    def _composite_hud_into_frame_local(
+        frame_img_local: Any,
+        hud_layer_local: Any,
+        dst_x_local: int,
+        dst_y_local: int,
+    ) -> None:
+        hud_rgba = hud_layer_local if getattr(hud_layer_local, "mode", "") == "RGBA" else hud_layer_local.convert("RGBA")
+        fx0 = int(dst_x_local)
+        fy0 = int(dst_y_local)
+        fx1 = int(fx0 + int(hud_rgba.size[0]))
+        fy1 = int(fy0 + int(hud_rgba.size[1]))
+        frame_w, frame_h = frame_img_local.size
+        cx0 = max(0, int(fx0))
+        cy0 = max(0, int(fy0))
+        cx1 = min(int(frame_w), int(fx1))
+        cy1 = min(int(frame_h), int(fy1))
+        if cx1 <= cx0 or cy1 <= cy0:
+            return
+        sx0 = int(cx0 - fx0)
+        sy0 = int(cy0 - fy0)
+        sx1 = int(sx0 + (cx1 - cx0))
+        sy1 = int(sy0 + (cy1 - cy0))
+        dst_region = frame_img_local.crop((int(cx0), int(cy0), int(cx1), int(cy1)))
+        src_region = hud_rgba.crop((int(sx0), int(sy0), int(sx1), int(sy1)))
+        composed_region = Image.alpha_composite(dst_region, src_region)
+        frame_img_local.paste(composed_region, (int(cx0), int(cy0)))
 
     for j in range(frames):
 
@@ -2494,19 +2635,6 @@ def _render_hud_scroll_frames_png(
 
         ld = float(slow_frame_to_lapdist[i]) % 1.0
         ld_mod = ld % step
-        active_table_items = _active_hud_items_for_frame(table_items)
-        active_scroll_items = _active_hud_items_for_frame(hud_items)
-        global_before_f = 1
-        global_after_f = 1
-        if active_scroll_items:
-            for hud_name_local, _x0, _y0, _w, _h in active_scroll_items:
-                b_s_h, a_s_h = _resolve_hud_window_seconds(str(hud_name_local))
-                bf_h = max(1, int(round(float(b_s_h) * float(r))))
-                af_h = max(1, int(round(float(a_s_h) * float(r))))
-                if bf_h > global_before_f:
-                    global_before_f = int(bf_h)
-                if af_h > global_after_f:
-                    global_after_f = int(af_h)
         frame_window_mapping = _build_frame_window_mapping(
             i=int(i),
             before_f=int(global_before_f),
@@ -2531,7 +2659,7 @@ def _render_hud_scroll_frames_png(
                         [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
                         fill=COL_HUD_BG,
                     )
-                    def _hud_table_speed() -> None:
+                    if str(hud_key) == "Speed":
                         speed_ctx = {
                             "fps": fps,
                             "i": i,
@@ -2556,8 +2684,7 @@ def _render_hud_scroll_frames_png(
                             "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
                         }
                         render_speed(speed_ctx, (x0, y0, w, h), dr)
-
-                    def _hud_table_gear_rpm() -> None:
+                    elif str(hud_key) == "Gear & RPM":
                         gear_rpm_ctx = {
                             "hud_key": hud_key,
                             "i": i,
@@ -2570,14 +2697,6 @@ def _render_hud_scroll_frames_png(
                             "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
                         }
                         render_gear_rpm(gear_rpm_ctx, (x0, y0, w, h), dr)
-
-                    table_renderers = {
-                        "Speed": _hud_table_speed,
-                        "Gear & RPM": _hud_table_gear_rpm,
-                    }
-                    fn_tbl = table_renderers.get(hud_key)
-                    if fn_tbl is not None:
-                        fn_tbl()
                 except Exception:
                     continue
 
@@ -2600,6 +2719,23 @@ def _render_hud_scroll_frames_png(
                 window_frames = max(1, int(before_f) + int(after_f) + 1)
                 hud_width_px = max(1, int(w))
                 shift_px_per_frame = float(hud_width_px) / float(window_frames)
+                hud_state_key = f"{str(hud_key)}|{int(x0)}|{int(y0)}|{int(w)}|{int(h)}"
+                state = scroll_state_by_hud.get(hud_state_key)
+                if state is None:
+                    state = {}
+                    scroll_state_by_hud[hud_state_key] = state
+                renderer_state = renderer_state_by_hud.get(hud_state_key)
+                if renderer_state is None:
+                    renderer_state = HudRendererState(
+                        hud_key=str(hud_key),
+                        x0=int(x0),
+                        y0=int(y0),
+                        w=int(w),
+                        h=int(h),
+                        geometry_signature=(int(w), int(h), float(r), int(before_f), int(after_f)),
+                        first_frame=True,
+                    )
+                    renderer_state_by_hud[hud_state_key] = renderer_state
 
                 # Fenster in Frames (Zeit-Achse): stabiler als LapDist-Spannen
                 iL = max(0, i - int(before_f))
@@ -2633,8 +2769,26 @@ def _render_hud_scroll_frames_png(
                 tb_a_fast_scale = 1.0
                 tb_slow_abs_prefix: list[int] = [0]
                 tb_fast_abs_prefix: list[int] = [0]
-
+                use_cached_tb = False
                 if is_throttle_brake:
+                    tb_cached = renderer_state.helpers.get("tb_fns")
+                    if isinstance(tb_cached, dict):
+                        tb_layout = dict(tb_cached.get("layout") or {})
+                        _tb_sample_column = tb_cached.get("sample_column")
+                        _tb_apply_abs_debounce = tb_cached.get("apply_abs_debounce")
+                        _tb_render_static_layer = tb_cached.get("render_static_layer")
+                        _tb_render_dynamic_full = tb_cached.get("render_dynamic_full")
+                        _tb_draw_values_overlay = tb_cached.get("draw_values_overlay")
+                        if (
+                            callable(_tb_sample_column)
+                            and callable(_tb_apply_abs_debounce)
+                            and callable(_tb_render_static_layer)
+                            and callable(_tb_render_dynamic_full)
+                            and callable(_tb_draw_values_overlay)
+                            and tb_layout
+                        ):
+                            use_cached_tb = True
+                if is_throttle_brake and use_cached_tb:
                     map_idxs_all_tb = list(getattr(frame_window_mapping, "idxs", []) or [])
                     map_t_slow_all_tb = list(getattr(frame_window_mapping, "t_slow", []) or [])
                     map_t_fast_all_tb = list(getattr(frame_window_mapping, "t_fast", []) or [])
@@ -2670,79 +2824,126 @@ def _render_hud_scroll_frames_png(
                     except Exception:
                         pass
 
-                    def _tb_load_font(sz: int):
-                        try:
-                            from PIL import ImageFont
-                        except Exception:
-                            ImageFont = None  # type: ignore
-                        if ImageFont is None:
-                            return None
-                        try:
-                            return ImageFont.truetype("arial.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.truetype("DejaVuSans.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.load_default()
-                        except Exception:
-                            return None
+                    tb_slow_abs_prefix = [0]
+                    if slow_abs_frames:
+                        acc_s_pref = 0
+                        for vv_pref in slow_abs_frames:
+                            acc_s_pref += 1 if float(vv_pref) >= 0.5 else 0
+                            tb_slow_abs_prefix.append(acc_s_pref)
+                    tb_fast_abs_prefix = [0]
+                    if fast_abs_frames:
+                        acc_f_pref = 0
+                        for vv_pref in fast_abs_frames:
+                            acc_f_pref += 1 if float(vv_pref) >= 0.5 else 0
+                            tb_fast_abs_prefix.append(acc_f_pref)
 
+                if is_throttle_brake and (not use_cached_tb):
+                    map_idxs_all_tb = list(getattr(frame_window_mapping, "idxs", []) or [])
+                    map_t_slow_all_tb = list(getattr(frame_window_mapping, "t_slow", []) or [])
+                    map_t_fast_all_tb = list(getattr(frame_window_mapping, "t_fast", []) or [])
+                    map_fast_idx_all_tb = list(getattr(frame_window_mapping, "fast_idx", []) or [])
+                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_slow_all_tb):
+                        for idx_m, ts_m in zip(map_idxs_all_tb, map_t_slow_all_tb):
+                            tb_map_idx_to_t_slow[int(idx_m)] = float(ts_m)
+                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_t_fast_all_tb):
+                        for idx_m, tf_m in zip(map_idxs_all_tb, map_t_fast_all_tb):
+                            tb_map_idx_to_t_fast[int(idx_m)] = float(tf_m)
+                    if map_idxs_all_tb and len(map_idxs_all_tb) == len(map_fast_idx_all_tb):
+                        for idx_m, fi_m in zip(map_idxs_all_tb, map_fast_idx_all_tb):
+                            tb_map_idx_to_fast_idx[int(idx_m)] = int(fi_m)
+
+                    tb_fps_safe = float(fps) if (math.isfinite(float(fps)) and float(fps) > 1e-6) else 30.0
+                    tb_abs_window_s = float(max(0, int(hud_pedals_abs_debounce_ms))) / 1000.0
+                    tb_seconds_per_col = float(window_frames) / max(1.0, float(w)) / max(1e-6, float(tb_fps_safe))
+
+                    n_frames_tb = float(max(1, len(slow_frame_to_lapdist) - 1))
                     try:
-                        tb_headroom = float((os.environ.get("IRVC_PEDAL_HEADROOM") or "").strip() or "1.12")
+                        if slow_throttle_frames and len(slow_throttle_frames) >= 2:
+                            tb_t_slow_scale = float(len(slow_throttle_frames) - 1) / n_frames_tb
+                        if fast_throttle_frames and len(fast_throttle_frames) >= 2:
+                            tb_t_fast_scale = float(len(fast_throttle_frames) - 1) / n_frames_tb
+                        if slow_brake_frames and len(slow_brake_frames) >= 2:
+                            tb_b_slow_scale = float(len(slow_brake_frames) - 1) / n_frames_tb
+                        if fast_brake_frames and len(fast_brake_frames) >= 2:
+                            tb_b_fast_scale = float(len(fast_brake_frames) - 1) / n_frames_tb
+                        if slow_abs_frames and len(slow_abs_frames) >= 2:
+                            tb_a_slow_scale = float(len(slow_abs_frames) - 1) / n_frames_tb
+                        if fast_abs_frames and len(fast_abs_frames) >= 2:
+                            tb_a_fast_scale = float(len(fast_abs_frames) - 1) / n_frames_tb
                     except Exception:
-                        tb_headroom = 1.12
-                    if tb_headroom < 1.00:
-                        tb_headroom = 1.00
-                    if tb_headroom > 2.00:
-                        tb_headroom = 2.00
+                        pass
 
-                    tb_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                    tb_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-                    tb_font_title = _tb_load_font(tb_font_sz)
-                    tb_font_val = _tb_load_font(tb_font_val_sz)
-                    tb_font_axis = _tb_load_font(max(8, int(tb_font_sz - 2)))
-                    tb_font_axis_small = _tb_load_font(max(7, int(tb_font_sz - 3)))
+                    tb_layout_sig = (
+                        int(w),
+                        int(h),
+                        int(window_frames),
+                        float(tb_fps_safe),
+                        int(hud_pedals_abs_debounce_ms),
+                    )
+                    if renderer_state.helpers.get("tb_layout_sig") != tb_layout_sig or ("tb" not in renderer_state.layout):
+                        try:
+                            tb_headroom = float((os.environ.get("IRVC_PEDAL_HEADROOM") or "").strip() or "1.12")
+                        except Exception:
+                            tb_headroom = 1.12
+                        if tb_headroom < 1.00:
+                            tb_headroom = 1.00
+                        if tb_headroom > 2.00:
+                            tb_headroom = 2.00
 
-                    tb_y_txt = int(2)
-                    tb_abs_h = int(max(10, min(15, round(float(h) * 0.085))))
-                    tb_abs_gap_y = 2
-                    tb_y_abs0 = int(tb_font_val_sz + 5)
-                    tb_y_abs_s = tb_y_abs0
-                    tb_y_abs_f = tb_y_abs0 + tb_abs_h + tb_abs_gap_y
-                    tb_plot_top = tb_y_abs_f + tb_abs_h + 4
-                    tb_plot_bottom = int(h - 2)
-                    if tb_plot_bottom <= tb_plot_top + 5:
-                        tb_plot_top = int(max(0, int(float(h) * 0.30)))
-                    tb_plot_h = max(10, tb_plot_bottom - tb_plot_top)
-                    tb_mx = int(w // 2)
-                    tb_half_w = float(w) / 2.0
-                    tb_marker_xf = float(tb_mx)
+                        tb_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                        tb_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                        tb_font_title = _load_hud_font(tb_font_sz)
+                        tb_font_val = _load_hud_font(tb_font_val_sz)
+                        tb_font_axis = _load_hud_font(max(8, int(tb_font_sz - 2)))
+                        tb_font_axis_small = _load_hud_font(max(7, int(tb_font_sz - 3)))
 
-                    def _tb_y_from_01(v01: float) -> int:
-                        v01_c = _clamp(float(v01), 0.0, 1.0)
-                        v_scaled = float(v01_c) / max(1.0, float(tb_headroom))
-                        yy = float(tb_plot_top) + float(tb_plot_h) - (v_scaled * float(tb_plot_h))
-                        return int(round(yy))
+                        tb_y_txt = int(2)
+                        tb_abs_h = int(max(10, min(15, round(float(h) * 0.085))))
+                        tb_abs_gap_y = 2
+                        tb_y_abs0 = int(tb_font_val_sz + 5)
+                        tb_y_abs_s = tb_y_abs0
+                        tb_y_abs_f = tb_y_abs0 + tb_abs_h + tb_abs_gap_y
+                        tb_plot_top = tb_y_abs_f + tb_abs_h + 4
+                        tb_plot_bottom = int(h - 2)
+                        if tb_plot_bottom <= tb_plot_top + 5:
+                            tb_plot_top = int(max(0, int(float(h) * 0.30)))
+                        tb_plot_h = max(10, tb_plot_bottom - tb_plot_top)
+                        tb_mx = int(w // 2)
+                        tb_half_w = float(w) / 2.0
+                        tb_marker_xf = float(tb_mx)
 
-                    tb_layout = {
-                        "font_title": tb_font_title,
-                        "font_val": tb_font_val,
-                        "font_axis": tb_font_axis,
-                        "font_axis_small": tb_font_axis_small,
-                        "y_txt": int(tb_y_txt),
-                        "abs_h": int(tb_abs_h),
-                        "y_abs_s": int(tb_y_abs_s),
-                        "y_abs_f": int(tb_y_abs_f),
-                        "plot_top": int(tb_plot_top),
-                        "plot_bottom": int(tb_plot_bottom),
-                        "mx": int(tb_mx),
-                        "marker_xf": float(tb_marker_xf),
-                        "half_w": float(tb_half_w),
-                        "y_from_01": _tb_y_from_01,
-                    }
+                        def _tb_y_from_01(v01: float) -> int:
+                            v01_c = _clamp(float(v01), 0.0, 1.0)
+                            v_scaled = float(v01_c) / max(1.0, float(tb_headroom))
+                            yy = float(tb_plot_top) + float(tb_plot_h) - (v_scaled * float(tb_plot_h))
+                            return int(round(yy))
+
+                        tb_layout = {
+                            "font_title": tb_font_title,
+                            "font_val": tb_font_val,
+                            "font_axis": tb_font_axis,
+                            "font_axis_small": tb_font_axis_small,
+                            "y_txt": int(tb_y_txt),
+                            "abs_h": int(tb_abs_h),
+                            "y_abs_s": int(tb_y_abs_s),
+                            "y_abs_f": int(tb_y_abs_f),
+                            "plot_top": int(tb_plot_top),
+                            "plot_bottom": int(tb_plot_bottom),
+                            "mx": int(tb_mx),
+                            "marker_xf": float(tb_marker_xf),
+                            "half_w": float(tb_half_w),
+                            "y_from_01": _tb_y_from_01,
+                        }
+                        renderer_state.layout["tb"] = tb_layout
+                        renderer_state.fonts["tb"] = {
+                            "title": tb_font_title,
+                            "value": tb_font_val,
+                            "axis": tb_font_axis,
+                            "axis_small": tb_font_axis_small,
+                        }
+                        renderer_state.helpers["tb_layout_sig"] = tb_layout_sig
+                    else:
+                        tb_layout = dict(renderer_state.layout.get("tb") or {})
 
                     def _tb_sample_linear_time(vals: list[float] | None, t_s: float) -> float:
                         if not vals:
@@ -3083,8 +3284,45 @@ def _render_hud_scroll_frames_png(
                             main_dr_local.text((int(s_x_txt), int(y_txt_abs)), s_txt, fill=COL_FAST_DARKBLUE, font=tb_layout.get("font_val"))
                         except Exception:
                             pass
+                    renderer_state.helpers["tb_fns"] = {
+                        "layout": tb_layout,
+                        "sample_column": _tb_sample_column,
+                        "apply_abs_debounce": _tb_apply_abs_debounce,
+                        "render_static_layer": _tb_render_static_layer,
+                        "render_dynamic_full": _tb_render_dynamic_full,
+                        "draw_values_overlay": _tb_draw_values_overlay,
+                    }
 
+                use_cached_st = False
                 if is_steering:
+                    st_cached = renderer_state.helpers.get("st_fns")
+                    if isinstance(st_cached, dict):
+                        st_layout = dict(st_cached.get("layout") or {})
+                        _st_sample_column = st_cached.get("sample_column")
+                        _st_render_static_layer = st_cached.get("render_static_layer")
+                        _st_render_dynamic_full = st_cached.get("render_dynamic_full")
+                        _st_draw_values_overlay = st_cached.get("draw_values_overlay")
+                        _st_fast_idx_from_slow_idx = st_cached.get("fast_idx_from_slow_idx")
+                        _st_sample_legacy = st_cached.get("sample_legacy")
+                        if (
+                            callable(_st_sample_column)
+                            and callable(_st_render_static_layer)
+                            and callable(_st_render_dynamic_full)
+                            and callable(_st_draw_values_overlay)
+                            and callable(_st_fast_idx_from_slow_idx)
+                            and callable(_st_sample_legacy)
+                            and st_layout
+                        ):
+                            use_cached_st = True
+                if is_steering and use_cached_st:
+                    st_map_idx_to_fast_idx = {}
+                    map_idxs_all_st = list(getattr(frame_window_mapping, "idxs", []) or [])
+                    map_fast_idx_all_st = list(getattr(frame_window_mapping, "fast_idx", []) or [])
+                    if map_idxs_all_st and len(map_idxs_all_st) == len(map_fast_idx_all_st):
+                        for idx_m_st, fi_m_st in zip(map_idxs_all_st, map_fast_idx_all_st):
+                            st_map_idx_to_fast_idx[int(idx_m_st)] = int(fi_m_st)
+
+                if is_steering and (not use_cached_st):
                     st_map_idx_to_fast_idx: dict[int, int] = {}
                     map_idxs_all_st = list(getattr(frame_window_mapping, "idxs", []) or [])
                     map_fast_idx_all_st = list(getattr(frame_window_mapping, "fast_idx", []) or [])
@@ -3092,58 +3330,56 @@ def _render_hud_scroll_frames_png(
                         for idx_m_st, fi_m_st in zip(map_idxs_all_st, map_fast_idx_all_st):
                             st_map_idx_to_fast_idx[int(idx_m_st)] = int(fi_m_st)
 
-                    try:
-                        st_headroom = float((os.environ.get("IRVC_STEER_HEADROOM") or "").strip() or "1.20")
-                    except Exception:
-                        st_headroom = 1.20
-                    if st_headroom < 1.00:
-                        st_headroom = 1.00
-                    if st_headroom > 2.00:
-                        st_headroom = 2.00
+                    st_layout_sig = (int(w), int(h))
+                    if renderer_state.helpers.get("st_layout_sig") != st_layout_sig or ("st" not in renderer_state.layout):
+                        try:
+                            st_headroom = float((os.environ.get("IRVC_STEER_HEADROOM") or "").strip() or "1.20")
+                        except Exception:
+                            st_headroom = 1.20
+                        if st_headroom < 1.00:
+                            st_headroom = 1.00
+                        if st_headroom > 2.00:
+                            st_headroom = 2.00
 
-                    st_mid_y = float(h) / 2.0
-                    st_amp_base = max(2.0, (float(h) / 2.0) - 2.0)
-                    st_amp_neg = st_amp_base
-                    st_amp_pos = st_amp_base / max(1.0, float(st_headroom))
-                    st_mx = int(w // 2)
-                    st_marker_xf = float(st_mx)
-                    st_half_w = float(max(1, int(w) - 1)) / 2.0
+                        st_mid_y = float(h) / 2.0
+                        st_amp_base = max(2.0, (float(h) / 2.0) - 2.0)
+                        st_amp_neg = st_amp_base
+                        st_amp_pos = st_amp_base / max(1.0, float(st_headroom))
+                        st_mx = int(w // 2)
+                        st_marker_xf = float(st_mx)
+                        st_half_w = float(max(1, int(w) - 1)) / 2.0
 
-                    def _st_load_font(sz: int):
-                        try:
-                            from PIL import ImageFont
-                        except Exception:
-                            ImageFont = None  # type: ignore
-                        if ImageFont is None:
-                            return None
-                        try:
-                            return ImageFont.truetype("arial.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.truetype("DejaVuSans.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.load_default()
-                        except Exception:
-                            return None
-
-                    st_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                    st_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-                    st_font_axis_sz = max(8, int(st_font_sz - 2))
-                    st_font_axis_small_sz = max(7, int(st_font_sz - 3))
-                    st_layout = {
-                        "font_title": _st_load_font(st_font_sz),
-                        "font_val": _st_load_font(st_font_val_sz),
-                        "font_axis": _st_load_font(st_font_axis_sz),
-                        "font_axis_small": _st_load_font(st_font_axis_small_sz),
-                        "y_txt": int(4),
-                        "mx": int(st_mx),
-                        "y_mid": int(round(st_mid_y)),
-                        "marker_xf": float(st_marker_xf),
-                        "half_w": float(st_half_w),
-                    }
+                        st_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                        st_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                        st_font_axis_sz = max(8, int(st_font_sz - 2))
+                        st_font_axis_small_sz = max(7, int(st_font_sz - 3))
+                        st_layout = {
+                            "font_title": _load_hud_font(st_font_sz),
+                            "font_val": _load_hud_font(st_font_val_sz),
+                            "font_axis": _load_hud_font(st_font_axis_sz),
+                            "font_axis_small": _load_hud_font(st_font_axis_small_sz),
+                            "y_txt": int(4),
+                            "mx": int(st_mx),
+                            "y_mid": int(round(st_mid_y)),
+                            "marker_xf": float(st_marker_xf),
+                            "half_w": float(st_half_w),
+                        }
+                        renderer_state.layout["st"] = st_layout
+                        renderer_state.fonts["st"] = {
+                            "title": st_layout.get("font_title"),
+                            "value": st_layout.get("font_val"),
+                            "axis": st_layout.get("font_axis"),
+                            "axis_small": st_layout.get("font_axis_small"),
+                        }
+                        renderer_state.helpers["st_layout_sig"] = st_layout_sig
+                        renderer_state.helpers["st_mid_y"] = float(st_mid_y)
+                        renderer_state.helpers["st_amp_neg"] = float(st_amp_neg)
+                        renderer_state.helpers["st_amp_pos"] = float(st_amp_pos)
+                    else:
+                        st_layout = dict(renderer_state.layout.get("st") or {})
+                        st_mid_y = float(renderer_state.helpers.get("st_mid_y", float(h) / 2.0))
+                        st_amp_neg = float(renderer_state.helpers.get("st_amp_neg", max(2.0, (float(h) / 2.0) - 2.0)))
+                        st_amp_pos = float(renderer_state.helpers.get("st_amp_pos", max(2.0, (float(h) / 2.0) - 2.0)))
 
                     def _st_y_from_norm(sn: float) -> int:
                         sn_c = _clamp(float(sn), -1.0, 1.0)
@@ -3358,7 +3594,51 @@ def _render_hud_scroll_frames_png(
                         except Exception:
                             pass
 
+                    renderer_state.helpers["st_fns"] = {
+                        "layout": st_layout,
+                        "sample_column": _st_sample_column,
+                        "render_static_layer": _st_render_static_layer,
+                        "render_dynamic_full": _st_render_dynamic_full,
+                        "draw_values_overlay": _st_draw_values_overlay,
+                        "fast_idx_from_slow_idx": _st_fast_idx_from_slow_idx,
+                        "sample_legacy": _st_sample_legacy,
+                    }
+
+                use_cached_d = False
                 if is_delta:
+                    d_cached = renderer_state.helpers.get("d_fns")
+                    if isinstance(d_cached, dict):
+                        d_layout = dict(d_cached.get("layout") or {})
+                        _d_sample_column = d_cached.get("sample_column")
+                        _d_draw_segment = d_cached.get("draw_segment")
+                        _d_render_static_layer = d_cached.get("render_static_layer")
+                        _d_render_dynamic_full = d_cached.get("render_dynamic_full")
+                        _d_draw_values_overlay = d_cached.get("draw_values_overlay")
+                        _d_sign_from_delta = d_cached.get("sign_from_delta")
+                        if (
+                            callable(_d_sample_column)
+                            and callable(_d_draw_segment)
+                            and callable(_d_render_static_layer)
+                            and callable(_d_render_dynamic_full)
+                            and callable(_d_draw_values_overlay)
+                            and callable(_d_sign_from_delta)
+                            and d_layout
+                        ):
+                            use_cached_d = True
+                if is_delta and use_cached_d:
+                    d_map_idx_to_t_slow = {}
+                    d_map_idx_to_t_fast = {}
+                    map_idxs_all_d = list(getattr(frame_window_mapping, "idxs", []) or [])
+                    map_t_slow_all_d = list(getattr(frame_window_mapping, "t_slow", []) or [])
+                    map_t_fast_all_d = list(getattr(frame_window_mapping, "t_fast", []) or [])
+                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_slow_all_d):
+                        for idx_m_d, ts_m_d in zip(map_idxs_all_d, map_t_slow_all_d):
+                            d_map_idx_to_t_slow[int(idx_m_d)] = float(ts_m_d)
+                    if map_idxs_all_d and len(map_idxs_all_d) == len(map_t_fast_all_d):
+                        for idx_m_d, tf_m_d in zip(map_idxs_all_d, map_t_fast_all_d):
+                            d_map_idx_to_t_fast[int(idx_m_d)] = float(tf_m_d)
+
+                if is_delta and (not use_cached_d):
                     d_map_idx_to_t_slow: dict[int, float] = {}
                     d_map_idx_to_t_fast: dict[int, float] = {}
                     map_idxs_all_d = list(getattr(frame_window_mapping, "idxs", []) or [])
@@ -3371,52 +3651,46 @@ def _render_hud_scroll_frames_png(
                         for idx_m_d, tf_m_d in zip(map_idxs_all_d, map_t_fast_all_d):
                             d_map_idx_to_t_fast[int(idx_m_d)] = float(tf_m_d)
 
-                    def _d_load_font(sz: int):
-                        try:
-                            from PIL import ImageFont
-                        except Exception:
-                            ImageFont = None  # type: ignore
-                        if ImageFont is None:
-                            return None
-                        try:
-                            return ImageFont.truetype("arial.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.truetype("DejaVuSans.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.load_default()
-                        except Exception:
-                            return None
-
-                    d_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                    d_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-                    d_font_axis_sz = max(8, int(d_font_sz - 2))
-                    d_font_axis_small_sz = max(7, int(d_font_sz - 3))
-                    d_top_pad = int(round(max(14.0, float(d_font_sz) + 8.0)))
-                    d_plot_y0 = int(d_top_pad)
-                    d_plot_y1 = int(h - 2)
-                    if d_plot_y1 <= d_plot_y0 + 4:
-                        d_plot_y0 = int(2)
+                    d_layout_sig = (int(w), int(h))
+                    if renderer_state.helpers.get("d_layout_sig") != d_layout_sig or ("d" not in renderer_state.layout):
+                        d_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                        d_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                        d_font_axis_sz = max(8, int(d_font_sz - 2))
+                        d_font_axis_small_sz = max(7, int(d_font_sz - 3))
+                        d_top_pad = int(round(max(14.0, float(d_font_sz) + 8.0)))
+                        d_plot_y0 = int(d_top_pad)
                         d_plot_y1 = int(h - 2)
+                        if d_plot_y1 <= d_plot_y0 + 4:
+                            d_plot_y0 = int(2)
+                            d_plot_y1 = int(h - 2)
 
-                    d_mx = int(w // 2)
-                    d_marker_xf = float(d_mx)
-                    d_half_w = float(max(1, int(w) - 1)) / 2.0
-                    d_layout = {
-                        "font_title": _d_load_font(d_font_sz),
-                        "font_val": _d_load_font(d_font_val_sz),
-                        "font_axis": _d_load_font(d_font_axis_sz),
-                        "font_axis_small": _d_load_font(d_font_axis_small_sz),
-                        "y_txt": int(2),
-                        "mx": int(d_mx),
-                        "marker_xf": float(d_marker_xf),
-                        "half_w": float(d_half_w),
-                        "plot_y0": int(d_plot_y0),
-                        "plot_y1": int(d_plot_y1),
-                    }
+                        d_mx = int(w // 2)
+                        d_marker_xf = float(d_mx)
+                        d_half_w = float(max(1, int(w) - 1)) / 2.0
+                        d_layout = {
+                            "font_title": _load_hud_font(d_font_sz),
+                            "font_val": _load_hud_font(d_font_val_sz),
+                            "font_axis": _load_hud_font(d_font_axis_sz),
+                            "font_axis_small": _load_hud_font(d_font_axis_small_sz),
+                            "y_txt": int(2),
+                            "mx": int(d_mx),
+                            "marker_xf": float(d_marker_xf),
+                            "half_w": float(d_half_w),
+                            "plot_y0": int(d_plot_y0),
+                            "plot_y1": int(d_plot_y1),
+                        }
+                        renderer_state.layout["d"] = d_layout
+                        renderer_state.fonts["d"] = {
+                            "title": d_layout.get("font_title"),
+                            "value": d_layout.get("font_val"),
+                            "axis": d_layout.get("font_axis"),
+                            "axis_small": d_layout.get("font_axis_small"),
+                        }
+                        renderer_state.helpers["d_layout_sig"] = d_layout_sig
+                        renderer_state.helpers["d_font_val_sz"] = int(d_font_val_sz)
+                    else:
+                        d_layout = dict(renderer_state.layout.get("d") or {})
+                        d_font_val_sz = int(renderer_state.helpers.get("d_font_val_sz", max(11, int(round(float(h) * 0.15)))))
 
                     d_range_pos = float(delta_pos_max)
                     d_range_neg = float(abs(delta_neg_min))
@@ -3690,54 +3964,75 @@ def _render_hud_scroll_frames_png(
                             main_dr_local.text((int(x_val), int(y_val)), txt, fill=col_cur, font=d_layout.get("font_val"))
                         except Exception:
                             pass
-
-                if is_line_delta:
-                    def _ld_load_font(sz: int):
-                        try:
-                            from PIL import ImageFont
-                        except Exception:
-                            ImageFont = None  # type: ignore
-                        if ImageFont is None:
-                            return None
-                        try:
-                            return ImageFont.truetype("arial.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.truetype("DejaVuSans.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.load_default()
-                        except Exception:
-                            return None
-
-                    ld_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                    ld_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
-                    ld_font_axis_sz = max(8, int(ld_font_sz - 2))
-                    ld_font_axis_small_sz = max(7, int(ld_font_sz - 3))
-                    ld_top_pad = int(round(max(14.0, float(ld_font_sz) + 8.0)))
-                    ld_plot_y0 = int(ld_top_pad)
-                    ld_plot_y1 = int(h - 2)
-                    if ld_plot_y1 <= ld_plot_y0 + 4:
-                        ld_plot_y0 = int(2)
-                        ld_plot_y1 = int(h - 2)
-
-                    ld_mx = int(w // 2)
-                    ld_marker_xf = float(ld_mx)
-                    ld_half_w = float(max(1, int(w) - 1)) / 2.0
-                    ld_layout = {
-                        "font_title": _ld_load_font(ld_font_sz),
-                        "font_val": _ld_load_font(ld_font_val_sz),
-                        "font_axis": _ld_load_font(ld_font_axis_sz),
-                        "font_axis_small": _ld_load_font(ld_font_axis_small_sz),
-                        "y_txt": int(2),
-                        "mx": int(ld_mx),
-                        "marker_xf": float(ld_marker_xf),
-                        "half_w": float(ld_half_w),
-                        "plot_y0": int(ld_plot_y0),
-                        "plot_y1": int(ld_plot_y1),
+                    renderer_state.helpers["d_fns"] = {
+                        "layout": d_layout,
+                        "sample_column": _d_sample_column,
+                        "draw_segment": _d_draw_segment,
+                        "render_static_layer": _d_render_static_layer,
+                        "render_dynamic_full": _d_render_dynamic_full,
+                        "draw_values_overlay": _d_draw_values_overlay,
+                        "sign_from_delta": _d_sign_from_delta,
                     }
+
+                use_cached_ld = False
+                if is_line_delta:
+                    ld_cached = renderer_state.helpers.get("ld_fns")
+                    if isinstance(ld_cached, dict):
+                        ld_layout = dict(ld_cached.get("layout") or {})
+                        _ld_sample_column = ld_cached.get("sample_column")
+                        _ld_render_static_layer = ld_cached.get("render_static_layer")
+                        _ld_render_dynamic_full = ld_cached.get("render_dynamic_full")
+                        _ld_draw_values_overlay = ld_cached.get("draw_values_overlay")
+                        _ld_value_at_slow_idx = ld_cached.get("value_at_slow_idx")
+                        if (
+                            callable(_ld_sample_column)
+                            and callable(_ld_render_static_layer)
+                            and callable(_ld_render_dynamic_full)
+                            and callable(_ld_draw_values_overlay)
+                            and callable(_ld_value_at_slow_idx)
+                            and ld_layout
+                        ):
+                            use_cached_ld = True
+
+                if is_line_delta and (not use_cached_ld):
+                    ld_layout_sig = (int(w), int(h))
+                    if renderer_state.helpers.get("ld_layout_sig") != ld_layout_sig or ("ld" not in renderer_state.layout):
+                        ld_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                        ld_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                        ld_font_axis_sz = max(8, int(ld_font_sz - 2))
+                        ld_font_axis_small_sz = max(7, int(ld_font_sz - 3))
+                        ld_top_pad = int(round(max(14.0, float(ld_font_sz) + 8.0)))
+                        ld_plot_y0 = int(ld_top_pad)
+                        ld_plot_y1 = int(h - 2)
+                        if ld_plot_y1 <= ld_plot_y0 + 4:
+                            ld_plot_y0 = int(2)
+                            ld_plot_y1 = int(h - 2)
+
+                        ld_mx = int(w // 2)
+                        ld_marker_xf = float(ld_mx)
+                        ld_half_w = float(max(1, int(w) - 1)) / 2.0
+                        ld_layout = {
+                            "font_title": _load_hud_font(ld_font_sz),
+                            "font_val": _load_hud_font(ld_font_val_sz),
+                            "font_axis": _load_hud_font(ld_font_axis_sz),
+                            "font_axis_small": _load_hud_font(ld_font_axis_small_sz),
+                            "y_txt": int(2),
+                            "mx": int(ld_mx),
+                            "marker_xf": float(ld_marker_xf),
+                            "half_w": float(ld_half_w),
+                            "plot_y0": int(ld_plot_y0),
+                            "plot_y1": int(ld_plot_y1),
+                        }
+                        renderer_state.layout["ld"] = ld_layout
+                        renderer_state.fonts["ld"] = {
+                            "title": ld_layout.get("font_title"),
+                            "value": ld_layout.get("font_val"),
+                            "axis": ld_layout.get("font_axis"),
+                            "axis_small": ld_layout.get("font_axis_small"),
+                        }
+                        renderer_state.helpers["ld_layout_sig"] = ld_layout_sig
+                    else:
+                        ld_layout = dict(renderer_state.layout.get("ld") or {})
 
                     ld_vals = line_delta_m_frames if isinstance(line_delta_m_frames, list) else []
                     ld_n_vals = len(ld_vals)
@@ -3946,54 +4241,69 @@ def _render_hud_scroll_frames_png(
                             main_dr_local.text((int(x_val), int(y_val)), txt, fill=COL_WHITE, font=ld_layout.get("font_val"))
                         except Exception:
                             pass
-
-                if is_under_oversteer:
-                    def _uo_load_font(sz: int):
-                        try:
-                            from PIL import ImageFont
-                        except Exception:
-                            ImageFont = None  # type: ignore
-                        if ImageFont is None:
-                            return None
-                        try:
-                            return ImageFont.truetype("arial.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.truetype("DejaVuSans.ttf", sz)
-                        except Exception:
-                            pass
-                        try:
-                            return ImageFont.load_default()
-                        except Exception:
-                            return None
-
-                    uo_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                    uo_font_axis_sz = max(8, int(uo_font_sz - 2))
-                    uo_font_axis_small_sz = max(7, int(uo_font_sz - 3))
-                    uo_top_pad = int(round(max(14.0, float(uo_font_sz) + 8.0)))
-                    uo_plot_y0 = int(uo_top_pad)
-                    uo_plot_y1 = int(h - 2)
-                    if uo_plot_y1 <= uo_plot_y0 + 4:
-                        uo_plot_y0 = int(2)
-                        uo_plot_y1 = int(h - 2)
-
-                    uo_mx = int(w // 2)
-                    uo_marker_xf = float(uo_mx)
-                    uo_half_w = float(max(1, int(w) - 1)) / 2.0
-                    uo_layout = {
-                        "font_title": _uo_load_font(uo_font_sz),
-                        "font_axis": _uo_load_font(uo_font_axis_sz),
-                        "font_axis_small": _uo_load_font(uo_font_axis_small_sz),
-                        "label_x": int(4),
-                        "label_top_y": int(2),
-                        "label_bottom_y": int(h - uo_font_sz - 2),
-                        "mx": int(uo_mx),
-                        "marker_xf": float(uo_marker_xf),
-                        "half_w": float(uo_half_w),
-                        "plot_y0": int(uo_plot_y0),
-                        "plot_y1": int(uo_plot_y1),
+                    renderer_state.helpers["ld_fns"] = {
+                        "layout": ld_layout,
+                        "sample_column": _ld_sample_column,
+                        "render_static_layer": _ld_render_static_layer,
+                        "render_dynamic_full": _ld_render_dynamic_full,
+                        "draw_values_overlay": _ld_draw_values_overlay,
+                        "value_at_slow_idx": _ld_value_at_slow_idx,
                     }
+
+                use_cached_uo = False
+                if is_under_oversteer:
+                    uo_cached = renderer_state.helpers.get("uo_fns")
+                    if isinstance(uo_cached, dict):
+                        uo_layout = dict(uo_cached.get("layout") or {})
+                        _uo_sample_column = uo_cached.get("sample_column")
+                        _uo_render_static_layer = uo_cached.get("render_static_layer")
+                        _uo_render_dynamic_full = uo_cached.get("render_dynamic_full")
+                        if (
+                            callable(_uo_sample_column)
+                            and callable(_uo_render_static_layer)
+                            and callable(_uo_render_dynamic_full)
+                            and uo_layout
+                        ):
+                            use_cached_uo = True
+
+                if is_under_oversteer and (not use_cached_uo):
+                    uo_layout_sig = (int(w), int(h))
+                    if renderer_state.helpers.get("uo_layout_sig") != uo_layout_sig or ("uo" not in renderer_state.layout):
+                        uo_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                        uo_font_axis_sz = max(8, int(uo_font_sz - 2))
+                        uo_font_axis_small_sz = max(7, int(uo_font_sz - 3))
+                        uo_top_pad = int(round(max(14.0, float(uo_font_sz) + 8.0)))
+                        uo_plot_y0 = int(uo_top_pad)
+                        uo_plot_y1 = int(h - 2)
+                        if uo_plot_y1 <= uo_plot_y0 + 4:
+                            uo_plot_y0 = int(2)
+                            uo_plot_y1 = int(h - 2)
+
+                        uo_mx = int(w // 2)
+                        uo_marker_xf = float(uo_mx)
+                        uo_half_w = float(max(1, int(w) - 1)) / 2.0
+                        uo_layout = {
+                            "font_title": _load_hud_font(uo_font_sz),
+                            "font_axis": _load_hud_font(uo_font_axis_sz),
+                            "font_axis_small": _load_hud_font(uo_font_axis_small_sz),
+                            "label_x": int(4),
+                            "label_top_y": int(2),
+                            "label_bottom_y": int(h - uo_font_sz - 2),
+                            "mx": int(uo_mx),
+                            "marker_xf": float(uo_marker_xf),
+                            "half_w": float(uo_half_w),
+                            "plot_y0": int(uo_plot_y0),
+                            "plot_y1": int(uo_plot_y1),
+                        }
+                        renderer_state.layout["uo"] = uo_layout
+                        renderer_state.fonts["uo"] = {
+                            "title": uo_layout.get("font_title"),
+                            "axis": uo_layout.get("font_axis"),
+                            "axis_small": uo_layout.get("font_axis_small"),
+                        }
+                        renderer_state.helpers["uo_layout_sig"] = uo_layout_sig
+                    else:
+                        uo_layout = dict(renderer_state.layout.get("uo") or {})
 
                     uo_slow_vals = under_oversteer_slow_frames if isinstance(under_oversteer_slow_frames, list) else []
                     uo_fast_vals = under_oversteer_fast_frames if isinstance(under_oversteer_fast_frames, list) else []
@@ -4228,6 +4538,12 @@ def _render_hud_scroll_frames_png(
                             uo_cols_local.append(col_now)
                             prev_col = col_now
                         return dyn_img_local, uo_cols_local
+                    renderer_state.helpers["uo_fns"] = {
+                        "layout": uo_layout,
+                        "sample_column": _uo_sample_column,
+                        "render_static_layer": _uo_render_static_layer,
+                        "render_dynamic_full": _uo_render_dynamic_full,
+                    }
 
                 def _render_scroll_hud_full(
                     scroll_pos_px_local: float,
@@ -4427,85 +4743,37 @@ def _render_hud_scroll_frames_png(
                         fn_hud_local()
                     return hud_img
 
-                hud_state_key = f"{str(hud_key)}|{int(x0)}|{int(y0)}|{int(w)}|{int(h)}"
-                state = scroll_state_by_hud.get(hud_state_key)
-                first_frame = (
-                    state is None
-                    or state.get("static_layer") is None
-                    or state.get("dynamic_layer") is None
-                )
+                current_geom_sig = (int(w), int(h), float(r), int(before_f), int(after_f))
+                geometry_changed = tuple(renderer_state.geometry_signature) != tuple(current_geom_sig)
+                if geometry_changed:
+                    renderer_state.geometry_signature = tuple(current_geom_sig)
+                    renderer_state.layout.clear()
+                    renderer_state.fonts.clear()
+                    renderer_state.static_primitives.clear()
+                    renderer_state.helpers.clear()
+                    state["static_layer"] = None
+                    state["dynamic_layer"] = None
+                    state["tb_cols"] = []
+                    state["last_y"] = None
+                    state["last_delta_value"] = None
+                    state["last_delta_sign"] = None
+
+                first_frame = bool(renderer_state.first_frame) or state.get("static_layer") is None or state.get("dynamic_layer") is None
                 reset_now = False
-                if state is not None:
-                    try:
-                        last_i_state = state.get("last_i")
-                        if last_i_state is not None and int(i) != (int(last_i_state) + 1):
-                            reset_now = True
-                    except Exception:
+                try:
+                    last_i_state = state.get("last_i")
+                    if last_i_state is not None and int(i) != (int(last_i_state) + 1):
                         reset_now = True
-                    try:
-                        last_window_frames = state.get("window_frames")
-                        if last_window_frames is not None and int(last_window_frames) != int(window_frames):
-                            reset_now = True
-                    except Exception:
+                except Exception:
+                    reset_now = True
+                try:
+                    last_window_frames = state.get("window_frames")
+                    if last_window_frames is not None and int(last_window_frames) != int(window_frames):
                         reset_now = True
-
-                def _compose_hud_layers_local(
-                    static_layer_local: Any | None,
-                    dynamic_layer_local: Any | None,
-                    value_layer_local: Any | None,
-                ) -> Any:
-                    composed_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
-                    for layer_local in (static_layer_local, dynamic_layer_local, value_layer_local):
-                        if layer_local is None:
-                            continue
-                        layer_rgba = layer_local if getattr(layer_local, "mode", "") == "RGBA" else layer_local.convert("RGBA")
-                        if layer_rgba.size != composed_local.size:
-                            fixed_layer = Image.new("RGBA", composed_local.size, (0, 0, 0, 0))
-                            try:
-                                fixed_layer.paste(layer_rgba, (0, 0), layer_rgba)
-                            except Exception:
-                                fixed_layer.paste(layer_rgba, (0, 0))
-                            layer_rgba = fixed_layer
-                        composed_local = Image.alpha_composite(composed_local, layer_rgba)
-                    return composed_local
-
-                def _render_value_layer_local(draw_values_fn: Any | None) -> Any:
-                    value_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
-                    if draw_values_fn is None:
-                        return value_img_local
-                    try:
-                        value_dr_local = ImageDraw.Draw(value_img_local)
-                        draw_values_fn(value_dr_local, 0, 0)
-                    except Exception:
-                        pass
-                    return value_img_local
-
-                def _composite_hud_into_frame_local(
-                    frame_img_local: Any,
-                    hud_layer_local: Any,
-                    dst_x_local: int,
-                    dst_y_local: int,
-                ) -> None:
-                    hud_rgba = hud_layer_local if getattr(hud_layer_local, "mode", "") == "RGBA" else hud_layer_local.convert("RGBA")
-                    fx0 = int(dst_x_local)
-                    fy0 = int(dst_y_local)
-                    fx1 = int(fx0 + int(hud_rgba.size[0]))
-                    fy1 = int(fy0 + int(hud_rgba.size[1]))
-                    frame_w, frame_h = frame_img_local.size
-                    cx0 = max(0, int(fx0))
-                    cy0 = max(0, int(fy0))
-                    cx1 = min(int(frame_w), int(fx1))
-                    cy1 = min(int(frame_h), int(fy1))
-                    if cx1 <= cx0 or cy1 <= cy0:
-                        return
-                    sx0 = int(cx0 - fx0)
-                    sy0 = int(cy0 - fy0)
-                    sx1 = int(sx0 + (cx1 - cx0))
-                    sy1 = int(sy0 + (cy1 - cy0))
-                    dst_region = frame_img_local.crop((int(cx0), int(cy0), int(cx1), int(cy1)))
-                    src_region = hud_rgba.crop((int(sx0), int(sy0), int(sx1), int(sy1)))
-                    composed_region = Image.alpha_composite(dst_region, src_region)
-                    frame_img_local.paste(composed_region, (int(cx0), int(cy0)))
+                except Exception:
+                    reset_now = True
+                if geometry_changed:
+                    reset_now = True
 
                 if first_frame or reset_now:
                     if is_throttle_brake:
@@ -4534,8 +4802,8 @@ def _render_hud_scroll_frames_png(
                             "tb_abs_f_on_count": int(tb_abs_state_fill.get("tb_abs_f_on_count", 0)),
                             "tb_abs_f_off_count": int(tb_abs_state_fill.get("tb_abs_f_off_count", 0)),
                         }
-                        value_layer = _render_value_layer_local(_tb_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        value_layer = _render_value_layer_local(int(w), int(h), _tb_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_steering:
                         static_layer = _st_render_static_layer()
@@ -4552,8 +4820,8 @@ def _render_hud_scroll_frames_png(
                             "last_y": (int(st_last_col_fill["y_s"]), int(st_last_col_fill["y_f"])),
                             "st_last_fast_idx": int(st_last_col_fill["fast_idx"]),
                         }
-                        value_layer = _render_value_layer_local(_st_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        value_layer = _render_value_layer_local(int(w), int(h), _st_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_delta:
                         static_layer = _d_render_static_layer()
@@ -4572,8 +4840,8 @@ def _render_hud_scroll_frames_png(
                             "last_delta_value": float(d_last_delta),
                             "last_delta_sign": int(_d_sign_from_delta(float(d_last_delta))),
                         }
-                        value_layer = _render_value_layer_local(_d_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        value_layer = _render_value_layer_local(int(w), int(h), _d_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_line_delta:
                         static_layer = _ld_render_static_layer()
@@ -4589,8 +4857,8 @@ def _render_hud_scroll_frames_png(
                             "window_frames": int(window_frames),
                             "last_y": float(ld_last_col_fill["y"]),
                         }
-                        value_layer = _render_value_layer_local(_ld_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        value_layer = _render_value_layer_local(int(w), int(h), _ld_draw_values_overlay)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_under_oversteer:
                         static_layer = _uo_render_static_layer()
@@ -4607,8 +4875,8 @@ def _render_hud_scroll_frames_png(
                             "last_y": (int(uo_last_col_fill["y_s"]), int(uo_last_col_fill["y_f"])),
                             "uo_last_fast_idx": int(uo_last_col_fill["fast_idx"]),
                         }
-                        value_layer = _render_value_layer_local(None)
-                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        value_layer = _render_value_layer_local(int(w), int(h), None)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     else:
                         static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
@@ -4626,11 +4894,13 @@ def _render_hud_scroll_frames_png(
                             "last_right_sample": int(right_sample_now),
                             "window_frames": int(window_frames),
                         }
-                        value_layer = _render_value_layer_local(None)
-                        hud_layer = _compose_hud_layers_local(static_layer, dynamic_layer, value_layer)
+                        value_layer = _render_value_layer_local(int(w), int(h), None)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
+                    renderer_state.first_frame = False
                     continue
 
+                renderer_state.first_frame = False
                 scroll_pos_px = float(state.get("scroll_pos_px", 0.0))
                 scroll_pos_px += float(shift_px_per_frame)
                 shift_int = 0
@@ -4784,8 +5054,8 @@ def _render_hud_scroll_frames_png(
                     state["tb_abs_f_off_count"] = int(tb_abs_state_inc.get("tb_abs_f_off_count", 0))
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(_tb_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    value_layer = _render_value_layer_local(int(w), int(h), _tb_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_steering:
                     st_dr_next = ImageDraw.Draw(dynamic_next)
@@ -4854,8 +5124,8 @@ def _render_hud_scroll_frames_png(
                     state["st_last_fast_idx"] = int(last_col_inc["fast_idx"])
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(_st_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    value_layer = _render_value_layer_local(int(w), int(h), _st_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_delta:
                     d_dr_next = ImageDraw.Draw(dynamic_next)
@@ -4928,8 +5198,8 @@ def _render_hud_scroll_frames_png(
                     state["last_delta_sign"] = int(_d_sign_from_delta(float(last_delta_now)))
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(_d_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    value_layer = _render_value_layer_local(int(w), int(h), _d_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_line_delta:
                     ld_dr_next = ImageDraw.Draw(dynamic_next)
@@ -4989,8 +5259,8 @@ def _render_hud_scroll_frames_png(
                     state["last_y"] = float(last_col_inc["y"])
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(_ld_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    value_layer = _render_value_layer_local(int(w), int(h), _ld_draw_values_overlay)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_under_oversteer:
                     uo_dr_next = ImageDraw.Draw(dynamic_next)
@@ -5065,8 +5335,8 @@ def _render_hud_scroll_frames_png(
                     state["uo_last_fast_idx"] = int(last_col_inc["fast_idx"])
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(None)
-                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    value_layer = _render_value_layer_local(int(w), int(h), None)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 else:
                     hud_full_now = _render_scroll_hud_full(
@@ -5087,8 +5357,8 @@ def _render_hud_scroll_frames_png(
                     state["last_right_sample"] = int(right_sample_now)
                     state["window_frames"] = int(window_frames)
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(None)
-                    hud_layer = _compose_hud_layers_local(static_now, dynamic_next, value_layer)
+                    value_layer = _render_value_layer_local(int(w), int(h), None)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
             except Exception:
                 continue
