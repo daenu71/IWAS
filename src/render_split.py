@@ -2320,6 +2320,8 @@ def _render_hud_scroll_frames_png(
         fast_frame_count = int(max(0, int(fast_frame_count)))
 
     hud_dbg = (os.environ.get("IRVC_HUD_DEBUG") or "0").strip() in ("1", "true", "yes", "on")
+    debug_composite = (os.environ.get("IRVC_DEBUG_COMPOSITE") or "0").strip() in ("1", "true", "yes", "on")
+    debug_composite_state = {"bbox_logged": False, "scratch_logged": False}
     if hud_dbg:
         try:
             names = ",".join([n for (n, _x0, _y0, _w, _h) in hud_items])
@@ -2613,10 +2615,11 @@ def _render_hud_scroll_frames_png(
         h_local: int,
         static_layer_local: Any | None,
         dynamic_layer_local: Any | None,
-        value_layer_local: Any | None,
+        draw_values_fn_local: Any | None,
     ) -> Any:
+        # PERF: alloc (per-HUD composite target; values are drawn directly here)
         composed_local = Image.new("RGBA", (int(w_local), int(h_local)), (0, 0, 0, 0))
-        for layer_local in (static_layer_local, dynamic_layer_local, value_layer_local):
+        for layer_local in (static_layer_local, dynamic_layer_local):
             if layer_local is None:
                 continue
             layer_rgba = layer_local if getattr(layer_local, "mode", "") == "RGBA" else layer_local.convert("RGBA")
@@ -2627,19 +2630,19 @@ def _render_hud_scroll_frames_png(
                 except Exception:
                     fixed_layer.paste(layer_rgba, (0, 0))
                 layer_rgba = fixed_layer
-            composed_local = Image.alpha_composite(composed_local, layer_rgba)
+            # PERF: composite (alpha chain over static/dynamic/value layers)
+            try:
+                composed_local.alpha_composite(layer_rgba)
+            except Exception:
+                composed_local = Image.alpha_composite(composed_local, layer_rgba)
+        if draw_values_fn_local is not None:
+            try:
+                # PERF: composite (no separate value_layer allocation)
+                value_dr_local = ImageDraw.Draw(composed_local)
+                draw_values_fn_local(value_dr_local, 0, 0)
+            except Exception:
+                pass
         return composed_local
-
-    def _render_value_layer_local(w_local: int, h_local: int, draw_values_fn: Any | None) -> Any:
-        value_img_local = Image.new("RGBA", (int(w_local), int(h_local)), (0, 0, 0, 0))
-        if draw_values_fn is None:
-            return value_img_local
-        try:
-            value_dr_local = ImageDraw.Draw(value_img_local)
-            draw_values_fn(value_dr_local, 0, 0)
-        except Exception:
-            pass
-        return value_img_local
 
     def _composite_hud_into_frame_local(
         frame_img_local: Any,
@@ -2663,10 +2666,30 @@ def _render_hud_scroll_frames_png(
         sy0 = int(cy0 - fy0)
         sx1 = int(sx0 + (cx1 - cx0))
         sy1 = int(sy0 + (cy1 - cy0))
-        dst_region = frame_img_local.crop((int(cx0), int(cy0), int(cx1), int(cy1)))
-        src_region = hud_rgba.crop((int(sx0), int(sy0), int(sx1), int(sy1)))
-        composed_region = Image.alpha_composite(dst_region, src_region)
-        frame_img_local.paste(composed_region, (int(cx0), int(cy0)))
+        # PERF: composite (crop -> alpha_composite -> paste chain)
+        try:
+            frame_img_local.alpha_composite(
+                hud_rgba,
+                dest=(int(cx0), int(cy0)),
+                source=(int(sx0), int(sy0), int(sx1), int(sy1)),
+            )
+            if debug_composite and (not bool(debug_composite_state.get("bbox_logged", False))):
+                _log_print(
+                    f"[perf][composite] region dst=({int(cx0)},{int(cy0)},{int(cx1)},{int(cy1)}) src=({int(sx0)},{int(sy0)},{int(sx1)},{int(sy1)})",
+                    log_file,
+                )
+                debug_composite_state["bbox_logged"] = True
+        except Exception:
+            dst_region = frame_img_local.crop((int(cx0), int(cy0), int(cx1), int(cy1)))
+            src_region = hud_rgba.crop((int(sx0), int(sy0), int(sx1), int(sy1)))
+            composed_region = Image.alpha_composite(dst_region, src_region)
+            frame_img_local.paste(composed_region, (int(cx0), int(cy0)))
+            if debug_composite and (not bool(debug_composite_state.get("bbox_logged", False))):
+                _log_print(
+                    f"[perf][composite] fallback region dst=({int(cx0)},{int(cy0)},{int(cx1)},{int(cy1)}) src=({int(sx0)},{int(sy0)},{int(sx1)},{int(sy1)})",
+                    log_file,
+                )
+                debug_composite_state["bbox_logged"] = True
 
     fps_mapping_safe = float(r) if float(r) > 1e-6 else 30.0
     slow_frame_count_total = max(0, int(len(slow_frame_to_lapdist)))
@@ -2886,9 +2909,9 @@ def _render_hud_scroll_frames_png(
                             COL_SLOW_DARKRED,
                             COL_FAST_DARKBLUE,
                         )
-                        speed_layer = speed_static.copy()
-                        speed_layer.alpha_composite(speed_dynamic)
-                        _composite_hud_into_frame_local(img, speed_layer, int(x0), int(y0))
+                        # PERF: composite (avoid per-frame copy/merge temp; preserve static->dynamic order)
+                        _composite_hud_into_frame_local(img, speed_static, int(x0), int(y0))
+                        _composite_hud_into_frame_local(img, speed_dynamic, int(x0), int(y0))
                     elif str(hud_key) == "Gear & RPM":
                         gear_rpm_ctx = {
                             "hud_key": hud_key,
@@ -2939,9 +2962,9 @@ def _render_hud_scroll_frames_png(
                             COL_SLOW_DARKRED,
                             COL_FAST_DARKBLUE,
                         )
-                        gear_layer = gear_static.copy()
-                        gear_layer.alpha_composite(gear_dynamic)
-                        _composite_hud_into_frame_local(img, gear_layer, int(x0), int(y0))
+                        # PERF: composite (avoid per-frame copy/merge temp; preserve static->dynamic order)
+                        _composite_hud_into_frame_local(img, gear_static, int(x0), int(y0))
+                        _composite_hud_into_frame_local(img, gear_dynamic, int(x0), int(y0))
                 except Exception:
                     continue
 
@@ -4951,8 +4974,7 @@ def _render_hud_scroll_frames_png(
                             "tb_abs_f_on_count": int(tb_abs_state_fill.get("tb_abs_f_on_count", 0)),
                             "tb_abs_f_off_count": int(tb_abs_state_fill.get("tb_abs_f_off_count", 0)),
                         }
-                        value_layer = _render_value_layer_local(int(w), int(h), _tb_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, _tb_draw_values_overlay)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_steering:
                         static_layer = _st_render_static_layer()
@@ -4969,8 +4991,7 @@ def _render_hud_scroll_frames_png(
                             "last_y": (int(st_last_col_fill["y_s"]), int(st_last_col_fill["y_f"])),
                             "st_last_fast_idx": int(st_last_col_fill["fast_idx"]),
                         }
-                        value_layer = _render_value_layer_local(int(w), int(h), _st_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, _st_draw_values_overlay)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_delta:
                         static_layer = _d_render_static_layer()
@@ -4989,8 +5010,7 @@ def _render_hud_scroll_frames_png(
                             "last_delta_value": float(d_last_delta),
                             "last_delta_sign": int(_d_sign_from_delta(float(d_last_delta))),
                         }
-                        value_layer = _render_value_layer_local(int(w), int(h), _d_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, _d_draw_values_overlay)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_line_delta:
                         static_layer = _ld_render_static_layer()
@@ -5006,8 +5026,7 @@ def _render_hud_scroll_frames_png(
                             "window_frames": int(window_frames),
                             "last_y": float(ld_last_col_fill["y"]),
                         }
-                        value_layer = _render_value_layer_local(int(w), int(h), _ld_draw_values_overlay)
-                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, _ld_draw_values_overlay)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     elif is_under_oversteer:
                         static_layer = _uo_render_static_layer()
@@ -5024,8 +5043,7 @@ def _render_hud_scroll_frames_png(
                             "last_y": (int(uo_last_col_fill["y_s"]), int(uo_last_col_fill["y_f"])),
                             "uo_last_fast_idx": int(uo_last_col_fill["fast_idx"]),
                         }
-                        value_layer = _render_value_layer_local(int(w), int(h), None)
-                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, None)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     else:
                         static_layer = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
@@ -5043,8 +5061,7 @@ def _render_hud_scroll_frames_png(
                             "last_right_sample": int(right_sample_now),
                             "window_frames": int(window_frames),
                         }
-                        value_layer = _render_value_layer_local(int(w), int(h), None)
-                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, value_layer)
+                        hud_layer = _compose_hud_layers_local(int(w), int(h), static_layer, dynamic_layer, None)
                         _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                     renderer_state.first_frame = False
                     continue
@@ -5066,13 +5083,46 @@ def _render_hud_scroll_frames_png(
 
                 dynamic_prev = state.get("dynamic_layer")
                 if dynamic_prev is None:
-                    dynamic_prev = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
-                dynamic_next = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+                    # PERF: alloc (avoid transparent fallback image; skip copy when previous layer is missing)
+                    dynamic_prev = None
+                # PERF: alloc (reused dynamic scratch buffers; realloc only on mismatch)
+                dynamic_scratch_pair = renderer_state.helpers.get("dynamic_next_scratch_pair")
+                need_new_scratch_pair = True
+                if isinstance(dynamic_scratch_pair, list) and len(dynamic_scratch_pair) == 2:
+                    need_new_scratch_pair = False
+                    for scratch_img in dynamic_scratch_pair:
+                        if (
+                            scratch_img is None
+                            or getattr(scratch_img, "mode", "") != "RGBA"
+                            or tuple(getattr(scratch_img, "size", (0, 0))) != (int(w), int(h))
+                        ):
+                            need_new_scratch_pair = True
+                            break
+                if need_new_scratch_pair:
+                    dynamic_scratch_pair = [
+                        Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0)),
+                        Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0)),
+                    ]
+                    renderer_state.helpers["dynamic_next_scratch_pair"] = dynamic_scratch_pair
+                    renderer_state.helpers["dynamic_next_scratch_idx"] = 0
+                last_scratch_idx = int(renderer_state.helpers.get("dynamic_next_scratch_idx", 0))
+                dynamic_next_idx = 1 if int(last_scratch_idx) == 0 else 0
+                dynamic_next = dynamic_scratch_pair[int(dynamic_next_idx)]
+                if dynamic_next is dynamic_prev:
+                    dynamic_next_idx = 1 if int(dynamic_next_idx) == 0 else 0
+                    dynamic_next = dynamic_scratch_pair[int(dynamic_next_idx)]
+                dynamic_next.paste((0, 0, 0, 0), (0, 0, int(w), int(h)))
+                renderer_state.helpers["dynamic_next_scratch_idx"] = int(dynamic_next_idx)
+                if debug_composite and (not bool(debug_composite_state.get("scratch_logged", False))):
+                    _log_print(
+                        f"[perf][scratch] dynamic_next reuse={not bool(need_new_scratch_pair)} size={int(w)}x{int(h)}",
+                        log_file,
+                    )
+                    debug_composite_state["scratch_logged"] = True
                 shift_px = int(shift_int)
-                if shift_px < int(w):
+                if dynamic_prev is not None and shift_px < int(w):
                     try:
-                        preserved = dynamic_prev.crop((int(shift_px), 0, int(w), int(h)))
-                        dynamic_next.paste(preserved, (0, 0))
+                        dynamic_next.paste(dynamic_prev, (-int(shift_px), 0))
                     except Exception:
                         pass
                 if is_throttle_brake:
@@ -5203,8 +5253,7 @@ def _render_hud_scroll_frames_png(
                     state["tb_abs_f_off_count"] = int(tb_abs_state_inc.get("tb_abs_f_off_count", 0))
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(int(w), int(h), _tb_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, _tb_draw_values_overlay)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_steering:
                     st_dr_next = ImageDraw.Draw(dynamic_next)
@@ -5273,8 +5322,7 @@ def _render_hud_scroll_frames_png(
                     state["st_last_fast_idx"] = int(last_col_inc["fast_idx"])
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(int(w), int(h), _st_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, _st_draw_values_overlay)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_delta:
                     d_dr_next = ImageDraw.Draw(dynamic_next)
@@ -5347,8 +5395,7 @@ def _render_hud_scroll_frames_png(
                     state["last_delta_sign"] = int(_d_sign_from_delta(float(last_delta_now)))
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(int(w), int(h), _d_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, _d_draw_values_overlay)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_line_delta:
                     ld_dr_next = ImageDraw.Draw(dynamic_next)
@@ -5408,8 +5455,7 @@ def _render_hud_scroll_frames_png(
                     state["last_y"] = float(last_col_inc["y"])
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(int(w), int(h), _ld_draw_values_overlay)
-                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, _ld_draw_values_overlay)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 elif is_under_oversteer:
                     uo_dr_next = ImageDraw.Draw(dynamic_next)
@@ -5484,8 +5530,7 @@ def _render_hud_scroll_frames_png(
                     state["uo_last_fast_idx"] = int(last_col_inc["fast_idx"])
 
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(int(w), int(h), None)
-                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, None)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
                 else:
                     hud_full_now = _render_scroll_hud_full(
@@ -5494,6 +5539,7 @@ def _render_hud_scroll_frames_png(
                         right_edge_cols_local=int(right_edge_cols),
                     )
                     try:
+                        # PERF: composite (crop -> paste strip update on fallback HUD path)
                         edge_strip = hud_full_now.crop((int(w) - int(right_edge_cols), 0, int(w), int(h)))
                         dynamic_next.paste(edge_strip, (int(w) - int(right_edge_cols), 0))
                     except Exception:
@@ -5506,8 +5552,7 @@ def _render_hud_scroll_frames_png(
                     state["last_right_sample"] = int(right_sample_now)
                     state["window_frames"] = int(window_frames)
                     static_now = state.get("static_layer")
-                    value_layer = _render_value_layer_local(int(w), int(h), None)
-                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, value_layer)
+                    hud_layer = _compose_hud_layers_local(int(w), int(h), static_now, dynamic_next, None)
                     _composite_hud_into_frame_local(img, hud_layer, int(x0), int(y0))
             except Exception:
                 continue
