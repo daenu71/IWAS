@@ -1885,6 +1885,10 @@ def _build_hud_context(
 def _render_hud_scroll_frames_png(
     out_dir: Path,
     ctx: HudContext,
+    *,
+    stream_mode: bool = False,
+    frame_writer: Any | None = None,
+    frame_written_cb: Any | None = None,
 ) -> str | None:
     """
     Rendert pro Frame eine PNG (transparent) fÃ¼r die HUD-Spalte (geom.hud x geom.H).
@@ -2175,23 +2179,28 @@ def _render_hud_scroll_frames_png(
         max_ticks = 99
 
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    stream_on = bool(stream_mode)
+    if stream_on and frame_writer is None:
+        raise RuntimeError("IRVC_HUD_STREAM=1 requires an active ffmpeg stdin frame writer.")
 
-    # FÃ¼r sauberen Test: alte Frames lÃ¶schen
-    try:
-        for p in out_dir.glob("hud_*.png"):
-            p.unlink()
-    except Exception:
-        pass
-        
-    # Extra: Sample-Ordner (1 Bild pro Sekunde) zum schnellen PrÃ¼fen
     samples_dir = out_dir / "_samples"
-    try:
-        samples_dir.mkdir(parents=True, exist_ok=True)
-        for p in samples_dir.glob("hud_sample_*.png"):
-            p.unlink()
-    except Exception:
-        pass
+    if not stream_on:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # FÃ¼r sauberen Test: alte Frames lÃ¶schen
+        try:
+            for p in out_dir.glob("hud_*.png"):
+                p.unlink()
+        except Exception:
+            pass
+
+        # Extra: Sample-Ordner (1 Bild pro Sekunde) zum schnellen PrÃ¼fen
+        try:
+            samples_dir.mkdir(parents=True, exist_ok=True)
+            for p in samples_dir.glob("hud_sample_*.png"):
+                p.unlink()
+        except Exception:
+            pass
 
     r = max(1.0, float(fps))
     tick_w = 2
@@ -5085,28 +5094,48 @@ def _render_hud_scroll_frames_png(
                 continue
 
 
-        fn = out_dir / f"hud_{j:06d}.png"
-        try:
-            # Flatten HUD over black before saving so ffmpeg overlay does not rely on semi-transparent alpha details.
-            save_img = Image.new("RGB", (int(geom.hud), int(geom.H)), (0, 0, 0))
-            src_rgba = img if getattr(img, "mode", "") == "RGBA" else img.convert("RGBA")
-            save_img.paste(src_rgba, (0, 0), src_rgba)
-            save_img.save(fn)
-        except Exception:
-            img.save(fn)
+        # Flatten HUD over black to keep visual output identical to the PNG path.
+        save_img = Image.new("RGB", (int(geom.hud), int(geom.H)), (0, 0, 0))
+        src_rgba = img if getattr(img, "mode", "") == "RGBA" else img.convert("RGBA")
+        save_img.paste(src_rgba, (0, 0), src_rgba)
 
-        # ZusÃ¤tzlich: 1 Sample pro Sekunde kopieren
-        try:
-            one_sec = max(1, int(round(r)))
-            if (j % one_sec) == 0:
-                sec = int(j // one_sec)
-                sfn = samples_dir / f"hud_sample_{sec:04d}.png"
-                shutil.copyfile(fn, sfn)
-        except Exception:
-            pass
+        if stream_on:
+            rgba_bytes = save_img.convert("RGBA").tobytes()
+            frame_writer(rgba_bytes)
+            if frame_written_cb is not None:
+                try:
+                    frame_written_cb(int(j) + 1, int(frames))
+                except Exception:
+                    pass
+            if hud_dbg and j < 2:
+                _log_print(f"[hudpy] sample j={j} ld={ld:.6f} ld_mod={ld_mod:.6f} -> stream rgba", log_file)
+        else:
+            fn = out_dir / f"hud_{j:06d}.png"
+            try:
+                save_img.save(fn)
+            except Exception:
+                img.save(fn)
 
-        if hud_dbg and j < 2:
-            _log_print(f"[hudpy] sample j={j} ld={ld:.6f} ld_mod={ld_mod:.6f} -> {fn.name}", log_file)
+            # ZusÃ¤tzlich: 1 Sample pro Sekunde kopieren
+            try:
+                one_sec = max(1, int(round(r)))
+                if (j % one_sec) == 0:
+                    sec = int(j // one_sec)
+                    sfn = samples_dir / f"hud_sample_{sec:04d}.png"
+                    shutil.copyfile(fn, sfn)
+            except Exception:
+                pass
+
+            if frame_written_cb is not None:
+                try:
+                    frame_written_cb(int(j) + 1, int(frames))
+                except Exception:
+                    pass
+            if hud_dbg and j < 2:
+                _log_print(f"[hudpy] sample j={j} ld={ld:.6f} ld_mod={ld_mod:.6f} -> {fn.name}", log_file)
+    if stream_on:
+        _log_print(f"[hudpy] geschrieben: {frames} frames -> ffmpeg stdin (rgba)", log_file)
+        return None
     try:
         n_written = len(list(out_dir.glob("hud_*.png")))
     except Exception:
@@ -5524,10 +5553,11 @@ def render_split_screen_sync(
     # 4) HUD Render
     # Story 2: HUD pro Frame in Python rendern (PNG Sequenz), dann als 3. ffmpeg Input Ã¼berlagern
     hud_seq_pattern = None
+    hud_stream_ctx: HudContext | None = None
+    hud_frames_dir = dbg_dir / "hud_frames"
+    hud_stream_on = (os.environ.get("IRVC_HUD_STREAM") or "").strip() == "1"
     hud_scroll_on = (os.environ.get("IRVC_HUD_SCROLL") or "").strip() == "1"
     if hud_scroll_on:
-        hud_frames_dir = dbg_dir / "hud_frames"
-
         # Story 2: Zeitfenster pro HUD (nicht nur erstes HUD)
         before_default_s = float(hud_window_default_before_s or 10.0)
         after_default_s = float(hud_window_default_after_s or 10.0)
@@ -5676,12 +5706,20 @@ def render_split_screen_sync(
             ),
             log_file=log_file,
         )
-        hud_seq_pattern = _render_hud_scroll_frames_png(hud_frames_dir, hud_ctx)
-        
-        if hud_seq_pattern:
-            _log_print(f"[hudpy] ON -> {hud_seq_pattern}", log_file)
+        if hud_stream_on:
+            hud_stream_ctx = hud_ctx
+            _log_print("[hudpy] ON -> ffmpeg stdin stream (rgba)", log_file)
         else:
-            _log_print("[hudpy] OFF (keine Sequenz erzeugt)", log_file)
+            hud_seq_pattern = _render_hud_scroll_frames_png(
+                hud_frames_dir,
+                hud_ctx,
+                stream_mode=False,
+            )
+
+            if hud_seq_pattern:
+                _log_print(f"[hudpy] ON -> {hud_seq_pattern}", log_file)
+            else:
+                _log_print("[hudpy] OFF (keine Sequenz erzeugt)", log_file)
 
 
     # sendcmd-demo komplett aus (war instabil / unwirksam)
@@ -5693,8 +5731,9 @@ def render_split_screen_sync(
     #   slow = Input 1
     #   fast = Input 2
     #
-    # Deshalb mÃ¼ssen wir hier merken: wenn hud_seq_pattern aktiv ist, dann ist hud_label="[0:v]"
-    hud_label = "[0:v]" if hud_seq_pattern else None
+    # Deshalb mÃ¼ssen wir hier merken: wenn HUD-Input aktiv ist, dann ist hud_label="[0:v]"
+    hud_input_active = bool(hud_seq_pattern) or bool(hud_stream_ctx is not None)
+    hud_label = "[0:v]" if hud_input_active else None
 
     filt, audio_map = build_stream_sync_filter(
         geom=geom,
@@ -5744,6 +5783,9 @@ def render_split_screen_sync(
                 fast=fast,
                 hud_seq=hud_seq_pattern,
                 hud_fps=float(fps_int),
+                hud_stdin_raw=bool(hud_stream_ctx is not None),
+                hud_size=(int(geom.hud), int(geom.H)),
+                hud_pix_fmt="rgba",
             ),
             flt=FilterSpec(filter_complex=filt, video_map="[vout]", audio_map=audio_map),
             enc=enc,
@@ -5753,7 +5795,48 @@ def render_split_screen_sync(
         )
 
         live = (os.environ.get("IRVC_FFMPEG_LIVE") or "").strip() == "1"
-        rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
+        if hud_stream_ctx is not None:
+            expected_bytes = int(geom.hud) * int(geom.H) * 4
+            report_every = 5
+            report_state = {"last": 0}
+
+            def _stdin_writer(stdin_pipe: Any) -> None:
+                def _write_frame_rgba(frame_bytes: bytes) -> None:
+                    if len(frame_bytes) != expected_bytes:
+                        raise RuntimeError(
+                            f"HUD stream frame size mismatch: expected {expected_bytes} bytes, got {len(frame_bytes)}"
+                        )
+                    try:
+                        stdin_pipe.write(frame_bytes)
+                    except BrokenPipeError as e:
+                        raise RuntimeError("ffmpeg stdin pipe closed while streaming HUD frames.") from e
+
+                def _on_frame_written(written: int, total: int) -> None:
+                    if written == total or written == 1 or (written - int(report_state["last"])) >= report_every:
+                        print(f"hud_stream_frame={written}/{total}", flush=True)
+                        report_state["last"] = int(written)
+
+                _render_hud_scroll_frames_png(
+                    hud_frames_dir,
+                    hud_stream_ctx,
+                    stream_mode=True,
+                    frame_writer=_write_frame_rgba,
+                    frame_written_cb=_on_frame_written,
+                )
+                try:
+                    stdin_pipe.flush()
+                except Exception:
+                    pass
+
+            rc = run_ffmpeg(
+                plan,
+                tail_n=20,
+                log_file=log_file,
+                live_stdout=live,
+                stdin_write_fn=_stdin_writer,
+            )
+        else:
+            rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
         return rc, (rc == 0 and outp.exists())
 
     selected_vcodec, last_rc = run_encode_with_fallback(

@@ -80,7 +80,9 @@ class _HudPreparingMonitor:
         self._target_pct = float(max(0.0, min(100.0, target_pct)))
         self._hud_dir = project_root / "output" / "debug" / "hud_frames"
         self._sync_cache_path = project_root / "output" / "debug" / "sync_cache.json"
+        self._stream_mode = (os.environ.get("IRVC_HUD_STREAM") or "").strip() == "1"
         self._expected_frames = 0
+        self._stream_written = 0
         self._last_pct = 0.0
         self._last_step = 0
         self._last_check = 0.0
@@ -138,6 +140,26 @@ class _HudPreparingMonitor:
         except Exception:
             return 0
 
+    def update_stream_written(self, written: int, total: int | None = None) -> None:
+        if not self._stream_mode:
+            return
+        try:
+            w = int(written)
+        except Exception:
+            return
+        if w < 0:
+            w = 0
+        if w > self._stream_written:
+            self._stream_written = int(w)
+        if total is None:
+            return
+        try:
+            t = int(total)
+        except Exception:
+            return
+        if t > 0 and t > self._expected_frames:
+            self._expected_frames = int(t)
+
     def poll(self, now: float) -> tuple[float | None, bool]:
         if self._done or self._target_pct <= 0.0:
             return None, False
@@ -147,7 +169,10 @@ class _HudPreparingMonitor:
         self._refresh_expected_frames()
         if self._expected_frames <= 0:
             return None, False
-        current = self._count_hud_pngs()
+        if self._stream_mode:
+            current = int(self._stream_written)
+        else:
+            current = self._count_hud_pngs()
         if current <= 0:
             return None, False
         if current > self._expected_frames:
@@ -572,6 +597,7 @@ def start_render(
         time_re = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
         out_time_ms_re = re.compile(r"out_time_ms=(\d+)")
         out_time_re = re.compile(r"out_time=(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
+        hud_stream_re = re.compile(r"hud_stream_frame=(\d+)(?:/(\d+))?")
 
         show_live = (os.environ.get("IRVC_UI_SHOW_LOG") or "").strip() == "1"
 
@@ -653,6 +679,18 @@ def start_render(
                             last_sec = sec
                     except Exception:
                         pass
+
+                m4 = hud_stream_re.search(line)
+                if m4:
+                    try:
+                        written = int(m4.group(1))
+                    except Exception:
+                        written = 0
+                    try:
+                        total = int(m4.group(2)) if m4.group(2) is not None else None
+                    except Exception:
+                        total = None
+                    hud_monitor.update_stream_written(written, total)
 
             now = time.time()
             if not preparing_done:

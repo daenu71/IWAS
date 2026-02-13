@@ -3,6 +3,8 @@
 import math
 import os
 import subprocess
+import io
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,9 @@ class DecodeSpec:
     fast: Path
     hud_seq: str | None = None  # ffmpeg image2 sequence pattern, z.B. "...\hud_%06d.png"
     hud_fps: float = 0.0
+    hud_stdin_raw: bool = False
+    hud_size: tuple[int, int] | None = None
+    hud_pix_fmt: str = "rgba"
 
 
 @dataclass(frozen=True)
@@ -78,8 +83,27 @@ def build_plan(
         "pipe:1",
     ]
 
-    # Optional: HUD als 3. Input (PNG-Sequenz)
-    if decode.hud_seq:
+    has_hud_input = bool(decode.hud_seq) or bool(decode.hud_stdin_raw)
+
+    # Optional: HUD als Input 0
+    if decode.hud_stdin_raw:
+        hud_r = decode.hud_fps if decode.hud_fps and decode.hud_fps > 0.1 else 0.0
+        if hud_r > 0.1:
+            cmd += ["-r", f"{hud_r}"]
+        hud_size = decode.hud_size if isinstance(decode.hud_size, tuple) else None
+        if not hud_size or int(hud_size[0]) <= 0 or int(hud_size[1]) <= 0:
+            raise RuntimeError("HUD raw stdin input requires valid hud_size=(W,H).")
+        cmd += [
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            str(decode.hud_pix_fmt or "rgba"),
+            "-s",
+            f"{int(hud_size[0])}x{int(hud_size[1])}",
+            "-i",
+            "-",
+        ]
+    elif decode.hud_seq:
         hud_r = decode.hud_fps if decode.hud_fps and decode.hud_fps > 0.1 else 0.0
         if hud_r > 0.1:
             cmd += ["-framerate", f"{hud_r}"]
@@ -106,8 +130,8 @@ def build_plan(
         cmd += ["-map", flt.audio_map]
     else:
         # Wenn HUD-Seq aktiv ist, ist Input 0 = HUD, Input 1 = slow, Input 2 = fast
-        slow_ai = "1:a?" if decode.hud_seq else "0:a?"
-        fast_ai = "2:a?" if decode.hud_seq else "1:a?"
+        slow_ai = "1:a?" if has_hud_input else "0:a?"
+        fast_ai = "2:a?" if has_hud_input else "1:a?"
 
         if audio_source == "slow":
             cmd += ["-map", slow_ai]
@@ -147,6 +171,7 @@ def run_ffmpeg(
     tail_n: int = 40,
     log_file: Path | None = None,
     live_stdout: bool = False,
+    stdin_write_fn: Any | None = None,
 ) -> int:
     """
     Runs ffmpeg while:
@@ -181,37 +206,84 @@ def run_ffmpeg(
             )
         )
 
+    use_stdin_writer = stdin_write_fn is not None
     tail: list[str] = []
+    writer_error: Exception | None = None
+    writer_thread: threading.Thread | None = None
     try:
         p = subprocess.Popen(
             plan.cmd,
+            stdin=subprocess.PIPE if use_stdin_writer else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            text=not use_stdin_writer,
+            bufsize=1 if not use_stdin_writer else 0,
         )
     except Exception as e:
         _append(f"[python] failed to start ffmpeg: {e}")
         return 1
 
+    def _writer() -> None:
+        nonlocal writer_error
+        assert p.stdin is not None
+        try:
+            stdin_write_fn(p.stdin)
+        except Exception as e:
+            writer_error = e
+        finally:
+            try:
+                p.stdin.close()
+            except Exception:
+                pass
+
+    if use_stdin_writer:
+        writer_thread = threading.Thread(target=_writer, daemon=True)
+        writer_thread.start()
+
     assert p.stdout is not None
-    for raw in p.stdout:
-        line = (raw or "").rstrip("\n")
-        _append(line)
+    if use_stdin_writer:
+        out_stream = io.TextIOWrapper(p.stdout, encoding="utf-8", errors="replace")
+        for raw in out_stream:
+            line = (raw or "").rstrip("\n")
+            _append(line)
 
-        if live_stdout:
-            print(line)
-            continue
+            if live_stdout:
+                print(line)
+                continue
 
-        if _is_progress_line(line):
-            print(line, flush=True)
+            if _is_progress_line(line):
+                print(line, flush=True)
 
-        if tail_n > 0:
-            tail.append(line)
-            if len(tail) > tail_n:
-                tail = tail[-tail_n:]
+            if tail_n > 0:
+                tail.append(line)
+                if len(tail) > tail_n:
+                    tail = tail[-tail_n:]
+    else:
+        for raw in p.stdout:
+            line = (raw or "").rstrip("\n")
+            _append(line)
+
+            if live_stdout:
+                print(line)
+                continue
+
+            if _is_progress_line(line):
+                print(line, flush=True)
+
+            if tail_n > 0:
+                tail.append(line)
+                if len(tail) > tail_n:
+                    tail = tail[-tail_n:]
 
     rc = p.wait()
+    if writer_thread is not None:
+        writer_thread.join(timeout=30.0)
+    if writer_error is not None:
+        msg = f"[python] ffmpeg stdin writer failed: {writer_error}"
+        _append(msg)
+        print(msg)
+        if rc == 0:
+            rc = 1
     if rc != 0 and not live_stdout and tail_n > 0:
         print(f"[ffmpeg-tail] last {min(tail_n, len(tail))} lines:")
         for t in tail[-tail_n:]:
