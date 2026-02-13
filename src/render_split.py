@@ -40,9 +40,22 @@ from huds.common import (
     value_boundaries_to_y,
 )
 from huds.delta import render_delta
-from huds.gear_rpm import render_gear_rpm
+from huds.gear_rpm import (
+    build_gear_rpm_table_state,
+    extract_gear_rpm_table_values,
+    render_gear_rpm,
+    render_gear_rpm_table_dynamic,
+    render_gear_rpm_table_static,
+)
 from huds.line_delta import render_line_delta
-from huds.speed import build_confirmed_max_speed_display, render_speed
+from huds.speed import (
+    build_confirmed_max_speed_display,
+    build_speed_table_state,
+    extract_speed_table_values,
+    render_speed,
+    render_speed_table_dynamic,
+    render_speed_table_static,
+)
 from huds.steering import render_steering
 from huds.throttle_brake import render_throttle_brake
 from huds.under_oversteer import render_under_oversteer
@@ -2017,6 +2030,7 @@ def _render_hud_scroll_frames_png(
         hud_pedals_abs_debounce_ms = 500
 
     log_file = ctx.log_file
+    table_cache_dbg = (os.environ.get("IRVC_DEBUG_TABLE_CACHE") or "0").strip().lower() in ("1", "true", "yes", "on")
     _ = hud_name
 
     try:
@@ -2775,10 +2789,41 @@ def _render_hud_scroll_frames_png(
 
             for hud_key, x0, y0, w, h in active_table_items:
                 try:
-                    dr.rectangle(
-                        [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
-                        fill=COL_HUD_BG,
+                    hud_state_key = f"{str(hud_key)}|{int(x0)}|{int(y0)}|{int(w)}|{int(h)}"
+                    renderer_state = renderer_state_by_hud.get(hud_state_key)
+                    if renderer_state is None:
+                        renderer_state = HudRendererState(
+                            hud_key=str(hud_key),
+                            x0=int(x0),
+                            y0=int(y0),
+                            w=int(w),
+                            h=int(h),
+                            geometry_signature=(int(w), int(h), float(r), 0, 0),
+                            first_frame=True,
+                        )
+                        renderer_state_by_hud[hud_state_key] = renderer_state
+
+                    table_cache = renderer_state.helpers.get("table_cache")
+                    if not isinstance(table_cache, dict):
+                        table_cache = {}
+                        renderer_state.helpers["table_cache"] = table_cache
+
+                    table_cache_key = (
+                        str(hud_key),
+                        int(w),
+                        int(h),
+                        tuple(COL_HUD_BG),
+                        tuple(COL_SLOW_DARKRED),
+                        tuple(COL_FAST_DARKBLUE),
+                        str(hud_speed_units),
                     )
+                    if tuple(table_cache.get("cache_key") or ()) != tuple(table_cache_key):
+                        table_cache.clear()
+                        table_cache["cache_key"] = tuple(table_cache_key)
+                        table_cache["invalidated"] = True
+                    else:
+                        table_cache["invalidated"] = False
+
                     if str(hud_key) == "Speed":
                         speed_ctx = {
                             "fps": fps,
@@ -2803,7 +2848,47 @@ def _render_hud_scroll_frames_png(
                             "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
                             "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
                         }
-                        render_speed(speed_ctx, (x0, y0, w, h), dr)
+                        speed_vals = extract_speed_table_values(speed_ctx)
+                        if speed_vals is None:
+                            dr.rectangle(
+                                [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
+                                fill=COL_HUD_BG,
+                            )
+                            continue
+
+                        speed_state = table_cache.get("table_state")
+                        speed_static = table_cache.get("static_image")
+                        if bool(table_cache.get("invalidated")) or speed_state is None or speed_static is None:
+                            try:
+                                speed_state = build_speed_table_state((int(w), int(h)), probe_values=speed_vals)
+                            except Exception:
+                                speed_state = None
+                            speed_static = None
+                            if speed_state is not None:
+                                speed_static = render_speed_table_static(speed_state, COL_SLOW_DARKRED, COL_FAST_DARKBLUE)
+                                table_cache["table_state"] = speed_state
+                                table_cache["static_image"] = speed_static
+                                if table_cache_dbg:
+                                    _log_print(f"[hudpy][table-cache] static rebuilt hud=Speed key={hud_state_key}", log_file)
+
+                        if speed_state is None or speed_static is None:
+                            dr.rectangle(
+                                [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
+                                fill=COL_HUD_BG,
+                            )
+                            render_speed(speed_ctx, (x0, y0, w, h), dr)
+                            continue
+
+                        speed_dynamic = render_speed_table_dynamic(
+                            speed_state,
+                            speed_vals[0],
+                            speed_vals[1],
+                            COL_SLOW_DARKRED,
+                            COL_FAST_DARKBLUE,
+                        )
+                        speed_layer = speed_static.copy()
+                        speed_layer.alpha_composite(speed_dynamic)
+                        _composite_hud_into_frame_local(img, speed_layer, int(x0), int(y0))
                     elif str(hud_key) == "Gear & RPM":
                         gear_rpm_ctx = {
                             "hud_key": hud_key,
@@ -2816,7 +2901,47 @@ def _render_hud_scroll_frames_png(
                             "COL_SLOW_DARKRED": COL_SLOW_DARKRED,
                             "COL_FAST_DARKBLUE": COL_FAST_DARKBLUE,
                         }
-                        render_gear_rpm(gear_rpm_ctx, (x0, y0, w, h), dr)
+                        gear_vals = extract_gear_rpm_table_values(gear_rpm_ctx)
+                        if gear_vals is None:
+                            dr.rectangle(
+                                [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
+                                fill=COL_HUD_BG,
+                            )
+                            continue
+
+                        gear_state = table_cache.get("table_state")
+                        gear_static = table_cache.get("static_image")
+                        if bool(table_cache.get("invalidated")) or gear_state is None or gear_static is None:
+                            try:
+                                gear_state = build_gear_rpm_table_state((int(w), int(h)), probe_values=gear_vals)
+                            except Exception:
+                                gear_state = None
+                            gear_static = None
+                            if gear_state is not None:
+                                gear_static = render_gear_rpm_table_static(gear_state, COL_SLOW_DARKRED, COL_FAST_DARKBLUE)
+                                table_cache["table_state"] = gear_state
+                                table_cache["static_image"] = gear_static
+                                if table_cache_dbg:
+                                    _log_print(f"[hudpy][table-cache] static rebuilt hud=Gear & RPM key={hud_state_key}", log_file)
+
+                        if gear_state is None or gear_static is None:
+                            dr.rectangle(
+                                [int(x0), int(y0), int(x0 + w - 1), int(y0 + h - 1)],
+                                fill=COL_HUD_BG,
+                            )
+                            render_gear_rpm(gear_rpm_ctx, (x0, y0, w, h), dr)
+                            continue
+
+                        gear_dynamic = render_gear_rpm_table_dynamic(
+                            gear_state,
+                            gear_vals[0],
+                            gear_vals[1],
+                            COL_SLOW_DARKRED,
+                            COL_FAST_DARKBLUE,
+                        )
+                        gear_layer = gear_static.copy()
+                        gear_layer.alpha_composite(gear_dynamic)
+                        _composite_hud_into_frame_local(img, gear_layer, int(x0), int(y0))
                 except Exception:
                     continue
 
