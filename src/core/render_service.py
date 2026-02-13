@@ -78,9 +78,7 @@ class _HudPreparingMonitor:
 
     def __init__(self, project_root: Path, target_pct: float):
         self._target_pct = float(max(0.0, min(100.0, target_pct)))
-        self._hud_dir = project_root / "output" / "debug" / "hud_frames"
         self._sync_cache_path = project_root / "output" / "debug" / "sync_cache.json"
-        self._stream_mode = (os.environ.get("IRVC_HUD_STREAM") or "").strip() == "1"
         self._expected_frames = 0
         self._stream_written = 0
         self._last_pct = 0.0
@@ -124,25 +122,7 @@ class _HudPreparingMonitor:
         self._last_pct = 0.0
         self._last_step = 0
 
-    def _count_hud_pngs(self) -> int:
-        try:
-            if not self._hud_dir.exists():
-                return 0
-            count = 0
-            for entry in self._hud_dir.iterdir():
-                if not entry.is_file():
-                    continue
-                name = entry.name
-                if not name.startswith("hud_") or entry.suffix.lower() != ".png":
-                    continue
-                count += 1
-            return count
-        except Exception:
-            return 0
-
     def update_stream_written(self, written: int, total: int | None = None) -> None:
-        if not self._stream_mode:
-            return
         try:
             w = int(written)
         except Exception:
@@ -169,10 +149,7 @@ class _HudPreparingMonitor:
         self._refresh_expected_frames()
         if self._expected_frames <= 0:
             return None, False
-        if self._stream_mode:
-            current = int(self._stream_written)
-        else:
-            current = self._count_hud_pngs()
+        current = int(self._stream_written)
         if current <= 0:
             return None, False
         if current > self._expected_frames:
@@ -205,38 +182,6 @@ def _write_duration_line(log_file: Path | None, step: str, seconds: float) -> No
             f.write(line + "\n")
     except Exception:
         pass
-
-
-def _log_cleanup_error(log_file: Path | None, message: str) -> None:
-    if log_file is None:
-        return
-    try:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open("a", encoding="utf-8") as f:
-            f.write(f"[Cleanup HUD Frames] {message}\n")
-    except Exception:
-        pass
-
-
-def _cleanup_hud_frames_dir(hud_dir: Path, log_file: Path | None) -> None:
-    start = time.perf_counter()
-    try:
-        if not hud_dir.exists() or not hud_dir.is_dir():
-            return
-        for entry in hud_dir.iterdir():
-            if not entry.is_file():
-                continue
-            if entry.suffix.lower() != ".png":
-                continue
-            try:
-                entry.unlink()
-            except Exception as exc:  # pylint: disable=broad-except
-                _log_cleanup_error(log_file, f"failed to delete {entry.name}: {exc}")
-    except Exception as exc:  # pylint: disable=broad-except
-        _log_cleanup_error(log_file, f"failed to list {hud_dir}: {exc}")
-    finally:
-        duration = time.perf_counter() - start
-        _write_duration_line(log_file, "Cleanup HUD Frames", duration)
 
 
 def _log_stage_durations(
@@ -500,7 +445,6 @@ def start_render(
         log_file_path = None
 
     start_time = time.time()
-    hud_frames_dir = project_root / "output" / "debug" / "hud_frames"
     prep_end: float | None = None
     render_start: float | None = None
     render_end: float | None = None
@@ -744,10 +688,6 @@ def start_render(
 
         final_end = time.time()
         _emit_progress(on_progress, PROGRESS_FINAL_END, DONE_TEXT)
-        if out_path.exists():
-            _cleanup_hud_frames_dir(hud_frames_dir, log_file_path)
-        else:
-            _log_cleanup_error(log_file_path, f"skipping cleanup because output missing: {out_path}")
         return {"status": "ok"}
     except Exception:
         return {"status": "error", "error": "render_failed"}

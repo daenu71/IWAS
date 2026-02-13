@@ -14,7 +14,6 @@ from typing import Any
 class DecodeSpec:
     slow: Path
     fast: Path
-    hud_seq: str | None = None  # ffmpeg image2 sequence pattern, z.B. "...\hud_%06d.png"
     hud_fps: float = 0.0
     hud_stdin_raw: bool = False
     hud_size: tuple[int, int] | None = None
@@ -83,7 +82,7 @@ def build_plan(
         "pipe:1",
     ]
 
-    has_hud_input = bool(decode.hud_seq) or bool(decode.hud_stdin_raw)
+    has_hud_input = bool(decode.hud_stdin_raw)
 
     # Optional: HUD als Input 0
     if decode.hud_stdin_raw:
@@ -103,11 +102,6 @@ def build_plan(
             "-i",
             "-",
         ]
-    elif decode.hud_seq:
-        hud_r = decode.hud_fps if decode.hud_fps and decode.hud_fps > 0.1 else 0.0
-        if hud_r > 0.1:
-            cmd += ["-framerate", f"{hud_r}"]
-        cmd += ["-i", str(decode.hud_seq)]
 
     # Inputs 0/1 bleiben slow/fast
     cmd += [
@@ -129,7 +123,7 @@ def build_plan(
     if flt.audio_map:
         cmd += ["-map", flt.audio_map]
     else:
-        # Wenn HUD-Seq aktiv ist, ist Input 0 = HUD, Input 1 = slow, Input 2 = fast
+        # Wenn HUD-Stream aktiv ist, ist Input 0 = HUD, Input 1 = slow, Input 2 = fast
         slow_ai = "1:a?" if has_hud_input else "0:a?"
         fast_ai = "2:a?" if has_hud_input else "1:a?"
 
@@ -790,7 +784,7 @@ def build_stream_sync_filter(
 
     parts.append(f"[base][vslow]overlay=0:0:shortest=1[tmp0]")
 
-    # HUD (Python PNG Sequence) als Overlay in die Mitte
+    # HUD (Python rawvideo/rgba Stream) als Overlay in die Mitte
     if hud_input_label:
         # HUD-Input ist geom.hud x geom.H mit Alpha.
         parts.append(f"{hud_input_label}format=rgba[hudrgba]")
