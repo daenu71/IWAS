@@ -230,20 +230,96 @@ def main() -> None:
         except Exception:
             return "LR"
 
-    frame_files = ttk.LabelFrame(root, text="Dateibereich")
+    left_column = ttk.Frame(root)
+    left_top_files_frame = ttk.LabelFrame(left_column, text="Dateibereich")
+    left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Einstellungen")
     frame_preview = ttk.LabelFrame(root, text="Vorschau")
-    frame_settings = ttk.LabelFrame(root, text="Einstellungen")
 
-    frame_files.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-    frame_settings.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+    left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+    left_column.columnconfigure(0, weight=1)
+    left_column.rowconfigure(0, weight=0)
+    left_column.rowconfigure(1, weight=1)
+
+    left_top_files_frame.grid(row=0, column=0, sticky="new")
+    left_scroll_settings_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+    left_scroll_settings_frame.columnconfigure(0, weight=1)
+    left_scroll_settings_frame.rowconfigure(0, weight=1)
+
+    settings_canvas = tk.Canvas(left_scroll_settings_frame, highlightthickness=0, borderwidth=0)
+    settings_vscroll = ttk.Scrollbar(left_scroll_settings_frame, orient="vertical", command=settings_canvas.yview)
+    settings_canvas.configure(yscrollcommand=settings_vscroll.set)
+    settings_canvas.grid(row=0, column=0, sticky="nsew")
+    settings_vscroll.grid(row=0, column=1, sticky="ns")
+
+    settings_inner = ttk.Frame(settings_canvas)
+    settings_canvas_window = settings_canvas.create_window((0, 0), window=settings_inner, anchor="nw")
+
+    def _update_settings_scrollregion(_event=None) -> None:
+        try:
+            settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_settings_canvas_configure(event) -> None:
+        try:
+            settings_canvas.itemconfigure(settings_canvas_window, width=max(0, int(event.width)))
+        except Exception:
+            pass
+        _update_settings_scrollregion()
+
+    settings_inner.bind("<Configure>", _update_settings_scrollregion)
+    settings_canvas.bind("<Configure>", _on_settings_canvas_configure)
+
+    def _pointer_over_settings_canvas() -> bool:
+        try:
+            if not settings_canvas.winfo_ismapped():
+                return False
+            px = int(root.winfo_pointerx())
+            py = int(root.winfo_pointery())
+            x0 = int(settings_canvas.winfo_rootx())
+            y0 = int(settings_canvas.winfo_rooty())
+            x1 = x0 + int(settings_canvas.winfo_width())
+            y1 = y0 + int(settings_canvas.winfo_height())
+            return x0 <= px < x1 and y0 <= py < y1
+        except Exception:
+            return False
+
+    def _on_settings_mousewheel(event):
+        if not _pointer_over_settings_canvas():
+            return None
+        step = 0
+        try:
+            if getattr(event, "delta", 0):
+                step = -int(event.delta / 120)
+                if step == 0:
+                    step = -1 if int(event.delta) > 0 else 1
+            elif getattr(event, "num", None) == 4:
+                step = -1
+            elif getattr(event, "num", None) == 5:
+                step = 1
+        except Exception:
+            step = 0
+        if step == 0:
+            return None
+        try:
+            settings_canvas.yview_scroll(step, "units")
+            return "break"
+        except Exception:
+            return None
+
+    root.bind_all("<MouseWheel>", _on_settings_mousewheel, add="+")
+    root.bind_all("<Button-4>", _on_settings_mousewheel, add="+")
+    root.bind_all("<Button-5>", _on_settings_mousewheel, add="+")
+
+    frame_files = left_top_files_frame
+    frame_settings = settings_inner
 
     # Vorschau soll die ganze rechte Seite füllen (ohne "Aktionen")
-    frame_preview.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=10, pady=10)
+    frame_preview.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
     # Grid-Gewichte: rechte Seite (Vorschau) wächst mit dem Fenster
     root.grid_columnconfigure(0, weight=0)
     root.grid_columnconfigure(1, weight=1)
     root.grid_rowconfigure(0, weight=1)
-    root.grid_rowconfigure(1, weight=0)
 
     # ---- Output-Format (Story 4) ----
     png_view_data: dict = persistence.load_png_view()
@@ -2719,6 +2795,76 @@ def main() -> None:
     btn_c1.bind("<Button-1>", lambda e: show_menu_for_item(e, "csv", 0))
     btn_c2.bind("<Button-1>", lambda e: show_menu_for_item(e, "csv", 1))
 
+    STARTUP_SETTINGS_VIEWPORT_HEIGHT = 340
+    RESIZE_SETTINGS_VIEWPORT_MIN = 140
+    _files_req_height = max(1, int(frame_files.winfo_reqheight()))
+
+    def _settings_frame_chrome_height() -> int:
+        try:
+            chrome = int(left_scroll_settings_frame.winfo_reqheight()) - int(settings_canvas.winfo_reqheight())
+        except Exception:
+            chrome = 0
+        if chrome < 0:
+            chrome = 0
+        return int(chrome)
+
+    def _apply_window_layout_policy(startup: bool = False) -> None:
+        nonlocal _files_req_height
+        try:
+            root.update_idletasks()
+        except Exception:
+            pass
+
+        try:
+            _files_req_height = max(int(_files_req_height), int(frame_files.winfo_reqheight()))
+        except Exception:
+            pass
+        files_req_height = max(1, int(_files_req_height))
+        settings_chrome = _settings_frame_chrome_height()
+
+        files_min_visible = max(110, min(files_req_height, int(round(files_req_height * 0.8))))
+        left_column.rowconfigure(0, minsize=int(files_min_visible))
+        left_column.rowconfigure(1, minsize=int(RESIZE_SETTINGS_VIEWPORT_MIN))
+
+        screen_w = max(1, int(root.winfo_screenwidth()))
+        screen_h = max(1, int(root.winfo_screenheight()))
+        max_window_w = max(320, int(screen_w * 0.95))
+        max_window_h = max(240, int(screen_h * 0.95))
+
+        min_w = max(760, int(left_column.winfo_reqwidth()) + 320)
+        min_h = int(files_min_visible) + 10 + int(settings_chrome) + int(RESIZE_SETTINGS_VIEWPORT_MIN)
+        min_w = min(int(min_w), max(320, int(screen_w - 40)))
+        min_h = min(int(min_h), max(240, int(screen_h - 60)))
+        root.minsize(int(max(320, min_w)), int(max(240, min_h)))
+
+        if not startup:
+            return
+
+        required_left_height = int(files_req_height) + 10 + int(settings_chrome) + int(STARTUP_SETTINGS_VIEWPORT_HEIGHT)
+        required_w = max(
+            int(root.winfo_reqwidth()),
+            int(left_column.winfo_reqwidth()) + int(frame_preview.winfo_reqwidth()) + 40,
+        )
+        required_h = max(
+            int(root.winfo_reqheight()),
+            int(frame_preview.winfo_reqheight()),
+            int(required_left_height),
+        )
+
+        current_w = max(1, int(root.winfo_width()))
+        current_h = max(1, int(root.winfo_height()))
+        target_w = min(int(max_window_w), max(int(current_w), int(required_w)))
+        target_h = min(int(max_window_h), max(int(current_h), int(required_h)))
+        if target_w > current_w or target_h > current_h:
+            root.geometry(f"{int(target_w)}x{int(target_h)}")
+
+    def _on_root_resize(event=None) -> None:
+        if event is not None and event.widget is not root:
+            return
+        _apply_window_layout_policy(startup=False)
+
+    root.bind("<Configure>", _on_root_resize, add="+")
+
     def _startup_initialize_png_preview() -> None:
         try:
             mode = str(preview_mode_var.get() or "png").strip().lower()
@@ -2740,6 +2886,10 @@ def main() -> None:
         _run_hud_fit_if_frame_mode("startup_png_preview_initialized")
 
     sync_from_folders_if_needed_ui(force=True)
+    try:
+        root.after(0, lambda: _apply_window_layout_policy(startup=True))
+    except Exception:
+        _apply_window_layout_policy(startup=True)
     try:
         root.after(0, _startup_initialize_png_preview)
     except Exception:
