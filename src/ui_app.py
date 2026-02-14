@@ -16,7 +16,12 @@ from core.models import (
     Profile,
 )
 from core import persistence, filesvc, profile_service, render_service
-from core.output_geometry import build_output_geometry_for_size
+from core.output_geometry import (
+    Rect,
+    build_output_geometry_for_size,
+    layout_horizontal_frame_hud_boxes,
+    split_weighted_lengths,
+)
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from preview.png_preview import PngPreviewController
 from preview.video_preview import VideoPreviewController
@@ -774,9 +779,7 @@ def main() -> None:
     apply_model_to_ui_state(model_from_ui_state())
 
     lbl_hud_size = ttk.Label(frame_settings, text="HUD-width (px):")
-    lbl_hud_size.grid(row=5, column=0, sticky="w", padx=10, pady=2)
     spn_hud = ttk.Spinbox(frame_settings, from_=0, to=10000, width=10, textvariable=hud_width_var)
-    spn_hud.grid(row=5, column=1, sticky="w", padx=10, pady=2)
 
     lbl_out_fps = ttk.Label(frame_settings, text="FPS (vom Video): –")
     lbl_out_fps.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(6, 6))
@@ -853,26 +856,13 @@ def main() -> None:
             return 1.0
 
         def _split_weighted(total: int, items: list[dict]) -> list[int]:
-            t = max(0, int(total))
-            n = len(items)
-            if n <= 0:
-                return []
             weights: list[float] = []
             for b in items:
                 w = float(_hud_weight_for_box(b))
                 if w <= 0.0:
                     w = 1.0
                 weights.append(w)
-            weight_sum = float(sum(weights))
-            if weight_sum <= 0.0:
-                weights = [1.0] * n
-                weight_sum = float(n)
-            out = [int(float(t) * (w / weight_sum)) for w in weights]
-            remaining = int(t - sum(out))
-            if remaining > 0:
-                for i in range(remaining):
-                    out[i % n] += 1
-            return out
+            return split_weighted_lengths(int(total), weights)
 
         def _active_hud_boxes_in_order(boxes: list[dict], enabled: set[str]) -> list[dict]:
             out: list[dict] = []
@@ -1015,41 +1005,47 @@ def main() -> None:
                     b["h"] = int(h_i)
                     cur_y += h_i
         else:
-            def _place_horizontal(items: list[dict], rect_xywh: tuple[int, int, int, int]) -> None:
-                rx, ry, rw, rh = rect_xywh
-                widths = _split_weighted(rw, items)
-                cur_x = int(rx)
-                for i, b in enumerate(items):
-                    w_i = int(widths[i]) if i < len(widths) else 0
-                    b["x"] = int(cur_x)
-                    b["y"] = int(ry)
-                    b["w"] = int(w_i)
-                    b["h"] = int(rh)
-                    cur_x += w_i
+            rect_items: list[tuple[int, int, int, int]] = []
+            for rr in frame_rects:
+                ri = _to_rect_xywh(rr)
+                if ri is not None:
+                    rect_items.append(ri)
+            rect_items.sort(key=lambda it: (int(it[1]), int(it[0])))
 
-            if anchor == "top_bottom" and len(frame_rects) >= 2:
-                rect_items: list[tuple[int, int, int, int]] = []
-                for rr in frame_rects:
-                    ri = _to_rect_xywh(rr)
-                    if ri is not None:
-                        rect_items.append(ri)
-                rect_items.sort(key=lambda it: (int(it[1]), int(it[0])))
-
-                if len(rect_items) >= 2:
-                    n = len(active_boxes)
-                    n_top = (n + 1) // 2
-                    top_items = active_boxes[:n_top]
-                    bottom_items = active_boxes[n_top:]
-                    _place_horizontal(top_items, rect_items[0])
-                    _place_horizontal(bottom_items, rect_items[1])
-                else:
-                    _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
+            if anchor == "top_bottom" and len(rect_items) < 2:
+                _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
+            elif not rect_items:
+                _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
             else:
-                r = _to_rect_xywh(frame_rects[0])
-                if r is None:
+                placed = layout_horizontal_frame_hud_boxes(
+                    active_boxes=active_boxes,
+                    frame_rects=tuple(Rect(int(x), int(y), int(w), int(h)) for x, y, w, h in rect_items),
+                    anchor=str(anchor),
+                )
+                if not placed:
                     _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
                 else:
-                    _place_horizontal(active_boxes, r)
+                    for b, rr in placed:
+                        b["x"] = int(rr.x)
+                        b["y"] = int(rr.y)
+                        b["w"] = int(rr.w)
+                        b["h"] = int(rr.h)
+
+        def _sum_unique_column_width(items: list[dict]) -> int:
+            seen: set[tuple[int, int]] = set()
+            total = 0
+            for b in items:
+                try:
+                    bx = int(b.get("x", 0))
+                    bw = int(b.get("w", 0))
+                except Exception:
+                    continue
+                key = (int(bx), int(max(0, bw)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                total += int(max(0, bw))
+            return int(total)
 
         dbg_fit = False
         try:
@@ -1092,17 +1088,17 @@ def main() -> None:
                     n_top = (n + 1) // 2
                     top_items = active_boxes[:n_top]
                     bottom_items = active_boxes[n_top:]
-                    top_w = sum(max(0, int(b.get("w", 0))) for b in top_items)
+                    top_w = _sum_unique_column_width(top_items)
                     if int(top_w) != int(rect_items_dbg[0][2]):
                         raise AssertionError(f"HUD-Fit: Top-Width-Summe stimmt nicht ({top_w} != {rect_items_dbg[0][2]}).")
                     if bottom_items:
-                        bottom_w = sum(max(0, int(b.get("w", 0))) for b in bottom_items)
+                        bottom_w = _sum_unique_column_width(bottom_items)
                         if int(bottom_w) != int(rect_items_dbg[1][2]):
                             raise AssertionError(
                                 f"HUD-Fit: Bottom-Width-Summe stimmt nicht ({bottom_w} != {rect_items_dbg[1][2]})."
                             )
                 elif rect_items_dbg:
-                    sum_w = sum(max(0, int(b.get("w", 0))) for b in active_boxes)
+                    sum_w = _sum_unique_column_width(active_boxes)
                     if int(sum_w) != int(rect_items_dbg[0][2]):
                         raise AssertionError(f"HUD-Fit: Width-Summe stimmt nicht ({sum_w} != {rect_items_dbg[0][2]}).")
 
@@ -1118,7 +1114,6 @@ def main() -> None:
             pass
 
     btn_hud_fit = ttk.Button(frame_settings, text="HUDs auf Rahmenbreite", command=hud_fit_to_frame_width)
-    btn_hud_fit.grid(row=9 + len(HUD_TYPES), column=1, sticky="w", padx=(10, 0), pady=(6, 2))
 
     hud_mode_row = 10 + len(HUD_TYPES)
     ttk.Separator(frame_settings, orient="horizontal").grid(
@@ -1213,9 +1208,13 @@ def main() -> None:
         command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
     ).grid(row=0, column=3, sticky="w")
 
+    lbl_hud_size.grid(row=hud_mode_row + 3, column=0, sticky="w", padx=10, pady=(0, 2))
+    spn_hud.grid(row=hud_mode_row + 3, column=1, sticky="w", padx=10, pady=(0, 2))
+    btn_hud_fit.grid(row=hud_mode_row + 3, column=2, sticky="w", padx=(10, 10), pady=(0, 2))
+
     lbl_hud_bg_alpha = ttk.Label(frame_settings, text="HUD Background Alpha:")
     lbl_hud_bg_alpha.grid(
-        row=hud_mode_row + 3, column=0, sticky="w", padx=10, pady=(0, 2)
+        row=hud_mode_row + 4, column=0, sticky="w", padx=10, pady=(0, 2)
     )
     sld_hud_bg_alpha = ttk.Scale(
         frame_settings,
@@ -1225,7 +1224,7 @@ def main() -> None:
         variable=hud_bg_alpha_var,
         command=lambda _v: _apply_hud_bg_alpha_from_var(refresh_preview=True),
     )
-    sld_hud_bg_alpha.grid(row=hud_mode_row + 3, column=1, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
+    sld_hud_bg_alpha.grid(row=hud_mode_row + 4, column=1, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
 
     def _update_hud_mode_visibility() -> None:
         is_free = bool(hud_free_mode_var.get())
@@ -1249,19 +1248,21 @@ def main() -> None:
         if is_free:
             lbl_hud_size.grid_remove()
             spn_hud.grid_remove()
+            btn_hud_fit.grid_remove()
             frm_hud_frame_controls.grid_remove()
             lbl_hud_bg_alpha.grid()
             sld_hud_bg_alpha.grid()
         else:
             lbl_hud_size.grid()
             spn_hud.grid()
+            btn_hud_fit.grid()
             frm_hud_frame_controls.grid()
             lbl_hud_bg_alpha.grid_remove()
             sld_hud_bg_alpha.grid_remove()
 
     _update_hud_mode_visibility()
 
-    video_place_row = hud_mode_row + 4
+    video_place_row = hud_mode_row + 5
     ttk.Separator(frame_settings, orient="horizontal").grid(
         row=video_place_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
     )
