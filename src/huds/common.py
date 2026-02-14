@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import weakref
 from typing import Any, Callable
 
 # Shared HUD colors (RGBA). Keep exact values to preserve output.
@@ -17,6 +18,9 @@ _HUD_TEXT_SHADOW_ENABLE = True
 _HUD_TEXT_SHADOW_OFFSET_PX = 1
 _HUD_TEXT_SHADOW_ALPHA = 160
 _HUD_TEXT_BRIGHTEN_ENABLE = True
+_HUD_TEXT_DEBUG_FORCE_VISIBLE = False
+_HUD_TEXT_DEBUG_MARKER_WEAK: weakref.WeakSet[Any] = weakref.WeakSet()
+_HUD_TEXT_DEBUG_MARKER_ID_FALLBACK: set[int] = set()
 
 ALLOWED_TICK_STEPS: tuple[float, ...] = (
     100.0,
@@ -88,15 +92,18 @@ def configure_hud_text_style(
     shadow_offset_px: Any = 1,
     shadow_alpha: Any = 160,
     brighten_enable: Any = True,
+    debug_force_visible: Any = False,
 ) -> None:
     global _HUD_TEXT_SHADOW_ENABLE
     global _HUD_TEXT_SHADOW_OFFSET_PX
     global _HUD_TEXT_SHADOW_ALPHA
     global _HUD_TEXT_BRIGHTEN_ENABLE
+    global _HUD_TEXT_DEBUG_FORCE_VISIBLE
     _HUD_TEXT_SHADOW_ENABLE = _coerce_bool(shadow_enable, True)
     _HUD_TEXT_SHADOW_OFFSET_PX = _coerce_int(shadow_offset_px, 1, 0, 8)
     _HUD_TEXT_SHADOW_ALPHA = _coerce_int(shadow_alpha, 160, 0, 255)
     _HUD_TEXT_BRIGHTEN_ENABLE = _coerce_bool(brighten_enable, True)
+    _HUD_TEXT_DEBUG_FORCE_VISIBLE = _coerce_bool(debug_force_visible, False)
 
 
 def _coerce_rgba_any(col: Any, default: tuple[int, int, int, int] = COL_WHITE) -> tuple[int, int, int, int]:
@@ -108,9 +115,45 @@ def _coerce_rgba_any(col: Any, default: tuple[int, int, int, int] = COL_WHITE) -
     return _coerce_rgba(default)
 
 
-def _luma_255(rgb: tuple[int, int, int]) -> float:
+def _luma_255_srgb_relative(rgb: tuple[int, int, int]) -> float:
     r, g, b = rgb
-    return (0.2126 * float(r)) + (0.7152 * float(g)) + (0.0722 * float(b))
+    rf = float(max(0.0, min(1.0, float(r) / 255.0)))
+    gf = float(max(0.0, min(1.0, float(g) / 255.0)))
+    bf = float(max(0.0, min(1.0, float(b) / 255.0)))
+
+    def _srgb_to_linear(c: float) -> float:
+        if c <= 0.04045:
+            return c / 12.92
+        return ((c + 0.055) / 1.055) ** 2.4
+
+    lr = _srgb_to_linear(rf)
+    lg = _srgb_to_linear(gf)
+    lb = _srgb_to_linear(bf)
+    return (0.2126 * lr + 0.7152 * lg + 0.0722 * lb) * 255.0
+
+
+def _draw_text_debug_marker_once(dr: Any) -> None:
+    if not bool(_HUD_TEXT_DEBUG_FORCE_VISIBLE):
+        return
+    seen = False
+    try:
+        seen = dr in _HUD_TEXT_DEBUG_MARKER_WEAK
+        if not seen:
+            _HUD_TEXT_DEBUG_MARKER_WEAK.add(dr)
+    except Exception:
+        dr_id = int(id(dr))
+        if dr_id in _HUD_TEXT_DEBUG_MARKER_ID_FALLBACK:
+            seen = True
+        else:
+            _HUD_TEXT_DEBUG_MARKER_ID_FALLBACK.add(dr_id)
+            if len(_HUD_TEXT_DEBUG_MARKER_ID_FALLBACK) > 10000:
+                _HUD_TEXT_DEBUG_MARKER_ID_FALLBACK.clear()
+    if seen:
+        return
+    try:
+        dr.text((2, 2), "TEXT-DBG", fill=(255, 255, 255, 255))
+    except Exception:
+        pass
 
 
 def _brighten_text_rgba(fill: tuple[int, int, int, int], enabled: bool) -> tuple[int, int, int, int]:
@@ -122,7 +165,7 @@ def _brighten_text_rgba(fill: tuple[int, int, int, int], enabled: bool) -> tuple
         return (COL_SLOW_TEXT_RED[0], COL_SLOW_TEXT_RED[1], COL_SLOW_TEXT_RED[2], int(a))
     if rgb == COL_FAST_DARKBLUE[:3]:
         return (COL_FAST_TEXT_BLUE[0], COL_FAST_TEXT_BLUE[1], COL_FAST_TEXT_BLUE[2], int(a))
-    luma = _luma_255(rgb)
+    luma = _luma_255_srgb_relative(rgb)
     target = 112.0
     if luma >= target:
         return fill
@@ -155,24 +198,32 @@ def draw_text_with_shadow(
     fill_rgba = _coerce_rgba_any(fill, default=COL_WHITE)
     do_brighten = _HUD_TEXT_BRIGHTEN_ENABLE if brighten_enable is None else bool(brighten_enable)
     fill_rgba = _brighten_text_rgba(fill_rgba, enabled=bool(do_brighten))
+    _draw_text_debug_marker_once(dr)
     x = int(round(float(xy[0])))
     y = int(round(float(xy[1])))
-    use_shadow = _HUD_TEXT_SHADOW_ENABLE if shadow_enable is None else bool(shadow_enable)
-    use_alpha = _HUD_TEXT_SHADOW_ALPHA if shadow_strength is None else int(shadow_strength)
-    use_alpha = _coerce_int(use_alpha, 160, 0, 255)
-    if isinstance(shadow_offset_px, (tuple, list)) and len(shadow_offset_px) >= 2:
-        dx = int(shadow_offset_px[0])
-        dy = int(shadow_offset_px[1])
+    if bool(_HUD_TEXT_DEBUG_FORCE_VISIBLE):
+        use_shadow = True
+        use_alpha = 255
+        dx = 3
+        dy = 3
+        sh_col = (255, 255, 255, 255)
     else:
-        off = _HUD_TEXT_SHADOW_OFFSET_PX if shadow_offset_px is None else int(shadow_offset_px)
-        off = _coerce_int(off, 1, -8, 8)
-        dx = int(off)
-        dy = int(off)
+        use_shadow = _HUD_TEXT_SHADOW_ENABLE if shadow_enable is None else bool(shadow_enable)
+        use_alpha = _HUD_TEXT_SHADOW_ALPHA if shadow_strength is None else int(shadow_strength)
+        use_alpha = _coerce_int(use_alpha, 160, 0, 255)
+        if isinstance(shadow_offset_px, (tuple, list)) and len(shadow_offset_px) >= 2:
+            dx = int(shadow_offset_px[0])
+            dy = int(shadow_offset_px[1])
+        else:
+            off = _HUD_TEXT_SHADOW_OFFSET_PX if shadow_offset_px is None else int(shadow_offset_px)
+            off = _coerce_int(off, 1, -8, 8)
+            dx = int(off)
+            dy = int(off)
+        luma = _luma_255_srgb_relative((fill_rgba[0], fill_rgba[1], fill_rgba[2]))
+        sh_rgb = (255, 255, 255) if luma < 130.0 else (0, 0, 0)
+        sh_col = (int(sh_rgb[0]), int(sh_rgb[1]), int(sh_rgb[2]), int(use_alpha))
 
     if bool(use_shadow) and int(use_alpha) > 0:
-        luma = _luma_255((fill_rgba[0], fill_rgba[1], fill_rgba[2]))
-        sh_rgb = (255, 255, 255) if luma < 105.0 else (0, 0, 0)
-        sh_col = (int(sh_rgb[0]), int(sh_rgb[1]), int(sh_rgb[2]), int(use_alpha))
         try:
             dr.text((int(x + dx), int(y + dy)), txt, fill=sh_col, font=font)
         except Exception:

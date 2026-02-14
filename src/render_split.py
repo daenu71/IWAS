@@ -40,6 +40,7 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    draw_text_with_shadow,
     filter_axis_labels_by_position,
     format_value_for_step,
     should_suppress_boundary_label,
@@ -3712,10 +3713,13 @@ def _render_hud_scroll_frames_png(
                             by0 = 0.0
                         tx = ((float(x0_cell) + float(x1_cell)) - float(tw)) / 2.0 - bx0
                         ty = ((float(y0_cell) + float(y1_cell)) - float(th)) / 2.0 - by0
-                        try:
-                            dr_any.text((int(round(tx)), int(round(ty))), txt, fill=col_val, font=font_val_any)
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            dr_any,
+                            (int(round(tx)), int(round(ty))),
+                            txt,
+                            fill=col_val,
+                            font=font_val_any,
+                        )
 
                     def _tb_render_static_layer() -> Any:
                         static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
@@ -3771,10 +3775,13 @@ def _render_hud_scroll_frames_png(
                             (int(tb_layout["y_from_01"](0.8)), "80"),
                         ]
                         for y_lab, txt_lab in axis_labels:
-                            try:
-                                static_dr_local.text((6, int(y_lab) - 6), str(txt_lab), fill=COL_WHITE, font=tb_layout.get("font_axis"))
-                            except Exception:
-                                pass
+                            draw_text_with_shadow(
+                                static_dr_local,
+                                (6, int(y_lab) - 6),
+                                str(txt_lab),
+                                fill=COL_WHITE,
+                                font=tb_layout.get("font_axis"),
+                            )
 
                         table_top = int(tb_layout.get("table_top", 0))
                         table_bottom = int(tb_layout.get("table_bottom", table_top))
@@ -3842,10 +3849,13 @@ def _render_hud_scroll_frames_png(
                         _tb_draw_table_static(int(tb_layout.get("table_left_x", 0)), COL_SLOW_DARKRED)
                         _tb_draw_table_static(int(tb_layout.get("table_right_x", 0)), COL_FAST_DARKBLUE)
 
-                        try:
-                            static_dr_local.text((4, int(tb_layout["y_txt"])), "Throttle / Brake", fill=COL_WHITE, font=tb_layout.get("font_title"))
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            static_dr_local,
+                            (4, int(tb_layout["y_txt"])),
+                            "Throttle / Brake",
+                            fill=COL_WHITE,
+                            font=tb_layout.get("font_title"),
+                        )
                         if hud_dbg:
                             abs_bottom_dbg = int(
                                 tb_layout.get(
@@ -4243,10 +4253,13 @@ def _render_hud_scroll_frames_png(
                             pass
                         mx_s = int(st_layout["mx"])
                         static_dr_local.rectangle([mx_s, 0, mx_s + 1, int(h)], fill=(255, 255, 255, 230))
-                        try:
-                            static_dr_local.text((4, int(st_layout["y_txt"])), "Steering wheel angle", fill=COL_WHITE, font=st_layout.get("font_title"))
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            static_dr_local,
+                            (4, int(st_layout["y_txt"])),
+                            "Steering wheel angle",
+                            fill=COL_WHITE,
+                            font=st_layout.get("font_title"),
+                        )
                         return static_img_local
 
                     def _st_render_dynamic_full() -> tuple[Any, list[dict[str, Any]]]:
@@ -4285,14 +4298,20 @@ def _render_hud_scroll_frames_png(
                         if s_x_txt > int(base_x + int(w) - 2):
                             s_x_txt = int(base_x + int(w) - 2)
                         y_txt_abs = int(base_y) + int(st_layout["y_txt"])
-                        try:
-                            main_dr_local.text((int(f_x_txt), int(y_txt_abs)), f_txt, fill=(255, 0, 0, 255), font=st_layout.get("font_val"))
-                        except Exception:
-                            pass
-                        try:
-                            main_dr_local.text((int(s_x_txt), int(y_txt_abs)), s_txt, fill=(0, 120, 255, 255), font=st_layout.get("font_val"))
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            main_dr_local,
+                            (int(f_x_txt), int(y_txt_abs)),
+                            f_txt,
+                            fill=(255, 0, 0, 255),
+                            font=st_layout.get("font_val"),
+                        )
+                        draw_text_with_shadow(
+                            main_dr_local,
+                            (int(s_x_txt), int(y_txt_abs)),
+                            s_txt,
+                            fill=(0, 120, 255, 255),
+                            font=st_layout.get("font_val"),
+                        )
 
                     renderer_state.helpers["st_fns"] = {
                         "layout": st_layout,
@@ -4569,16 +4588,14 @@ def _render_hud_scroll_frames_png(
                             x_pad=6,
                             fallback_font_obj=d_layout.get("font_axis_small"),
                         )
-                        try:
-                            # Visible title is "Time Delta"; HUD key remains "Delta" (API contract).
-                            static_dr_local.text(
-                                (4, int(d_layout["y_txt"])),
-                                "Time Delta",
-                                fill=COL_WHITE,
-                                font=d_layout.get("font_title"),
-                            )
-                        except Exception:
-                            pass
+                        # Visible title is "Time Delta"; HUD key remains "Delta" (API contract).
+                        draw_text_with_shadow(
+                            static_dr_local,
+                            (4, int(d_layout["y_txt"])),
+                            "Time Delta",
+                            fill=COL_WHITE,
+                            font=d_layout.get("font_title"),
+                        )
                         try:
                             static_dr_local.line(
                                 [(0, int(d_y_zero)), (int(w) - 1, int(d_y_zero))],
@@ -4630,10 +4647,13 @@ def _render_hud_scroll_frames_png(
                         txt = f"{d_cur:+.3f}s"
                         if len(txt) < len(placeholder):
                             txt = txt.rjust(len(placeholder), " ")
-                        try:
-                            main_dr_local.text((int(x_val), int(y_val)), txt, fill=col_cur, font=d_layout.get("font_val"))
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            main_dr_local,
+                            (int(x_val), int(y_val)),
+                            txt,
+                            fill=col_cur,
+                            font=d_layout.get("font_val"),
+                        )
                     renderer_state.helpers["d_fns"] = {
                         "layout": d_layout,
                         "sample_column": _d_sample_column,
@@ -4858,10 +4878,13 @@ def _render_hud_scroll_frames_png(
                             x_pad=6,
                             fallback_font_obj=ld_layout.get("font_axis_small"),
                         )
-                        try:
-                            static_dr_local.text((4, int(ld_layout["y_txt"])), "Line delta", fill=COL_WHITE, font=ld_layout.get("font_title"))
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            static_dr_local,
+                            (4, int(ld_layout["y_txt"])),
+                            "Line delta",
+                            fill=COL_WHITE,
+                            font=ld_layout.get("font_title"),
+                        )
                         try:
                             static_dr_local.line([(0, int(y_zero)), (int(w) - 1, int(y_zero))], fill=COL_WHITE, width=1)
                         except Exception:
@@ -4907,10 +4930,13 @@ def _render_hud_scroll_frames_png(
                         if x_val < int(base_x + 4):
                             x_val = int(base_x + 4)
                         y_val = int(base_y) + int(ld_layout["y_txt"])
-                        try:
-                            main_dr_local.text((int(x_val), int(y_val)), txt, fill=COL_WHITE, font=ld_layout.get("font_val"))
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            main_dr_local,
+                            (int(x_val), int(y_val)),
+                            txt,
+                            fill=COL_WHITE,
+                            font=ld_layout.get("font_val"),
+                        )
                     renderer_state.helpers["ld_fns"] = {
                         "layout": ld_layout,
                         "sample_column": _ld_sample_column,
@@ -5152,24 +5178,20 @@ def _render_hud_scroll_frames_png(
                             x_pad=6,
                             fallback_font_obj=uo_layout.get("font_axis_small"),
                         )
-                        try:
-                            static_dr_local.text(
-                                (int(uo_layout["label_x"]), int(uo_layout["label_top_y"])),
-                                "Oversteer",
-                                fill=COL_WHITE,
-                                font=uo_layout.get("font_title"),
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            static_dr_local.text(
-                                (int(uo_layout["label_x"]), int(uo_layout["label_bottom_y"])),
-                                "Understeer",
-                                fill=COL_WHITE,
-                                font=uo_layout.get("font_title"),
-                            )
-                        except Exception:
-                            pass
+                        draw_text_with_shadow(
+                            static_dr_local,
+                            (int(uo_layout["label_x"]), int(uo_layout["label_top_y"])),
+                            "Oversteer",
+                            fill=COL_WHITE,
+                            font=uo_layout.get("font_title"),
+                        )
+                        draw_text_with_shadow(
+                            static_dr_local,
+                            (int(uo_layout["label_x"]), int(uo_layout["label_bottom_y"])),
+                            "Understeer",
+                            fill=COL_WHITE,
+                            font=uo_layout.get("font_title"),
+                        )
                         try:
                             static_dr_local.line([(0, int(y_zero)), (int(w) - 1, int(y_zero))], fill=COL_WHITE, width=1)
                         except Exception:

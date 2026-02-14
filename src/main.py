@@ -522,6 +522,7 @@ def main() -> None:
     hud_text_shadow_offset_px = 1
     hud_text_shadow_alpha = 160
     hud_text_brighten_enable = True
+    hud_text_debug_force_visible = False
     try:
         cp = configparser.ConfigParser()
         cp.read(Path(getattr(cfg, "config_file", project_root / "config/defaults.ini")), encoding="utf-8")
@@ -529,6 +530,7 @@ def main() -> None:
         hud_text_shadow_offset_px = int(_ini_int(cp, "video_compare", "hud_text_shadow_offset_px", 1))
         hud_text_shadow_alpha = int(_ini_int(cp, "video_compare", "hud_text_shadow_alpha", 160))
         hud_text_brighten_enable = bool(_ini_bool(cp, "video_compare", "hud_text_brighten_enable", 1))
+        hud_text_debug_force_visible = bool(_ini_bool(cp, "video_compare", "hud_text_debug_force_visible", 0))
     except Exception:
         pass
     if hud_text_shadow_offset_px < 0:
@@ -544,11 +546,23 @@ def main() -> None:
         shadow_offset_px=int(hud_text_shadow_offset_px),
         shadow_alpha=int(hud_text_shadow_alpha),
         brighten_enable=bool(hud_text_brighten_enable),
+        debug_force_visible=bool(hud_text_debug_force_visible),
     )
-    log.kv("hud_text_shadow_enable", str(int(bool(hud_text_shadow_enable))))
-    log.kv("hud_text_shadow_offset_px", str(int(hud_text_shadow_offset_px)))
-    log.kv("hud_text_shadow_alpha", str(int(hud_text_shadow_alpha)))
-    log.kv("hud_text_brighten_enable", str(int(bool(hud_text_brighten_enable))))
+    eff_shadow_enable = bool(hud_text_shadow_enable)
+    eff_shadow_offset_px = int(hud_text_shadow_offset_px)
+    eff_shadow_alpha = int(hud_text_shadow_alpha)
+    if bool(hud_text_debug_force_visible):
+        eff_shadow_enable = True
+        eff_shadow_offset_px = 3
+        eff_shadow_alpha = 255
+    log.msg(
+        "hud_text_style_effective: "
+        f"shadow_enable={int(bool(eff_shadow_enable))} "
+        f"offset_px={int(eff_shadow_offset_px)} "
+        f"alpha={int(eff_shadow_alpha)} "
+        f"brighten_enable={int(bool(hud_text_brighten_enable))} "
+        f"debug_force_visible={int(bool(hud_text_debug_force_visible))}"
+    )
 
     hud_pedals_sample_mode = "time"
     hud_pedals_abs_debounce_ms = 60
