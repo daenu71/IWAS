@@ -286,7 +286,15 @@ def run_ffmpeg(
 
 
 def _view_defaults() -> dict[str, Any]:
-    return {"zoom": 1.0, "off_x": 0, "off_y": 0, "fit_to_height": True}
+    return {
+        "zoom": 1.0,
+        "off_x": 0,
+        "off_y": 0,
+        "fit_to_height": True,
+        "scale_pct": 100.0,
+        "shift_x_px": 0,
+        "shift_y_px": 0,
+    }
 
 
 def _view_get(d: dict[str, Any] | None) -> dict[str, Any]:
@@ -331,11 +339,17 @@ def _bool(v: Any, default: bool) -> bool:
 
 
 def _build_side_chain_core(input_ref: str, target_w: int, target_h: int, r: int, view: dict[str, Any], label_out: str) -> str:
-    zoom = _num(view.get("zoom"), 1.0)
-    if zoom < 1.0:
-        zoom = 1.0
-    off_x = -_int(view.get("off_x"), 0)
-    off_y = -_int(view.get("off_y"), 0)
+    scale_pct_raw = view.get("scale_pct", None)
+    if scale_pct_raw is None or str(scale_pct_raw).strip() == "":
+        zoom = _num(view.get("zoom"), 1.0)
+        if zoom <= 0.0:
+            zoom = 0.01
+    else:
+        zoom = _num(scale_pct_raw, 100.0) / 100.0
+        if zoom <= 0.0:
+            zoom = 0.01
+    shift_x = _int(view.get("shift_x_px"), _int(view.get("off_x"), 0))
+    shift_y = _int(view.get("shift_y_px"), _int(view.get("off_y"), 0))
     fit_to_height = _bool(view.get("fit_to_height"), True)
 
     chain = f"[{input_ref}]fps={r},setpts=PTS-STARTPTS"
@@ -343,16 +357,21 @@ def _build_side_chain_core(input_ref: str, target_w: int, target_h: int, r: int,
     if fit_to_height:
         chain += f",scale=-2:{target_h}"
     else:
-        chain += f",scale=-2:{target_h}"
+        chain += f",scale={target_w}:-2"
 
     if abs(zoom - 1.0) > 1e-6:
         chain += f",scale=iw*{zoom}:ih*{zoom}"
 
-    x_expr = f"max(0\\,min(iw-{target_w}\\,(iw-{target_w})/2+{off_x}))"
-    y_expr = f"max(0\\,min(ih-{target_h}\\,(ih-{target_h})/2+{off_y}))"
-    chain += f",crop={target_w}:{target_h}:{x_expr}:{y_expr}[{label_out}]"
+    src_label = f"{label_out}_src"
+    bg_label = f"{label_out}_bg"
+    x_expr = f"(W-w)/2{shift_x:+d}"
+    y_expr = f"(H-h)/2{shift_y:+d}"
 
-    return chain
+    return (
+        f"{chain}[{src_label}];"
+        f"color=c=black:s={target_w}x{target_h}:r={r}[{bg_label}];"
+        f"[{bg_label}][{src_label}]overlay=x={x_expr}:y={y_expr}:shortest=1[{label_out}]"
+    )
 
 
 def _build_side_chain(input_idx: int, target_w: int, target_h: int, r: int, view: dict[str, Any], label_out: str) -> str:
@@ -563,6 +582,10 @@ def build_split_filter_from_geometry(
 
     vL = _view_get(view_L)
     vR = _view_get(view_R)
+    video_layout = str(getattr(geom, "video_layout", "LR") or "LR").strip().upper()
+    fit_to_height = video_layout != "TB"
+    vL["fit_to_height"] = fit_to_height
+    vR["fit_to_height"] = fit_to_height
 
     slow_x, slow_y, slow_w, slow_h = _geom_video_rect(geom, "video_slow_rect")
     fast_x, fast_y, fast_w, fast_h = _geom_video_rect(geom, "video_fast_rect")
@@ -635,6 +658,10 @@ def build_stream_sync_filter(
 
     vL = _view_get(view_L)
     vR = _view_get(view_R)
+    video_layout = str(getattr(geom, "video_layout", "LR") or "LR").strip().upper()
+    fit_to_height = video_layout != "TB"
+    vL["fit_to_height"] = fit_to_height
+    vR["fit_to_height"] = fit_to_height
     slow_x, slow_y, slow_w, slow_h = _geom_video_rect(geom, "video_slow_rect")
     fast_x, fast_y, fast_w, fast_h = _geom_video_rect(geom, "video_fast_rect")
 

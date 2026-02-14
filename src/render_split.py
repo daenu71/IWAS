@@ -124,6 +124,38 @@ def _to_float_safe(v: Any, default: float) -> float:
         return default
 
 
+def _build_render_video_views(
+    view_L: dict[str, Any] | None,
+    view_R: dict[str, Any] | None,
+    layout_config: LayoutConfig | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    out_l = dict(view_L) if isinstance(view_L, dict) else {}
+    out_r = dict(view_R) if isinstance(view_R, dict) else {}
+
+    scale_pct = 100.0
+    shift_x_px = 0
+    shift_y_px = 0
+    try:
+        if layout_config is not None:
+            vt = getattr(layout_config, "video_transform", None)
+            if vt is not None:
+                scale_pct = float(getattr(vt, "scale_pct", 100.0))
+                shift_x_px = int(getattr(vt, "shift_x_px", 0))
+                shift_y_px = int(getattr(vt, "shift_y_px", 0))
+    except Exception:
+        scale_pct = 100.0
+        shift_x_px = 0
+        shift_y_px = 0
+
+    out_l["scale_pct"] = float(scale_pct)
+    out_r["scale_pct"] = float(scale_pct)
+    out_l["shift_x_px"] = int(shift_x_px)
+    out_r["shift_x_px"] = int(shift_x_px)
+    out_l["shift_y_px"] = int(shift_y_px)
+    out_r["shift_y_px"] = int(shift_y_px)
+    return out_l, out_r
+
+
 def probe_video_meta(video_path: Path) -> VideoMeta:
     # Stream-Meta + Format-Duration in einem Call
     cmd = [
@@ -6072,12 +6104,13 @@ def render_split_screen(
     # 3) Layout
     geom = build_output_geometry(preset, hud_width_px=hud_width_px, layout_config=layout_config)
     _debug_dump_geometry_once(geom, log_file=log_file)
+    render_view_l, render_view_r = _build_render_video_views(view_L, view_R, layout_config)
 
     filt = build_split_filter_from_geometry(
         geom=geom,
         fps=float(fps_int),
-        view_L=view_L,
-        view_R=view_R,
+        view_L=render_view_l,
+        view_R=render_view_r,
         hud_enabled=hud_enabled,
         hud_boxes=hud_boxes,
     )
@@ -6326,6 +6359,7 @@ def render_split_screen_sync(
     # 3) Layout
     geom = build_output_geometry(preset, hud_width_px=hud_width_px, layout_config=layout_config)
     _debug_dump_geometry_once(geom, log_file=log_file)
+    render_view_l, render_view_r = _build_render_video_views(view_L, view_R, layout_config)
     
     # Debug: Cut-Bereich auf die ersten N Sekunden begrenzen
     try:
@@ -6560,8 +6594,8 @@ def render_split_screen_sync(
     filt, audio_map = build_stream_sync_filter(
         geom=geom,
         fps=float(fps_int),
-        view_L=view_L,
-        view_R=view_R,
+        view_L=render_view_l,
+        view_R=render_view_r,
         fast_time_s=slow_frame_to_fast_time_s,
         speed_diff=slow_frame_speed_diff,
         cut_i0=cut_i0,
