@@ -2132,7 +2132,7 @@ def _render_hud_scroll_frames_png(
     if len(base_hud_bg) < 4:
         base_hud_bg = (18, 18, 18, 96)
     try:
-        bg_a_scaled = int(round(float(int(base_hud_bg[3])) * (float(hud_bg_alpha) / 255.0)))
+        bg_a_scaled = int(hud_bg_alpha)
     except Exception:
         bg_a_scaled = int(base_hud_bg[3])
     if bg_a_scaled < 0:

@@ -708,11 +708,21 @@ class PngPreviewController:
                         y0 + cy0,
                         x0 + cx1,
                         y0 + cy1,
+                        fill="white",
+                        outline="black",
                         tags=("hud_box", tag),
                     )
                     hx0 = max(x0 + cx0, x0 + cx1 - 12)
                     hy0 = max(y0 + cy0, y0 + cy1 - 12)
-                    self.canvas.create_rectangle(hx0, hy0, x0 + cx1, y0 + cy1, tags=("hud_handle", tag))
+                    self.canvas.create_rectangle(
+                        hx0,
+                        hy0,
+                        x0 + cx1,
+                        y0 + cy1,
+                        fill="white",
+                        outline="black",
+                        tags=("hud_handle", tag),
+                    )
                 if overlays["labels"]:
                     self.canvas.create_text(
                         int(x0 + (cx0 + cx1) / 2),
