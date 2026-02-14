@@ -8,6 +8,7 @@ import tkinter as tk
 from PIL import Image, ImageTk
 
 from .layout_preview import OutputFormat
+from core.output_geometry import build_output_geometry_for_size
 
 
 def pil_paste_clipped(dst: Image.Image, src: Image.Image, region_box: tuple[int, int, int, int], pos_xy: tuple[int, int]) -> None:
@@ -37,21 +38,29 @@ def pil_paste_clipped(dst: Image.Image, src: Image.Image, region_box: tuple[int,
     dst.paste(src_c, (int(ix0), int(iy0)))
 
 
-def _png_region_out(side: str, out_w: int, out_h: int, hud_w: int) -> tuple[int, int, int, int]:
-    """
-    Region im Output-Koordinatensystem (nicht Preview-Pixel!):
-    Links:  [0 .. side_w)
-    HUD:    [side_w .. side_w+hud_w)
-    Rechts: [side_w+hud_w .. out_w)
-    """
-    side_w = int((out_w - hud_w) / 2)
-    if side_w < 1:
-        side_w = int(out_w / 2)
-
-    if side == "L":
-        return 0, 0, side_w, out_h
-    # "R"
-    return side_w + hud_w, 0, out_w, out_h
+def _png_region_out(
+    side: str,
+    out_w: int,
+    out_h: int,
+    hud_w: int,
+    layout_config: Any | None = None,
+) -> tuple[int, int, int, int]:
+    try:
+        geom = build_output_geometry_for_size(
+            out_w=int(out_w),
+            out_h=int(out_h),
+            hud_width_px=int(hud_w),
+            layout_config=layout_config,
+        )
+    except Exception:
+        geom = build_output_geometry_for_size(
+            out_w=int(out_w),
+            out_h=int(out_h),
+            hud_width_px=int(hud_w),
+            layout_config=None,
+        )
+    rect = geom.video_slow_rect if side == "L" else geom.video_fast_rect
+    return int(rect.x), int(rect.y), int(rect.x) + int(rect.w), int(rect.y) + int(rect.h)
 
 
 class PngPreviewController:
@@ -97,6 +106,8 @@ class PngPreviewController:
             "lx0": 0, "lx1": 0,
             "mx0": 0, "mx1": 0,
             "rx0": 0, "rx1": 0,
+            "slow_x0": 0, "slow_y0": 0, "slow_x1": 0, "slow_y1": 0,
+            "fast_x0": 0, "fast_y0": 0, "fast_x1": 0, "fast_y1": 0,
             "valid": False,
             "scale": 1.0,
         }
@@ -221,6 +232,7 @@ class PngPreviewController:
         out_w: int,
         out_h: int,
         hud_w: int,
+        layout_config: Any | None = None,
         enforce_cover: bool = True,
         enforce_cover_zoom: bool = True,
     ) -> None:
@@ -248,7 +260,7 @@ class PngPreviewController:
         if src_img is None:
             return
 
-        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w)
+        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
         rw = max(1, rx1 - rx0)
         rh = max(1, ry1 - ry0)
 
@@ -383,24 +395,65 @@ class PngPreviewController:
             return
 
         x0, y0, x1, y1, scale, out_w, out_h, hud_w = self.compute_frame_rect_for_preview()
+        output = self._get_output_format()
+        layout_config = getattr(output, "layout_config", None)
+        try:
+            geom = build_output_geometry_for_size(
+                out_w=int(out_w),
+                out_h=int(out_h),
+                hud_width_px=int(hud_w),
+                layout_config=layout_config,
+            )
+        except Exception:
+            geom = build_output_geometry_for_size(
+                out_w=int(out_w),
+                out_h=int(out_h),
+                hud_width_px=int(hud_w),
+                layout_config=None,
+            )
 
         draw_w = max(1, x1 - x0)
         draw_h = max(1, y1 - y0)
 
-        side_w = int((out_w - hud_w) / 2)
-        if side_w < 1:
-            side_w = int(out_w / 2)
+        def out_rect_to_frame(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
+            fx0 = int(round(float(x) * float(scale)))
+            fy0 = int(round(float(y) * float(scale)))
+            fx1 = int(round(float(x + w) * float(scale)))
+            fy1 = int(round(float(y + h) * float(scale)))
+            fx0 = max(0, min(draw_w, fx0))
+            fx1 = max(0, min(draw_w, fx1))
+            fy0 = max(0, min(draw_h, fy0))
+            fy1 = max(0, min(draw_h, fy1))
+            if fx1 <= fx0:
+                fx1 = min(draw_w, fx0 + 1)
+            if fy1 <= fy0:
+                fy1 = min(draw_h, fy0 + 1)
+            return fx0, fy0, fx1, fy1
 
-        side_w_px = int(round(side_w * scale))
-        hud_w_px = int(round(hud_w * scale))
-
-        # Regionen im Frame (in Frame-Koordinaten, 0..draw_w)
-        lx0 = 0
-        lx1 = max(0, side_w_px)
-        mx0 = lx1
-        mx1 = min(draw_w, mx0 + max(0, hud_w_px))
-        rx0 = mx1
-        rx1 = draw_w
+        slow_region = out_rect_to_frame(
+            int(geom.video_slow_rect.x),
+            int(geom.video_slow_rect.y),
+            int(geom.video_slow_rect.w),
+            int(geom.video_slow_rect.h),
+        )
+        fast_region = out_rect_to_frame(
+            int(geom.video_fast_rect.x),
+            int(geom.video_fast_rect.y),
+            int(geom.video_fast_rect.w),
+            int(geom.video_fast_rect.h),
+        )
+        hud_regions = [
+            out_rect_to_frame(int(r.x), int(r.y), int(r.w), int(r.h))
+            for r in tuple(geom.hud_rects)
+        ]
+        lx0, ly0, lx1, ly1 = slow_region
+        rx0, ry0, rx1, ry1 = fast_region
+        if hud_regions:
+            mx0 = min(r[0] for r in hud_regions)
+            mx1 = max(r[2] for r in hud_regions)
+        else:
+            mx0 = lx1
+            mx1 = lx1
 
         # Merker fuer Hit-Test (Canvas-Koords)
         self.png_frame_last["x0"] = int(x0)
@@ -413,6 +466,14 @@ class PngPreviewController:
         self.png_frame_last["mx1"] = int(x0 + mx1)
         self.png_frame_last["rx0"] = int(x0 + rx0)
         self.png_frame_last["rx1"] = int(x0 + rx1)
+        self.png_frame_last["slow_x0"] = int(x0 + lx0)
+        self.png_frame_last["slow_y0"] = int(y0 + ly0)
+        self.png_frame_last["slow_x1"] = int(x0 + lx1)
+        self.png_frame_last["slow_y1"] = int(y0 + ly1)
+        self.png_frame_last["fast_x0"] = int(x0 + rx0)
+        self.png_frame_last["fast_y0"] = int(y0 + ry0)
+        self.png_frame_last["fast_x1"] = int(x0 + rx1)
+        self.png_frame_last["fast_y1"] = int(y0 + ry1)
         self.png_frame_last["valid"] = True
         self.png_frame_last["scale"] = float(scale)
 
@@ -466,8 +527,8 @@ class PngPreviewController:
 
             pil_paste_clipped(bg, img2, region, (base_x, base_y))
 
-        render_side("L", self.png_img_left, (lx0, 0, lx1, draw_h))
-        render_side("R", self.png_img_right, (rx0, 0, rx1, draw_h))
+        render_side("L", self.png_img_left, slow_region)
+        render_side("R", self.png_img_right, fast_region)
 
         # Rahmen / Trenner zeichnen wir im Canvas (nicht im Bild)
         tk_img = ImageTk.PhotoImage(bg)
@@ -477,14 +538,22 @@ class PngPreviewController:
 
         # Rahmen + Bereiche
         self.canvas.create_rectangle(x0, y0, x1, y1)
-        self.canvas.create_rectangle(x0 + lx0, y0, x0 + lx1, y1)
-        self.canvas.create_rectangle(x0 + mx0, y0, x0 + mx1, y1)
-        self.canvas.create_rectangle(x0 + rx0, y0, x0 + rx1, y1)
+        self.canvas.create_rectangle(x0 + lx0, y0 + ly0, x0 + lx1, y0 + ly1)
+        self.canvas.create_rectangle(x0 + rx0, y0 + ry0, x0 + rx1, y0 + ry1)
+        for hr in hud_regions:
+            hx0, hy0, hx1, hy1 = hr
+            self.canvas.create_rectangle(x0 + hx0, y0 + hy0, x0 + hx1, y0 + hy1)
 
-        self.canvas.create_text(x0 + 10, y0 + 10, anchor="nw", text="Slow")
-        self.canvas.create_text(x0 + rx0 + 10, y0 + 10, anchor="nw", text="Fast")
-        if hud_w_px > 0:
-            self.canvas.create_text(int(x0 + (mx0 + mx1) / 2), y0 + 20, anchor="n", text=f"HUD\n{hud_w}px")
+        self.canvas.create_text(int(x0 + (lx0 + lx1) / 2), int(y0 + ly0 + 14), anchor="n", text="Slow")
+        self.canvas.create_text(int(x0 + (rx0 + rx1) / 2), int(y0 + ry0 + 14), anchor="n", text="Fast")
+        for idx, hr in enumerate(hud_regions):
+            hx0, hy0, hx1, hy1 = hr
+            self.canvas.create_text(
+                int(x0 + (hx0 + hx1) / 2),
+                int(y0 + (hy0 + hy1) / 2),
+                anchor="center",
+                text=f"HUD {idx + 1}",
+            )
 
         # Wichtig: Referenz halten
         self.canvas._tk_img = tk_img
@@ -496,9 +565,19 @@ class PngPreviewController:
             return ""
         if y < int(self.png_frame_last["y0"]) or y > int(self.png_frame_last["y1"]):
             return ""
-        if x >= int(self.png_frame_last["lx0"]) and x <= int(self.png_frame_last["lx1"]):
+        if (
+            x >= int(self.png_frame_last.get("slow_x0", self.png_frame_last.get("lx0", 0)))
+            and x <= int(self.png_frame_last.get("slow_x1", self.png_frame_last.get("lx1", 0)))
+            and y >= int(self.png_frame_last.get("slow_y0", self.png_frame_last.get("y0", 0)))
+            and y <= int(self.png_frame_last.get("slow_y1", self.png_frame_last.get("y1", 0)))
+        ):
             return "L"
-        if x >= int(self.png_frame_last["rx0"]) and x <= int(self.png_frame_last["rx1"]):
+        if (
+            x >= int(self.png_frame_last.get("fast_x0", self.png_frame_last.get("rx0", 0)))
+            and x <= int(self.png_frame_last.get("fast_x1", self.png_frame_last.get("rx1", 0)))
+            and y >= int(self.png_frame_last.get("fast_y0", self.png_frame_last.get("y0", 0)))
+            and y <= int(self.png_frame_last.get("fast_y1", self.png_frame_last.get("y1", 0)))
+        ):
             return "R"
         return ""
 
@@ -550,8 +629,9 @@ class PngPreviewController:
             out_w, out_h = 1280, 720
         hud_w = int(output.hud_w)
         hud_w = max(0, min(hud_w, max(0, out_w - 2)))
+        layout_config = getattr(output, "layout_config", None)
 
-        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w)
+        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
         rw = max(1, rx1 - rx0)
         rh = max(1, ry1 - ry0)
 
@@ -587,7 +667,15 @@ class PngPreviewController:
 
         # Nur clampen ohne "Snap"/Cover
         try:
-            self._clamp_png_cover(side, src_img, out_w, out_h, hud_w, enforce_cover=False)
+            self._clamp_png_cover(
+                side,
+                src_img,
+                out_w,
+                out_h,
+                hud_w,
+                layout_config=layout_config,
+                enforce_cover=False,
+            )
         except Exception:
             pass
 
@@ -674,6 +762,7 @@ class PngPreviewController:
                 out_w, out_h = 1280, 720
             hud_w = int(output.hud_w)
             hud_w = max(0, min(hud_w, max(0, out_w - 2)))
+            layout_config = getattr(output, "layout_config", None)
 
             if side in ("L", "R"):
                 src_img = self.png_img_left if side == "L" else self.png_img_right
@@ -684,6 +773,7 @@ class PngPreviewController:
                         out_w,
                         out_h,
                         hud_w,
+                        layout_config=layout_config,
                         enforce_cover=True,
                         enforce_cover_zoom=False,
                     )
@@ -720,9 +810,10 @@ class PngPreviewController:
 
         hud_w = int(output.hud_w)
         hud_w = max(0, min(hud_w, max(0, out_w - 2)))
+        layout_config = getattr(output, "layout_config", None)
 
         def cover_zoom_for(side: str, img: Image.Image) -> float:
-            rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w)
+            rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
             rw = max(1, rx1 - rx0)
             rh = max(1, ry1 - ry0)
             sw = max(1.0, float(img.size[0]))
@@ -749,8 +840,8 @@ class PngPreviewController:
 
         # Final clamp (eigentlich redundant, aber safe)
         try:
-            self._clamp_png_cover("L", self.png_img_left, out_w, out_h, hud_w)
-            self._clamp_png_cover("R", self.png_img_right, out_w, out_h, hud_w)
+            self._clamp_png_cover("L", self.png_img_left, out_w, out_h, hud_w, layout_config=layout_config)
+            self._clamp_png_cover("R", self.png_img_right, out_w, out_h, hud_w, layout_config=layout_config)
         except Exception:
             pass
 

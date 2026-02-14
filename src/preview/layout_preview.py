@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 import tkinter as tk
+from core.output_geometry import build_output_geometry_for_size
 
 
 @dataclass(frozen=True)
@@ -10,6 +11,7 @@ class OutputFormat:
     out_w: int
     out_h: int
     hud_w: int
+    layout_config: Any | None = None
 
 
 class LayoutPreviewController:
@@ -31,6 +33,10 @@ class LayoutPreviewController:
             "out_h": 0,
             "hud_w": 0,
             "side_w": 0,
+            "hud_x0": 0,
+            "hud_x1": 0,
+            "hud_y0": 0,
+            "hud_y1": 0,
             "x0": 0,
             "y0": 0,
             "scale": 1.0,
@@ -58,13 +64,12 @@ class LayoutPreviewController:
     def ensure_boxes_in_hud_area(self, hud_boxes: list[dict]) -> None:
         out_w = int(self.layout_last.get("out_w") or 0)
         out_h = int(self.layout_last.get("out_h") or 0)
-        hud_w = int(self.layout_last.get("hud_w") or 0)
-        side_w = int(self.layout_last.get("side_w") or 0)
         if out_w <= 0 or out_h <= 0:
             return
 
-        hud_x0 = side_w
-        hud_x1 = side_w + hud_w
+        hud_x0, hud_x1, hud_y0, hud_y1 = self.hud_bounds_out()
+        if hud_x1 <= hud_x0 or hud_y1 <= hud_y0:
+            return
 
         for b in hud_boxes:
             try:
@@ -79,7 +84,7 @@ class LayoutPreviewController:
                 x = hud_x0 + 10
 
             x = self._clamp(x, hud_x0, max(hud_x0, hud_x1 - w))
-            y = self._clamp(y, 0, max(0, out_h - h))
+            y = self._clamp(y, hud_y0, max(hud_y0, hud_y1 - h))
 
             b["x"] = int(x)
             b["y"] = int(y)
@@ -105,8 +110,20 @@ class LayoutPreviewController:
 
         hud_w = int(output_format.hud_w)
         hud_w = max(0, min(int(hud_w), max(0, out_w - 2)))
-
-        side_w = int((out_w - hud_w) / 2)
+        try:
+            geom = build_output_geometry_for_size(
+                out_w=out_w,
+                out_h=out_h,
+                hud_width_px=hud_w,
+                layout_config=getattr(output_format, "layout_config", None),
+            )
+        except Exception:
+            geom = build_output_geometry_for_size(
+                out_w=out_w,
+                out_h=out_h,
+                hud_width_px=hud_w,
+                layout_config=None,
+            )
 
         pad = 10
         avail_w = max(50, area_w - 2 * pad)
@@ -124,32 +141,25 @@ class LayoutPreviewController:
         self.layout_last["out_w"] = int(out_w)
         self.layout_last["out_h"] = int(out_h)
         self.layout_last["hud_w"] = int(hud_w)
-        self.layout_last["side_w"] = int(side_w)
+        self.layout_last["side_w"] = int(geom.video_slow_rect.w if str(geom.video_layout) == "LR" else 0)
         self.layout_last["x0"] = int(x0)
         self.layout_last["y0"] = int(y0)
         self.layout_last["scale"] = float(scale)
-
-        side_w_px = int(side_w * scale)
-        hud_w_px = int(hud_w * scale)
+        if tuple(geom.hud_rects):
+            hud_x0 = min(int(r.x) for r in tuple(geom.hud_rects))
+            hud_x1 = max(int(r.x) + int(r.w) for r in tuple(geom.hud_rects))
+            hud_y0 = min(int(r.y) for r in tuple(geom.hud_rects))
+            hud_y1 = max(int(r.y) + int(r.h) for r in tuple(geom.hud_rects))
+        else:
+            hud_x0, hud_x1, hud_y0, hud_y1 = 0, out_w, 0, out_h
+        self.layout_last["hud_x0"] = int(hud_x0)
+        self.layout_last["hud_x1"] = int(hud_x1)
+        self.layout_last["hud_y0"] = int(hud_y0)
+        self.layout_last["hud_y1"] = int(hud_y1)
 
         self.canvas.delete("all")
 
         self.canvas.create_rectangle(x0, y0, x1, y1)
-
-        lx0 = x0
-        lx1 = x0 + side_w_px
-        mx0 = lx1
-        mx1 = mx0 + hud_w_px
-        rx0 = mx1
-        rx1 = x1
-
-        self.canvas.create_rectangle(lx0, y0, lx1, y1)
-        self.canvas.create_rectangle(mx0, y0, mx1, y1)
-        self.canvas.create_rectangle(rx0, y0, rx1, y1)
-
-        self.canvas.create_text(int((lx0 + lx1) / 2), int((y0 + y1) / 2), text="Slow")
-        self.canvas.create_text(int((mx0 + mx1) / 2), int((y0 + y1) / 2) - 40, text=f"HUD\n{hud_w}px")
-        self.canvas.create_text(int((rx0 + rx1) / 2), int((y0 + y1) / 2), text="Fast")
 
         if (self.hud_active_id is None) and (self.hud_mode == ""):
             if load_current_boxes is not None:
@@ -158,12 +168,34 @@ class LayoutPreviewController:
         else:
             self.ensure_boxes_in_hud_area(hud_boxes)
 
-        self.canvas.create_rectangle(mx0, y0, mx1, y1)
-
         def out_to_canvas(x: int, y: int) -> tuple[int, int]:
             cx = int(x0 + (x * scale))
             cy = int(y0 + (y * scale))
             return cx, cy
+
+        def _draw_rect_outline(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
+            c0x, c0y = out_to_canvas(int(x), int(y))
+            c1x, c1y = out_to_canvas(int(x) + int(w), int(y) + int(h))
+            self.canvas.create_rectangle(c0x, c0y, c1x, c1y)
+            return c0x, c0y, c1x, c1y
+
+        s0x, s0y, s1x, s1y = _draw_rect_outline(
+            int(geom.video_slow_rect.x),
+            int(geom.video_slow_rect.y),
+            int(geom.video_slow_rect.w),
+            int(geom.video_slow_rect.h),
+        )
+        f0x, f0y, f1x, f1y = _draw_rect_outline(
+            int(geom.video_fast_rect.x),
+            int(geom.video_fast_rect.y),
+            int(geom.video_fast_rect.w),
+            int(geom.video_fast_rect.h),
+        )
+        self.canvas.create_text(int((s0x + s1x) / 2), int((s0y + s1y) / 2), text="Slow")
+        self.canvas.create_text(int((f0x + f1x) / 2), int((f0y + f1y) / 2), text="Fast")
+        for hr in tuple(geom.hud_rects):
+            h0x, h0y, h1x, h1y = _draw_rect_outline(int(hr.x), int(hr.y), int(hr.w), int(hr.h))
+            self.canvas.create_text(int((h0x + h1x) / 2), int((h0y + h1y) / 2), text=f"HUD\n{int(hr.w)}x{int(hr.h)}")
 
         for b in hud_boxes:
             t = str(b.get("type") or "")
@@ -207,12 +239,15 @@ class LayoutPreviewController:
         return ((cx - x0) / scale, (cy - y0) / scale)
 
     def hud_bounds_out(self) -> tuple[int, int, int, int]:
+        out_w = int(self.layout_last.get("out_w") or 0)
         out_h = int(self.layout_last.get("out_h") or 0)
-        hud_w = int(self.layout_last.get("hud_w") or 0)
-        side_w = int(self.layout_last.get("side_w") or 0)
-        hud_x0 = side_w
-        hud_x1 = side_w + hud_w
-        return hud_x0, hud_x1, 0, out_h
+        hud_x0 = int(self.layout_last.get("hud_x0") or 0)
+        hud_x1 = int(self.layout_last.get("hud_x1") or 0)
+        hud_y0 = int(self.layout_last.get("hud_y0") or 0)
+        hud_y1 = int(self.layout_last.get("hud_y1") or 0)
+        if hud_x1 <= hud_x0 or hud_y1 <= hud_y0:
+            return 0, out_w, 0, out_h
+        return hud_x0, hud_x1, hud_y0, hud_y1
 
     def clamp_box_in_hud(self, b: dict) -> None:
         hud_x0, hud_x1, y0, out_h = self.hud_bounds_out()

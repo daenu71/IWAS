@@ -9,7 +9,7 @@ from typing import Tuple
 
 from cfg import load_cfg
 from log import make_logger
-from core.models import migrate_layout_contract_dict
+from core.models import LayoutConfig, migrate_layout_contract_dict
 from render_split import render_split_screen, render_split_screen_sync
 from csv_g61 import get_float_col, load_g61_csv
 from resample_lapdist import build_lapdist_grid, resample_run_linear
@@ -415,6 +415,7 @@ def main() -> None:
 
     hud_enabled = ui.get("hud_enabled") if isinstance(ui, dict) else None
     hud_boxes = ui.get("hud_boxes") if isinstance(ui, dict) else None
+    layout_config = LayoutConfig.from_dict(ui if isinstance(ui, dict) else {})
     
     hud_win = ui.get("hud_window") if isinstance(ui, dict) else None
     hud_win_default_before = 10.0
@@ -567,6 +568,7 @@ def main() -> None:
             hud_max_brake_delay_distance=float(hud_max_brake_delay_distance),
             hud_max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
             under_oversteer_curve_center=float(under_oversteer_curve_center),
+            layout_config=layout_config,
             log_file=log.log_file,
         )
     else:
@@ -596,6 +598,7 @@ def main() -> None:
             hud_pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
             hud_max_brake_delay_distance=float(hud_max_brake_delay_distance),
             hud_max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
+            layout_config=layout_config,
             log_file=log.log_file,
         )
     log.msg("render done")

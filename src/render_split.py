@@ -7,6 +7,13 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from core.models import LayoutConfig
+from core.output_geometry import (
+    OutputGeometry,
+    build_output_geometry_for_size,
+    format_output_geometry_dump,
+    geometry_signature,
+)
 from encoders import (
     build_encode_specs,
     detect_available_encoders,
@@ -65,6 +72,20 @@ from huds.under_oversteer import render_under_oversteer
 # 3) Layout
 # 4) HUD Render
 # 5) FFmpeg Run
+
+_GEOM_DEBUG_LAST_SIG: tuple[Any, ...] | None = None
+
+
+def _debug_dump_geometry_once(geom: OutputGeometry, log_file: Path | None = None) -> None:
+    dbg = str(os.environ.get("IRVC_DEBUG_SWALLOWED") or "").strip().lower() in ("1", "true", "yes", "on")
+    if not dbg:
+        return
+    global _GEOM_DEBUG_LAST_SIG
+    sig = geometry_signature(geom)
+    if _GEOM_DEBUG_LAST_SIG == sig:
+        return
+    _GEOM_DEBUG_LAST_SIG = sig
+    _log_print(format_output_geometry_dump(geom), log_file)
 
 
 
@@ -163,21 +184,6 @@ def probe_has_audio(video_path: Path) -> bool:
         return p.returncode == 0 and (p.stdout or "").strip() != ""
     except Exception:
         return False
-
-
-@dataclass(frozen=True)
-class OutputGeometry:
-    W: int
-    H: int
-    hud: int
-    left_w: int
-    right_w: int
-
-    # Overlay-Positionen im Output
-    left_x: int
-    left_y: int
-    fast_out_x: int
-    fast_out_y: int
 
 
 @dataclass(frozen=True)
@@ -314,38 +320,28 @@ def parse_output_preset(preset: str) -> tuple[int, int]:
     return W, H
 
 
-def build_output_geometry(preset: str, hud_width_px: int) -> OutputGeometry:
+def build_output_geometry(
+    preset: str,
+    hud_width_px: int,
+    layout_config: LayoutConfig | None = None,
+) -> OutputGeometry:
     W, H = parse_output_preset(preset)
-
-    hud = int(hud_width_px)
-    if hud < 0:
-        hud = 0
-    if hud >= W - 2:
-        raise RuntimeError("hud_width_px ist zu gross fuer die Zielbreite.")
-
-    rest = W - hud
-    left_w = rest // 2
-    right_w = rest - left_w
-
-    if left_w <= 10 or right_w <= 10:
-        raise RuntimeError("links/rechts sind zu klein. hud_width_px reduzieren oder preset vergroessern.")
-
-    left_x = 0
-    left_y = 0
-    fast_out_x = left_w + hud
-    fast_out_y = 0
-
-    return OutputGeometry(
-        W=W,
-        H=H,
-        hud=hud,
-        left_w=left_w,
-        right_w=right_w,
-        left_x=left_x,
-        left_y=left_y,
-        fast_out_x=fast_out_x,
-        fast_out_y=fast_out_y,
+    return build_output_geometry_for_size(
+        out_w=W,
+        out_h=H,
+        hud_width_px=hud_width_px,
+        layout_config=layout_config,
     )
+
+
+def _geom_hud_x0(geom: OutputGeometry) -> int:
+    try:
+        hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
+        if len(hud_rects) >= 1:
+            return int(getattr(hud_rects[0], "x"))
+    except Exception:
+        pass
+    return int(getattr(geom, "left_w", 0))
 
 
 def _log_print(msg: str, log_file: Path | None) -> None:
@@ -2202,7 +2198,7 @@ def _render_hud_scroll_frames_png(
 
     # Table-HUD Boxen (Text), Koordinaten relativ zur HUD-Spalte
     table_items: list[tuple[str, int, int, int, int]] = []
-    hud_x0 = int(getattr(geom, "left_w", 0))
+    hud_x0 = _geom_hud_x0(geom)
     for name, box_abs in table_boxes_abs:
         try:
             x_abs, y_abs, w, h = box_abs
@@ -2215,7 +2211,7 @@ def _render_hud_scroll_frames_png(
             continue
 
     # Wir zeichnen alles in EIN Bild pro Frame (HUD-Spalte), aber pro HUD mit eigenem Fenster.
-    hud_x0 = int(getattr(geom, "left_w", 0))
+    hud_x0 = _geom_hud_x0(geom)
     hud_items: list[tuple[str, int, int, int, int]] = []
     for name, box_abs in scroll_boxes_abs:
         try:
@@ -5980,7 +5976,7 @@ def _enabled_hud_boxes_abs(
     except Exception:
         norm_boxes = []
 
-    hud_x0 = int(getattr(geom, "left_w", 0))
+    hud_x0 = _geom_hud_x0(geom)
 
     # Auto-Detect absolut vs relativ
     max_x = 0
@@ -6047,6 +6043,7 @@ def render_split_screen(
     hud_pedals_abs_debounce_ms: int = 60,
     hud_max_brake_delay_distance: float = 0.003,
     hud_max_brake_delay_pressure: float = 35.0,
+    layout_config: LayoutConfig | None = None,
     log_file: "Path | None" = None,
 ) -> None:
     # 1) Config reading
@@ -6073,7 +6070,8 @@ def render_split_screen(
         preset = f"{int(preset_w)}x{int(preset_h)}"
 
     # 3) Layout
-    geom = build_output_geometry(preset, hud_width_px=hud_width_px)
+    geom = build_output_geometry(preset, hud_width_px=hud_width_px, layout_config=layout_config)
+    _debug_dump_geometry_once(geom, log_file=log_file)
 
     filt = build_split_filter_from_geometry(
         geom=geom,
@@ -6162,6 +6160,7 @@ def render_split_screen_sync(
     hud_max_brake_delay_distance: float = 0.003,
     hud_max_brake_delay_pressure: float = 35.0,
     under_oversteer_curve_center: float = 0.0,
+    layout_config: LayoutConfig | None = None,
     log_file: "Path | None" = None,
 ) -> None:
     # Story 6: Stream-Sync (ohne PNG, ohne fast_sync.mp4, ein ffmpeg-Run)
@@ -6325,7 +6324,8 @@ def render_split_screen_sync(
     )
 
     # 3) Layout
-    geom = build_output_geometry(preset, hud_width_px=hud_width_px)
+    geom = build_output_geometry(preset, hud_width_px=hud_width_px, layout_config=layout_config)
+    _debug_dump_geometry_once(geom, log_file=log_file)
     
     # Debug: Cut-Bereich auf die ersten N Sekunden begrenzen
     try:

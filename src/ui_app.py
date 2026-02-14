@@ -1122,6 +1122,7 @@ def main() -> None:
             out_w=int(out_w),
             out_h=int(out_h),
             hud_w=int(get_hud_width_px()),
+            layout_config=app_model.layout_config,
         )
 
     def load_png_view_data() -> dict:
@@ -1224,6 +1225,7 @@ def main() -> None:
             out_w=int(out_w),
             out_h=int(out_h),
             hud_w=int(get_hud_width_px()),
+            layout_config=app_model.layout_config,
         )
 
     layout_preview_ctrl: LayoutPreviewController | None = None

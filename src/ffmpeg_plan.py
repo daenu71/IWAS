@@ -401,8 +401,13 @@ def _hud_drawboxes_chain(
             print("[hud] enabled_names empty")
         return ""
 
-    # HUD beginnt im Output bei x = geom.left_w (Mitte)
     hud_x0 = int(getattr(geom, "left_w"))
+    try:
+        hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
+        if len(hud_rects) >= 1:
+            hud_x0 = int(getattr(hud_rects[0], "x"))
+    except Exception:
+        pass
 
     # ui_app.py kann hud_boxes in zwei Varianten liefern:
     # A) relativ zum HUD-Bereich (x beginnt bei 0)
@@ -503,6 +508,48 @@ def _hud_drawboxes_chain(
     return "," + ",".join(chain_parts)
 
 
+def _geom_video_rect(
+    geom: Any,
+    which: str,
+) -> tuple[int, int, int, int]:
+    rect = getattr(geom, which, None)
+    if rect is not None:
+        try:
+            x = int(getattr(rect, "x"))
+            y = int(getattr(rect, "y"))
+            w = int(getattr(rect, "w"))
+            h = int(getattr(rect, "h"))
+            if w > 0 and h > 0:
+                return x, y, w, h
+        except Exception:
+            pass
+
+    if which == "video_slow_rect":
+        return (
+            int(getattr(geom, "left_x", 0)),
+            int(getattr(geom, "left_y", 0)),
+            int(getattr(geom, "left_w", 0)),
+            int(getattr(geom, "H", 0)),
+        )
+    return (
+        int(getattr(geom, "fast_out_x", 0)),
+        int(getattr(geom, "fast_out_y", 0)),
+        int(getattr(geom, "right_w", 0)),
+        int(getattr(geom, "H", 0)),
+    )
+
+
+def _geom_hud_anchor(geom: Any) -> tuple[int, int]:
+    try:
+        hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
+        if len(hud_rects) >= 1:
+            rect0 = hud_rects[0]
+            return int(getattr(rect0, "x")), int(getattr(rect0, "y"))
+    except Exception:
+        pass
+    return int(getattr(geom, "left_w", 0)), 0
+
+
 def build_split_filter_from_geometry(
     geom: Any,
     fps: float,
@@ -511,14 +558,17 @@ def build_split_filter_from_geometry(
     hud_enabled: Any | None = None,
     hud_boxes: Any | None = None,
 ) -> str:
-    H = geom.H
+    H = int(getattr(geom, "H"))
     r = int(round(fps)) if fps and fps > 0.1 else 30
 
     vL = _view_get(view_L)
     vR = _view_get(view_R)
 
-    left_chain = _build_side_chain(0, geom.left_w, H, r, vL, "vslow")
-    right_chain = _build_side_chain(1, geom.right_w, H, r, vR, "vfast")
+    slow_x, slow_y, slow_w, slow_h = _geom_video_rect(geom, "video_slow_rect")
+    fast_x, fast_y, fast_w, fast_h = _geom_video_rect(geom, "video_fast_rect")
+
+    left_chain = _build_side_chain(0, slow_w, slow_h, r, vL, "vslow")
+    right_chain = _build_side_chain(1, fast_w, fast_h, r, vR, "vfast")
 
     hud_chain = _hud_drawboxes_chain(geom=geom, hud_enabled=hud_enabled, hud_boxes=hud_boxes)
 
@@ -526,8 +576,8 @@ def build_split_filter_from_geometry(
         f"{left_chain};"
         f"{right_chain};"
         f"color=c=black:s={geom.W}x{geom.H}:r={r}[base];"
-        f"[base][vslow]overlay=x={geom.left_x}:y={geom.left_y}:shortest=1[tmp];"
-        f"[tmp][vfast]overlay=x={geom.fast_out_x}:y={geom.fast_out_y}:shortest=1{hud_chain}, fps={r}[vout]"
+        f"[base][vslow]overlay=x={slow_x}:y={slow_y}:shortest=1[tmp];"
+        f"[tmp][vfast]overlay=x={fast_x}:y={fast_y}:shortest=1{hud_chain}, fps={r}[vout]"
     )
     return filt
 
@@ -579,12 +629,14 @@ def build_stream_sync_filter(
     # - Slow wird auf [cut] getrimmt
     # - Fast wird in Segmente getrimmt und pro Segment zeitlich gestreckt/gestaucht
     # - Danach normaler Split-Render (crop/overlay)
-    W = geom.W
-    H = geom.H
+    W = int(getattr(geom, "W"))
+    H = int(getattr(geom, "H"))
     r = int(round(fps)) if fps and fps > 0.1 else 30
 
     vL = _view_get(view_L)
     vR = _view_get(view_R)
+    slow_x, slow_y, slow_w, slow_h = _geom_video_rect(geom, "video_slow_rect")
+    fast_x, fast_y, fast_w, fast_h = _geom_video_rect(geom, "video_fast_rect")
 
     # Default (wie bisher)
     try:
@@ -772,8 +824,8 @@ def build_stream_sync_filter(
     parts.append(f"{''.join(seg_fast_labels)}concat=n={len(seg_fast_labels)}:v=1:a=0[fastsync]")
 
     # Side-Chains auf Basis der geschnittenen Streams
-    left_chain = _build_side_chain_from_label("slowcut", geom.left_w, H, r, vL, "vslow")
-    right_chain = _build_side_chain_from_label("fastsync", geom.right_w, H, r, vR, "vfast")
+    left_chain = _build_side_chain_from_label("slowcut", slow_w, slow_h, r, vL, "vslow")
+    right_chain = _build_side_chain_from_label("fastsync", fast_w, fast_h, r, vR, "vfast")
 
     parts.append(f"{left_chain}")
     parts.append(f"{right_chain}")
@@ -782,20 +834,19 @@ def build_stream_sync_filter(
 
     hud_chain = _hud_drawboxes_chain(geom=geom, hud_enabled=hud_enabled, hud_boxes=hud_boxes)
 
-    parts.append(f"[base][vslow]overlay=0:0:shortest=1[tmp0]")
+    parts.append(f"[base][vslow]overlay={slow_x}:{slow_y}:shortest=1[tmp0]")
 
     # HUD (Python rawvideo/rgba Stream) als Overlay in die Mitte
     if hud_input_label:
         # HUD-Input ist geom.hud x geom.H mit Alpha.
+        hud_x, hud_y = _geom_hud_anchor(geom)
         parts.append(f"{hud_input_label}format=rgba[hudrgba]")
-        parts.append(f"[tmp0][hudrgba]overlay={geom.left_w}:0:shortest=1[tmp]")
+        parts.append(f"[tmp0][hudrgba]overlay={hud_x}:{hud_y}:shortest=1[tmp]")
     else:
         parts.append(f"[tmp0]copy[tmp]")
 
     # Danach Fast overlay + danach die HUD-Rahmen (Story 1) als drawbox
-    parts.append(
-        f"[tmp][vfast]overlay={geom.fast_out_x}:0:shortest=1{hud_chain}[vpre]"
-    )
+    parts.append(f"[tmp][vfast]overlay={fast_x}:{fast_y}:shortest=1{hud_chain}[vpre]")
 
     parts.append(f"[vpre]fps={r}[vout]")
 
