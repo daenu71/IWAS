@@ -270,6 +270,7 @@ class HudRenderSettings:
     pedals_abs_debounce_ms: int = 60
     max_brake_delay_distance: float = 0.003
     max_brake_delay_pressure: float = 35.0
+    bg_alpha: int = 255
 
 
 @dataclass(frozen=True)
@@ -374,6 +375,27 @@ def _geom_hud_x0(geom: OutputGeometry) -> int:
     except Exception:
         pass
     return int(getattr(geom, "left_w", 0))
+
+
+def _hud_stream_rect(geom: OutputGeometry) -> tuple[int, int, int, int]:
+    mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower()
+    if mode == "free":
+        return int(getattr(geom, "W", 0)), int(getattr(geom, "H", 0)), 0, 0
+
+    try:
+        hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
+        if hud_rects:
+            x0 = min(int(getattr(r, "x")) for r in hud_rects)
+            y0 = min(int(getattr(r, "y")) for r in hud_rects)
+            x1 = max(int(getattr(r, "x")) + int(getattr(r, "w")) for r in hud_rects)
+            y1 = max(int(getattr(r, "y")) + int(getattr(r, "h")) for r in hud_rects)
+            w = max(0, int(x1 - x0))
+            h = max(0, int(y1 - y0))
+            return w, h, int(x0), int(y0)
+    except Exception:
+        pass
+
+    return int(getattr(geom, "hud", 0)), int(getattr(geom, "H", 0)), int(_geom_hud_x0(geom)), 0
 
 
 def _log_print(msg: str, log_file: Path | None) -> None:
@@ -2093,9 +2115,61 @@ def _render_hud_scroll_frames_png(
         _log_print(f"[hudpy] PIL fehlt -> installiere pillow (pip install pillow). Fehler: {e}", log_file)
         return None
 
-    if geom.hud <= 0:
-        _log_print("[hudpy] geom.hud <= 0 -> kein HUD mÃ¶glich", log_file)
+    hud_stream_w, hud_stream_h, hud_stream_x0, hud_stream_y0 = _hud_stream_rect(geom)
+    if int(hud_stream_w) <= 0 or int(hud_stream_h) <= 0:
+        _log_print("[hudpy] hud stream rect ungueltig -> kein HUD moeglich", log_file)
         return None
+    hud_free_mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower() == "free"
+    try:
+        hud_bg_alpha = int(getattr(ctx.settings, "bg_alpha", 255))
+    except Exception:
+        hud_bg_alpha = 255
+    if hud_bg_alpha < 0:
+        hud_bg_alpha = 0
+    if hud_bg_alpha > 255:
+        hud_bg_alpha = 255
+    base_hud_bg = tuple(globals().get("COL_HUD_BG", (18, 18, 18, 96)))
+    if len(base_hud_bg) < 4:
+        base_hud_bg = (18, 18, 18, 96)
+    try:
+        bg_a_scaled = int(round(float(int(base_hud_bg[3])) * (float(hud_bg_alpha) / 255.0)))
+    except Exception:
+        bg_a_scaled = int(base_hud_bg[3])
+    if bg_a_scaled < 0:
+        bg_a_scaled = 0
+    if bg_a_scaled > 255:
+        bg_a_scaled = 255
+    COL_HUD_BG = (
+        int(base_hud_bg[0]),
+        int(base_hud_bg[1]),
+        int(base_hud_bg[2]),
+        int(bg_a_scaled),
+    )
+    try:
+        import huds.delta as _hud_delta_mod
+        import huds.gear_rpm as _hud_gear_mod
+        import huds.line_delta as _hud_line_delta_mod
+        import huds.speed as _hud_speed_mod
+        import huds.steering as _hud_steering_mod
+        import huds.throttle_brake as _hud_tb_mod
+        import huds.under_oversteer as _hud_uo_mod
+        for _hud_mod in (
+            _hud_delta_mod,
+            _hud_gear_mod,
+            _hud_line_delta_mod,
+            _hud_speed_mod,
+            _hud_steering_mod,
+            _hud_tb_mod,
+            _hud_uo_mod,
+        ):
+            try:
+                if hasattr(_hud_mod, "COL_HUD_BG"):
+                    setattr(_hud_mod, "COL_HUD_BG", tuple(COL_HUD_BG))
+            except Exception:
+                continue
+    except Exception:
+        pass
+
 
     # Alle aktiven HUD-Boxen (absolut im Output)
     boxes_abs = _enabled_hud_boxes_abs(geom=geom, hud_enabled=hud_enabled, hud_boxes=hud_boxes)
@@ -2228,30 +2302,28 @@ def _render_hud_scroll_frames_png(
         _log_print("[hudpy] keine aktive HUD-Box (Scroll/Table) gefunden", log_file)
         return None
 
-    # Table-HUD Boxen (Text), Koordinaten relativ zur HUD-Spalte
+    # Table-HUD Boxen (Text), Koordinaten relativ zur HUD-Canvas
     table_items: list[tuple[str, int, int, int, int]] = []
-    hud_x0 = _geom_hud_x0(geom)
     for name, box_abs in table_boxes_abs:
         try:
             x_abs, y_abs, w, h = box_abs
             if w <= 0 or h <= 0:
                 continue
-            x0 = int(x_abs) - int(hud_x0)
-            y0 = int(y_abs)
+            x0 = int(x_abs) - int(hud_stream_x0)
+            y0 = int(y_abs) - int(hud_stream_y0)
             table_items.append((str(name), int(x0), int(y0), int(w), int(h)))
         except Exception:
             continue
 
-    # Wir zeichnen alles in EIN Bild pro Frame (HUD-Spalte), aber pro HUD mit eigenem Fenster.
-    hud_x0 = _geom_hud_x0(geom)
+    # Wir zeichnen alles in EIN Bild pro Frame (HUD-Canvas), aber pro HUD mit eigenem Fenster.
     hud_items: list[tuple[str, int, int, int, int]] = []
     for name, box_abs in scroll_boxes_abs:
         try:
             x_abs, y_abs, w, h = box_abs
             if w <= 0 or h <= 0:
                 continue
-            x0 = int(x_abs) - int(hud_x0)  # relativ zur HUD-Spalte
-            y0 = int(y_abs)
+            x0 = int(x_abs) - int(hud_stream_x0)
+            y0 = int(y_abs) - int(hud_stream_y0)
             hud_items.append((str(name), int(x0), int(y0), int(w), int(h)))
         except Exception:
             continue
@@ -2789,7 +2861,7 @@ def _render_hud_scroll_frames_png(
         if i < 0 or i >= len(slow_frame_to_lapdist):
             continue
 
-        img = Image.new("RGBA", (int(geom.hud), int(geom.H)), (0, 0, 0, 0))
+        img = Image.new("RGBA", (int(hud_stream_w), int(hud_stream_h)), (0, 0, 0, 0))
         dr = ImageDraw.Draw(img)
 
         ld = float(slow_frame_to_lapdist[i]) % 1.0
@@ -5944,12 +6016,14 @@ def _render_hud_scroll_frames_png(
                 continue
 
 
-        # Flatten HUD over black to keep visual output identical to the PNG path.
-        save_img = Image.new("RGB", (int(geom.hud), int(geom.H)), (0, 0, 0))
         src_rgba = img if getattr(img, "mode", "") == "RGBA" else img.convert("RGBA")
-        save_img.paste(src_rgba, (0, 0), src_rgba)
-
-        rgba_bytes = save_img.convert("RGBA").tobytes()
+        if hud_free_mode:
+            rgba_bytes = src_rgba.tobytes()
+        else:
+            # Legacy frame mode keeps the flattened black base.
+            save_img = Image.new("RGB", (int(hud_stream_w), int(hud_stream_h)), (0, 0, 0))
+            save_img.paste(src_rgba, (0, 0), src_rgba)
+            rgba_bytes = save_img.convert("RGBA").tobytes()
         frame_writer(rgba_bytes)
         if frame_written_cb is not None:
             try:
@@ -6008,7 +6082,8 @@ def _enabled_hud_boxes_abs(
     except Exception:
         norm_boxes = []
 
-    hud_x0 = _geom_hud_x0(geom)
+    hud_w_stream, _hud_h_stream, hud_x0_stream, _hud_y0_stream = _hud_stream_rect(geom)
+    hud_x0 = int(hud_x0_stream)
 
     # Auto-Detect absolut vs relativ
     max_x = 0
@@ -6019,10 +6094,14 @@ def _enabled_hud_boxes_abs(
         max_x = 0
 
     boxes_are_absolute = False
-    try:
-        boxes_are_absolute = max_x > (int(getattr(geom, "hud")) + 10)
-    except Exception:
-        boxes_are_absolute = False
+    mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower()
+    if mode == "free":
+        boxes_are_absolute = True
+    else:
+        try:
+            boxes_are_absolute = max_x > (int(hud_w_stream) + 10)
+        except Exception:
+            boxes_are_absolute = False
 
     out: list[tuple[str, tuple[int, int, int, int]]] = []
     for b in norm_boxes:
@@ -6269,6 +6348,16 @@ def render_split_screen_sync(
         hud_max_brake_delay_pressure = 0.0
     if float(hud_max_brake_delay_pressure) > 100.0:
         hud_max_brake_delay_pressure = 100.0
+    hud_bg_alpha = 255
+    try:
+        if isinstance(layout_config, LayoutConfig):
+            hud_bg_alpha = int(layout_config.hud_free.bg_alpha)
+    except Exception:
+        hud_bg_alpha = 255
+    if hud_bg_alpha < 0:
+        hud_bg_alpha = 0
+    if hud_bg_alpha > 255:
+        hud_bg_alpha = 255
 
     preset = f"{ms.width}x{ms.height}"
     if preset_w > 0 and preset_h > 0:
@@ -6571,6 +6660,7 @@ def render_split_screen_sync(
                 pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
                 max_brake_delay_distance=float(hud_max_brake_delay_distance),
                 max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
+                bg_alpha=int(hud_bg_alpha),
             ),
             log_file=log_file,
         )
@@ -6645,13 +6735,14 @@ def render_split_screen_sync(
         if dbg_max_s > 0.0:
             print(f"[debug] IRVC_DEBUG_MAX_S={dbg_max_s} -> input limited")
 
+        hud_stream_w, hud_stream_h, _hud_stream_x0, _hud_stream_y0 = _hud_stream_rect(geom)
         plan = build_plan(
             decode=DecodeSpec(
                 slow=slow,
                 fast=fast,
                 hud_fps=float(fps_int),
                 hud_stdin_raw=bool(hud_stream_ctx is not None),
-                hud_size=(int(geom.hud), int(geom.H)),
+                hud_size=(int(hud_stream_w), int(hud_stream_h)),
                 hud_pix_fmt="rgba",
             ),
             flt=FilterSpec(filter_complex=filt, video_map="[vout]", audio_map=audio_map),
@@ -6663,7 +6754,7 @@ def render_split_screen_sync(
 
         live = (os.environ.get("IRVC_FFMPEG_LIVE") or "").strip() == "1"
         if hud_stream_ctx is not None:
-            expected_bytes = int(geom.hud) * int(geom.H) * 4
+            expected_bytes = int(hud_stream_w) * int(hud_stream_h) * 4
             report_every = 5
             report_state = {"last": 0}
 

@@ -33,6 +33,7 @@ class LayoutPreviewController:
             "out_h": 0,
             "hud_w": 0,
             "side_w": 0,
+            "hud_mode": "frame",
             "hud_x0": 0,
             "hud_x1": 0,
             "hud_y0": 0,
@@ -71,6 +72,7 @@ class LayoutPreviewController:
         if hud_x1 <= hud_x0 or hud_y1 <= hud_y0:
             return
 
+        hud_mode = str(self.layout_last.get("hud_mode") or "frame").strip().lower()
         for b in hud_boxes:
             try:
                 w = max(40, int(b.get("w", 200)))
@@ -80,7 +82,7 @@ class LayoutPreviewController:
             except Exception:
                 continue
 
-            if x == 0:
+            if x == 0 and hud_mode != "free":
                 x = hud_x0 + 10
 
             x = self._clamp(x, hud_x0, max(hud_x0, hud_x1 - w))
@@ -142,6 +144,7 @@ class LayoutPreviewController:
         self.layout_last["out_h"] = int(out_h)
         self.layout_last["hud_w"] = int(hud_w)
         self.layout_last["side_w"] = int(geom.video_slow_rect.w if str(geom.video_layout) == "LR" else 0)
+        self.layout_last["hud_mode"] = str(getattr(geom, "hud_mode", "frame") or "frame")
         self.layout_last["x0"] = int(x0)
         self.layout_last["y0"] = int(y0)
         self.layout_last["scale"] = float(scale)

@@ -263,12 +263,10 @@ def main() -> None:
         # Pro Output-Preset + HUD-Breite separat speichern
         return f"{out_preset_var.get()}|hud{get_hud_width_px()}"
 
-    def get_hud_boxes_for_current() -> list[dict]:
-        key = hud_layout_key()
-        boxes = hud_layout_data.get(key)
-        if isinstance(boxes, list) and len(boxes) > 0:
-            out: list[dict] = []
-            for b in boxes:
+    def _norm_boxes_list(raw_boxes: object, *, add_missing: bool) -> list[dict]:
+        out: list[dict] = []
+        if isinstance(raw_boxes, list):
+            for b in raw_boxes:
                 if not isinstance(b, dict):
                     continue
                 t = str(b.get("type") or "").strip()
@@ -282,21 +280,106 @@ def main() -> None:
                 except Exception:
                     continue
                 out.append({"type": t, "x": x, "y": y, "w": max(40, w), "h": max(30, h)})
+        if add_missing:
+            have = {str(b.get("type") or "") for b in out}
+            for d in default_hud_boxes():
+                tt = str(d.get("type") or "")
+                if tt in HUD_TYPES and tt not in have:
+                    out.append(dict(d))
+        return out
 
-            if len(out) > 0:
-                # Fehlende neue Boxen automatisch ergänzen (ohne Reset)
-                have = {str(b.get("type") or "") for b in out}
-                for d in default_hud_boxes():
-                    tt = str(d.get("type") or "")
-                    if tt in HUD_TYPES and tt not in have:
-                        out.append(d)
-                return out
+    def _layout_cfg() -> LayoutConfig:
+        nonlocal app_model
+        cfg = app_model.layout_config if isinstance(app_model.layout_config, LayoutConfig) else LayoutConfig()
+        app_model.layout_config = cfg
+        return cfg
 
+    def _coerce_hud_bg_alpha(raw: object) -> int:
+        try:
+            v = int(round(float(raw)))
+        except Exception:
+            v = 255
+        if v < 0:
+            v = 0
+        if v > 255:
+            v = 255
+        return int(v)
+
+    def _is_hud_free_mode() -> bool:
+        try:
+            mode = str(_layout_cfg().hud_mode or "frame").strip().lower()
+        except Exception:
+            mode = "frame"
+        return mode == "free"
+
+    def _hud_free_boxes_to_list(cfg: LayoutConfig) -> list[dict]:
+        out: list[dict] = []
+        boxes_map = cfg.hud_free.boxes_abs_out if isinstance(cfg.hud_free.boxes_abs_out, dict) else {}
+        for hud_key in HUD_TYPES:
+            box = boxes_map.get(hud_key)
+            if not isinstance(box, dict):
+                continue
+            try:
+                x = int(box.get("x", 0))
+                y = int(box.get("y", 0))
+                w = int(box.get("w", 0))
+                h = int(box.get("h", 0))
+            except Exception:
+                continue
+            if w <= 0 or h <= 0:
+                continue
+            out.append({"type": str(hud_key), "x": x, "y": y, "w": max(40, w), "h": max(30, h)})
+        return out
+
+    def _set_hud_free_boxes_from_list(cfg: LayoutConfig, boxes: list[dict]) -> None:
+        out_map: dict[str, dict[str, int]] = {}
+        for b in boxes:
+            if not isinstance(b, dict):
+                continue
+            t = str(b.get("type") or "").strip()
+            if t not in HUD_TYPES:
+                continue
+            try:
+                x = int(b.get("x", 0))
+                y = int(b.get("y", 0))
+                w = int(b.get("w", 0))
+                h = int(b.get("h", 0))
+            except Exception:
+                continue
+            if w <= 0 or h <= 0:
+                continue
+            out_map[t] = {"x": int(x), "y": int(y), "w": int(max(40, w)), "h": int(max(30, h))}
+        cfg.hud_free.boxes_abs_out = out_map
+
+    def _seed_free_boxes_from_legacy_if_missing() -> None:
+        cfg = _layout_cfg()
+        if not _is_hud_free_mode():
+            return
+        if _hud_free_boxes_to_list(cfg):
+            return
+        legacy = _norm_boxes_list(hud_layout_data.get(hud_layout_key()), add_missing=True)
+        if legacy:
+            _set_hud_free_boxes_from_list(cfg, legacy)
+
+    def get_hud_boxes_for_current() -> list[dict]:
+        key = hud_layout_key()
+        cfg = _layout_cfg()
+        if _is_hud_free_mode():
+            return _hud_free_boxes_to_list(cfg)
+
+        boxes = _norm_boxes_list(hud_layout_data.get(key), add_missing=True)
+        if boxes:
+            return boxes
         return default_hud_boxes()
 
     def set_hud_boxes_for_current(boxes: list[dict]) -> None:
+        cfg = _layout_cfg()
+        if _is_hud_free_mode():
+            _set_hud_free_boxes_from_list(cfg, boxes)
+            return
         hud_layout_data[hud_layout_key()] = boxes
         persistence.save_hud_layout(hud_layout_data)
+
 
     # Auswahlmöglichkeiten
     ASPECTS = ["32:9", "21:9", "16:9"]
@@ -353,6 +436,59 @@ def main() -> None:
 
     # --- Mapping-Layer (Story 2): UI-State <-> zentrale Modelle ---
     app_model = AppModel()
+    hud_free_mode_var = tk.BooleanVar(value=False)
+    hud_bg_alpha_var = tk.DoubleVar(value=255.0)
+
+    def _sync_hud_mode_var_from_model() -> None:
+        try:
+            mode = str(_layout_cfg().hud_mode or "frame").strip().lower()
+        except Exception:
+            mode = "frame"
+        try:
+            hud_free_mode_var.set(mode == "free")
+        except Exception:
+            pass
+
+    def _sync_hud_bg_alpha_var_from_model() -> None:
+        try:
+            alpha = _coerce_hud_bg_alpha(_layout_cfg().hud_free.bg_alpha)
+        except Exception:
+            alpha = 255
+        try:
+            hud_bg_alpha_var.set(float(alpha))
+        except Exception:
+            pass
+
+    def _apply_hud_mode_from_var(refresh_preview: bool = True) -> None:
+        cfg = _layout_cfg()
+        cfg.hud_mode = "free" if bool(hud_free_mode_var.get()) else "frame"
+        if str(cfg.hud_mode) == "free":
+            try:
+                _seed_free_boxes_from_legacy_if_missing()
+            except Exception:
+                pass
+        if not refresh_preview:
+            return
+        try:
+            if preview_mode_var.get() == "png":
+                render_png_preview(force_reload=False)
+            else:
+                refresh_layout_preview()
+        except Exception:
+            pass
+
+    def _apply_hud_bg_alpha_from_var(refresh_preview: bool = True) -> None:
+        cfg = _layout_cfg()
+        cfg.hud_free.bg_alpha = _coerce_hud_bg_alpha(hud_bg_alpha_var.get())
+        if not refresh_preview:
+            return
+        try:
+            if preview_mode_var.get() == "png":
+                render_png_preview(force_reload=False)
+            else:
+                refresh_layout_preview()
+        except Exception:
+            pass
 
     def model_from_ui_state() -> AppModel:
         return AppModel(
@@ -392,6 +528,8 @@ def main() -> None:
             hud_layout_data = model.hud_layout.hud_layout_data
         if isinstance(model.png_view.png_view_data, dict):
             png_view_data = model.png_view.png_view_data
+        _sync_hud_mode_var_from_model()
+        _sync_hud_bg_alpha_var_from_model()
 
     def set_app_model(model: AppModel) -> None:
         nonlocal app_model
@@ -697,6 +835,30 @@ def main() -> None:
     btn_hud_fit = ttk.Button(frame_settings, text="HUDs auf Rahmenbreite", command=hud_fit_to_frame_width)
     btn_hud_fit.grid(row=9 + len(HUD_TYPES), column=1, sticky="w", padx=(10, 0), pady=(6, 2))
 
+    hud_mode_row = 10 + len(HUD_TYPES)
+    ttk.Separator(frame_settings, orient="horizontal").grid(
+        row=hud_mode_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
+    )
+    cb_hud_free = ttk.Checkbutton(
+        frame_settings,
+        text="HUD frei platzierbar (global)",
+        variable=hud_free_mode_var,
+        command=lambda: _apply_hud_mode_from_var(refresh_preview=True),
+    )
+    cb_hud_free.grid(row=hud_mode_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 4))
+    ttk.Label(frame_settings, text="HUD Background Alpha:").grid(
+        row=hud_mode_row + 2, column=0, sticky="w", padx=10, pady=(0, 2)
+    )
+    sld_hud_bg_alpha = ttk.Scale(
+        frame_settings,
+        from_=0,
+        to=255,
+        orient="horizontal",
+        variable=hud_bg_alpha_var,
+        command=lambda _v: _apply_hud_bg_alpha_from_var(refresh_preview=True),
+    )
+    sld_hud_bg_alpha.grid(row=hud_mode_row + 2, column=1, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
+
 
     def parse_preset(preset: str) -> tuple[int, int]:
         s = (preset or "").lower().replace("×", "x").strip()
@@ -952,6 +1114,8 @@ def main() -> None:
         try:
             loaded = Profile.from_dict(d if isinstance(d, dict) else {})
             app_model.layout_config = loaded.layout_config
+            _sync_hud_mode_var_from_model()
+            _sync_hud_bg_alpha_var_from_model()
         except Exception:
             pass
 
@@ -1011,6 +1175,12 @@ def main() -> None:
             render_png_preview=render_png_preview,
             refresh_layout_preview=refresh_layout_preview,
         )
+        try:
+            _seed_free_boxes_from_legacy_if_missing()
+            _sync_hud_mode_var_from_model()
+            _sync_hud_bg_alpha_var_from_model()
+        except Exception:
+            pass
 
     def profile_save_dialog() -> None:
         if controller is None:

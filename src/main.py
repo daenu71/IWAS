@@ -416,6 +416,17 @@ def main() -> None:
     hud_enabled = ui.get("hud_enabled") if isinstance(ui, dict) else None
     hud_boxes = ui.get("hud_boxes") if isinstance(ui, dict) else None
     layout_config = LayoutConfig.from_dict(ui if isinstance(ui, dict) else {})
+    try:
+        hud_mode = str(layout_config.hud_mode or "frame").strip().lower()
+    except Exception:
+        hud_mode = "frame"
+    if hud_mode == "free":
+        try:
+            free_boxes = layout_config.hud_free.boxes_abs_out if isinstance(layout_config.hud_free.boxes_abs_out, dict) else {}
+        except Exception:
+            free_boxes = {}
+        if isinstance(free_boxes, dict) and len(free_boxes) > 0:
+            hud_boxes = free_boxes
     
     hud_win = ui.get("hud_window") if isinstance(ui, dict) else None
     hud_win_default_before = 10.0

@@ -420,13 +420,17 @@ def _hud_drawboxes_chain(
             print("[hud] enabled_names empty")
         return ""
 
-    hud_x0 = int(getattr(geom, "left_w"))
-    try:
-        hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
-        if len(hud_rects) >= 1:
-            hud_x0 = int(getattr(hud_rects[0], "x"))
-    except Exception:
-        pass
+    hud_mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower()
+    if hud_mode == "free":
+        hud_x0 = 0
+    else:
+        hud_x0 = int(getattr(geom, "left_w"))
+        try:
+            hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
+            if len(hud_rects) >= 1:
+                hud_x0 = int(getattr(hud_rects[0], "x"))
+        except Exception:
+            pass
 
     # ui_app.py kann hud_boxes in zwei Varianten liefern:
     # A) relativ zum HUD-Bereich (x beginnt bei 0)
@@ -466,10 +470,13 @@ def _hud_drawboxes_chain(
         max_x = 0
 
     boxes_are_absolute = False
-    try:
-        boxes_are_absolute = max_x > (int(getattr(geom, "hud")) + 10)
-    except Exception:
-        boxes_are_absolute = False
+    if hud_mode == "free":
+        boxes_are_absolute = True
+    else:
+        try:
+            boxes_are_absolute = max_x > (int(getattr(geom, "hud")) + 10)
+        except Exception:
+            boxes_are_absolute = False
 
     if hud_dbg:
         print(f"[hud] enabled={sorted(enabled_names)}")
@@ -559,6 +566,12 @@ def _geom_video_rect(
 
 
 def _geom_hud_anchor(geom: Any) -> tuple[int, int]:
+    try:
+        hud_mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower()
+    except Exception:
+        hud_mode = "frame"
+    if hud_mode == "free":
+        return 0, 0
     try:
         hud_rects = tuple(getattr(geom, "hud_rects", ()) or ())
         if len(hud_rects) >= 1:
@@ -862,18 +875,25 @@ def build_stream_sync_filter(
     hud_chain = _hud_drawboxes_chain(geom=geom, hud_enabled=hud_enabled, hud_boxes=hud_boxes)
 
     parts.append(f"[base][vslow]overlay={slow_x}:{slow_y}:shortest=1[tmp0]")
+    hud_mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower()
 
-    # HUD (Python rawvideo/rgba Stream) als Overlay in die Mitte
-    if hud_input_label:
-        # HUD-Input ist geom.hud x geom.H mit Alpha.
-        hud_x, hud_y = _geom_hud_anchor(geom)
+    if hud_input_label and hud_mode == "free":
+        parts.append(f"[tmp0][vfast]overlay={fast_x}:{fast_y}:shortest=1[tmp1]")
         parts.append(f"{hud_input_label}format=rgba[hudrgba]")
-        parts.append(f"[tmp0][hudrgba]overlay={hud_x}:{hud_y}:shortest=1[tmp]")
+        parts.append(f"[tmp1][hudrgba]overlay=0:0:shortest=1[hudtmp]")
+        parts.append(f"[hudtmp]copy{hud_chain}[vpre]")
     else:
-        parts.append(f"[tmp0]copy[tmp]")
+        # HUD (Python rawvideo/rgba Stream) als Overlay in die Mitte
+        if hud_input_label:
+            # HUD-Input ist geom.hud x geom.H mit Alpha.
+            hud_x, hud_y = _geom_hud_anchor(geom)
+            parts.append(f"{hud_input_label}format=rgba[hudrgba]")
+            parts.append(f"[tmp0][hudrgba]overlay={hud_x}:{hud_y}:shortest=1[tmp]")
+        else:
+            parts.append(f"[tmp0]copy[tmp]")
 
-    # Danach Fast overlay + danach die HUD-Rahmen (Story 1) als drawbox
-    parts.append(f"[tmp][vfast]overlay={fast_x}:{fast_y}:shortest=1{hud_chain}[vpre]")
+        # Danach Fast overlay + danach die HUD-Rahmen (Story 1) als drawbox
+        parts.append(f"[tmp][vfast]overlay={fast_x}:{fast_y}:shortest=1{hud_chain}[vpre]")
 
     parts.append(f"[vpre]fps={r}[vout]")
 
