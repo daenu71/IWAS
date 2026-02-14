@@ -95,6 +95,8 @@ class VideoTransformConfig:
     scale_pct: int = 100
     shift_x_px: int = 0
     shift_y_px: int = 0
+    mirror_shift_x: bool = False
+    mirror_shift_y: bool = False
     fit_button_mode: str = "fit_height"
 
     def to_dict(self) -> dict[str, Any]:
@@ -102,6 +104,8 @@ class VideoTransformConfig:
             "scale_pct": int(self.scale_pct),
             "shift_x_px": int(self.shift_x_px),
             "shift_y_px": int(self.shift_y_px),
+            "mirror_shift_x": bool(self.mirror_shift_x),
+            "mirror_shift_y": bool(self.mirror_shift_y),
             "fit_button_mode": str(self.fit_button_mode),
         }
 
@@ -116,6 +120,8 @@ class VideoTransformConfig:
             scale_pct=_to_int(data.get("scale_pct", 100), 100),
             shift_x_px=_to_int(data.get("shift_x_px", 0), 0),
             shift_y_px=_to_int(data.get("shift_y_px", 0), 0),
+            mirror_shift_x=bool(data.get("mirror_shift_x", False)),
+            mirror_shift_y=bool(data.get("mirror_shift_y", False)),
             fit_button_mode=fit_button_mode,
         )
 

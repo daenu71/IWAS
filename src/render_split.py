@@ -135,6 +135,8 @@ def _build_render_video_views(
     scale_pct = 100.0
     shift_x_px = 0
     shift_y_px = 0
+    mirror_shift_x = False
+    mirror_shift_y = False
     try:
         if layout_config is not None:
             vt = getattr(layout_config, "video_transform", None)
@@ -142,17 +144,26 @@ def _build_render_video_views(
                 scale_pct = float(getattr(vt, "scale_pct", 100.0))
                 shift_x_px = int(getattr(vt, "shift_x_px", 0))
                 shift_y_px = int(getattr(vt, "shift_y_px", 0))
+                mirror_shift_x = bool(getattr(vt, "mirror_shift_x", False))
+                mirror_shift_y = bool(getattr(vt, "mirror_shift_y", False))
     except Exception:
         scale_pct = 100.0
         shift_x_px = 0
         shift_y_px = 0
+        mirror_shift_x = False
+        mirror_shift_y = False
+
+    shift_x_px_l = int(shift_x_px)
+    shift_x_px_r = int(-shift_x_px if mirror_shift_x else shift_x_px)
+    shift_y_px_l = int(shift_y_px)
+    shift_y_px_r = int(-shift_y_px if mirror_shift_y else shift_y_px)
 
     out_l["scale_pct"] = float(scale_pct)
     out_r["scale_pct"] = float(scale_pct)
-    out_l["shift_x_px"] = int(shift_x_px)
-    out_r["shift_x_px"] = int(shift_x_px)
-    out_l["shift_y_px"] = int(shift_y_px)
-    out_r["shift_y_px"] = int(shift_y_px)
+    out_l["shift_x_px"] = int(shift_x_px_l)
+    out_r["shift_x_px"] = int(shift_x_px_r)
+    out_l["shift_y_px"] = int(shift_y_px_l)
+    out_r["shift_y_px"] = int(shift_y_px_r)
     return out_l, out_r
 
 

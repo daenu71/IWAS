@@ -497,6 +497,16 @@ class PngPreviewController:
         x0, y0, x1, y1, scale, out_w, out_h, hud_w = self.compute_frame_rect_for_preview()
         output = self._get_output_format()
         layout_config = getattr(output, "layout_config", None)
+        mirror_shift_x = False
+        mirror_shift_y = False
+        try:
+            vt = getattr(layout_config, "video_transform", None) if layout_config is not None else None
+            if vt is not None:
+                mirror_shift_x = bool(getattr(vt, "mirror_shift_x", False))
+                mirror_shift_y = bool(getattr(vt, "mirror_shift_y", False))
+        except Exception:
+            mirror_shift_x = False
+            mirror_shift_y = False
         try:
             geom = build_output_geometry_for_size(
                 out_w=int(out_w),
@@ -610,6 +620,11 @@ class PngPreviewController:
             # Offsets sind in Output-Pixeln (stabil bei Resize)
             off_x_out = int(self.png_state[side].get("off_x", 0))
             off_y_out = int(self.png_state[side].get("off_y", 0))
+            if side == "R":
+                if mirror_shift_x:
+                    off_x_out = -off_x_out
+                if mirror_shift_y:
+                    off_y_out = -off_y_out
             off_x_px = int(round(off_x_out * scale))
             off_y_px = int(round(off_y_out * scale))
 

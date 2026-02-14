@@ -441,6 +441,8 @@ def main() -> None:
     video_scale_pct_var = tk.IntVar(value=100)
     video_shift_x_var = tk.IntVar(value=0)
     video_shift_y_var = tk.IntVar(value=0)
+    video_mirror_shift_x_var = tk.BooleanVar(value=False)
+    video_mirror_shift_y_var = tk.BooleanVar(value=False)
     video_transform_var_syncing = False
 
     def _sync_hud_mode_var_from_model() -> None:
@@ -492,14 +494,20 @@ def main() -> None:
         scale_pct = _coerce_video_scale_pct(getattr(vt, "scale_pct", 100))
         shift_x_px = _coerce_video_shift_px(getattr(vt, "shift_x_px", 0))
         shift_y_px = _coerce_video_shift_px(getattr(vt, "shift_y_px", 0))
+        mirror_shift_x = bool(getattr(vt, "mirror_shift_x", False))
+        mirror_shift_y = bool(getattr(vt, "mirror_shift_y", False))
         vt.scale_pct = int(scale_pct)
         vt.shift_x_px = int(shift_x_px)
         vt.shift_y_px = int(shift_y_px)
+        vt.mirror_shift_x = bool(mirror_shift_x)
+        vt.mirror_shift_y = bool(mirror_shift_y)
         video_transform_var_syncing = True
         try:
             video_scale_pct_var.set(int(scale_pct))
             video_shift_x_var.set(int(shift_x_px))
             video_shift_y_var.set(int(shift_y_px))
+            video_mirror_shift_x_var.set(bool(mirror_shift_x))
+            video_mirror_shift_y_var.set(bool(mirror_shift_y))
         finally:
             video_transform_var_syncing = False
 
@@ -546,19 +554,33 @@ def main() -> None:
             raw_shift_y = video_shift_y_var.get()
         except Exception:
             raw_shift_y = 0
+        try:
+            raw_mirror_shift_x = video_mirror_shift_x_var.get()
+        except Exception:
+            raw_mirror_shift_x = False
+        try:
+            raw_mirror_shift_y = video_mirror_shift_y_var.get()
+        except Exception:
+            raw_mirror_shift_y = False
         scale_pct = _coerce_video_scale_pct(raw_scale)
         shift_x_px = _coerce_video_shift_px(raw_shift_x)
         shift_y_px = _coerce_video_shift_px(raw_shift_y)
+        mirror_shift_x = bool(raw_mirror_shift_x)
+        mirror_shift_y = bool(raw_mirror_shift_y)
         video_transform_var_syncing = True
         try:
             video_scale_pct_var.set(int(scale_pct))
             video_shift_x_var.set(int(shift_x_px))
             video_shift_y_var.set(int(shift_y_px))
+            video_mirror_shift_x_var.set(bool(mirror_shift_x))
+            video_mirror_shift_y_var.set(bool(mirror_shift_y))
         finally:
             video_transform_var_syncing = False
         vt.scale_pct = int(scale_pct)
         vt.shift_x_px = int(shift_x_px)
         vt.shift_y_px = int(shift_y_px)
+        vt.mirror_shift_x = bool(mirror_shift_x)
+        vt.mirror_shift_y = bool(mirror_shift_y)
         if not refresh_preview:
             return
         try:
@@ -968,6 +990,13 @@ def main() -> None:
         command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
     )
     spn_video_shift_x.grid(row=video_place_row + 3, column=1, sticky="w", padx=10, pady=2)
+    chk_video_mirror_shift_x = ttk.Checkbutton(
+        frame_settings,
+        text="mirror",
+        variable=video_mirror_shift_x_var,
+        command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
+    )
+    chk_video_mirror_shift_x.grid(row=video_place_row + 3, column=2, sticky="w", padx=10, pady=2)
 
     ttk.Label(frame_settings, text="Shift Y (px):").grid(row=video_place_row + 4, column=0, sticky="w", padx=10, pady=2)
     spn_video_shift_y = ttk.Spinbox(
@@ -980,6 +1009,13 @@ def main() -> None:
         command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
     )
     spn_video_shift_y.grid(row=video_place_row + 4, column=1, sticky="w", padx=10, pady=2)
+    chk_video_mirror_shift_y = ttk.Checkbutton(
+        frame_settings,
+        text="mirror",
+        variable=video_mirror_shift_y_var,
+        command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
+    )
+    chk_video_mirror_shift_y.grid(row=video_place_row + 4, column=2, sticky="w", padx=10, pady=2)
 
     def reset_video_placement() -> None:
         cfg = _layout_cfg()
@@ -1000,7 +1036,13 @@ def main() -> None:
     )
     btn_reset_video_placement.grid(row=video_place_row + 5, column=0, sticky="w", padx=10, pady=(6, 2))
 
-    for _video_var in (video_scale_pct_var, video_shift_x_var, video_shift_y_var):
+    for _video_var in (
+        video_scale_pct_var,
+        video_shift_x_var,
+        video_shift_y_var,
+        video_mirror_shift_x_var,
+        video_mirror_shift_y_var,
+    ):
         try:
             _video_var.trace_add("write", lambda *_: _apply_video_transform_from_vars(refresh_preview=True))
         except Exception:
