@@ -515,9 +515,11 @@ def main() -> None:
         except Exception:
             pass
 
-    def _auto_refit_huds_if_frame_mode(cfg: LayoutConfig | None = None) -> bool:
-        if cfg is None:
-            cfg = _layout_cfg()
+    hud_fit_trigger_count = 0
+
+    def _run_hud_fit_if_frame_mode(reason: str) -> bool:
+        nonlocal hud_fit_trigger_count
+        cfg = _layout_cfg()
         try:
             hud_mode_now = str(getattr(cfg, "hud_mode", "frame") or "frame").strip().lower()
         except Exception:
@@ -526,11 +528,20 @@ def main() -> None:
             return False
         try:
             hud_fit_to_frame_width()
+            hud_fit_trigger_count += 1
+            dbg_fit = False
+            try:
+                dbg_raw = str(os.environ.get("IRVC_DEBUG") or "").strip().lower()
+                dbg_fit = _debug_swallowed_enabled() or (dbg_raw in ("1", "true", "yes", "on"))
+            except Exception:
+                dbg_fit = False
+            if dbg_fit:
+                print(f"[IRVC_DEBUG] HUD fit trigger #{hud_fit_trigger_count} ({reason})")
             return True
         except Exception:
             return False
 
-    def _apply_hud_frame_from_vars(refresh_preview: bool = True) -> None:
+    def _apply_hud_frame_from_vars(refresh_preview: bool = True, size_transform: str | None = None) -> None:
         cfg = _layout_cfg()
         prev_orientation, prev_anchor = _norm_hud_frame_values(
             getattr(cfg.hud_frame, "orientation", "vertical"),
@@ -552,9 +563,23 @@ def main() -> None:
             _update_hud_mode_visibility()
         except Exception:
             pass
+        if size_transform is not None:
+            try:
+                old_size_value = int(hud_width_var.get())
+            except Exception:
+                old_size_value = 0
+            new_size_value = int(old_size_value)
+            if size_transform == "vertical_to_horizontal":
+                new_size_value = max(1, int(round(float(old_size_value) / 4.0)))
+            elif size_transform == "horizontal_to_vertical":
+                new_size_value = max(1, int(round(float(old_size_value) * 4.0)))
+            try:
+                hud_width_var.set(int(new_size_value))
+            except Exception:
+                pass
         if not refresh_preview:
             return
-        if frame_changed and _auto_refit_huds_if_frame_mode(cfg):
+        if frame_changed and _run_hud_fit_if_frame_mode("hud_frame_changed"):
             return
         try:
             refresh_layout_preview()
@@ -571,12 +596,15 @@ def main() -> None:
             hud_frame_orientation_var.get(),
             hud_frame_anchor_var.get(),
         )
+        size_transform: str | None = None
         if new_orientation != prev_orientation:
             if new_orientation == "horizontal":
                 hud_frame_anchor_var.set("bottom")
+                size_transform = "vertical_to_horizontal"
             else:
                 hud_frame_anchor_var.set("center")
-        _apply_hud_frame_from_vars(refresh_preview=refresh_preview)
+                size_transform = "horizontal_to_vertical"
+        _apply_hud_frame_from_vars(refresh_preview=refresh_preview, size_transform=size_transform)
 
     def _coerce_video_scale_pct(raw: object) -> int:
         try:
@@ -638,7 +666,7 @@ def main() -> None:
             pass
         if not refresh_preview:
             return
-        if _auto_refit_huds_if_frame_mode(cfg):
+        if _run_hud_fit_if_frame_mode("hud_mode_changed"):
             return
         try:
             refresh_layout_preview()
@@ -2577,6 +2605,7 @@ def main() -> None:
                 refresh_layout_preview()
             except Exception:
                 pass
+        _run_hud_fit_if_frame_mode("startup_png_preview_initialized")
 
     sync_from_folders_if_needed_ui(force=True)
     try:
