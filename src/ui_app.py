@@ -438,6 +438,8 @@ def main() -> None:
     app_model = AppModel()
     hud_free_mode_var = tk.BooleanVar(value=False)
     hud_bg_alpha_var = tk.DoubleVar(value=255.0)
+    hud_frame_orientation_var = tk.StringVar(value="vertical")
+    hud_frame_anchor_var = tk.StringVar(value="center")
     video_scale_pct_var = tk.IntVar(value=100)
     video_shift_x_var = tk.IntVar(value=0)
     video_shift_y_var = tk.IntVar(value=0)
@@ -454,6 +456,10 @@ def main() -> None:
             hud_free_mode_var.set(mode == "free")
         except Exception:
             pass
+        try:
+            _update_hud_mode_visibility()
+        except Exception:
+            pass
 
     def _sync_hud_bg_alpha_var_from_model() -> None:
         try:
@@ -464,6 +470,85 @@ def main() -> None:
             hud_bg_alpha_var.set(float(alpha))
         except Exception:
             pass
+
+    def _norm_hud_frame_values(orientation_raw: object, anchor_raw: object) -> tuple[str, str]:
+        try:
+            orientation = str(orientation_raw or "vertical").strip().lower()
+        except Exception:
+            orientation = "vertical"
+        if orientation not in ("vertical", "horizontal"):
+            orientation = "vertical"
+
+        try:
+            anchor = str(anchor_raw or "").strip().lower()
+        except Exception:
+            anchor = ""
+        if orientation == "vertical":
+            if anchor not in ("left", "center", "right"):
+                anchor = "center"
+        else:
+            if anchor not in ("top", "center", "bottom", "top_bottom"):
+                anchor = "bottom"
+        return orientation, anchor
+
+    def _sync_hud_frame_vars_from_model() -> None:
+        cfg = _layout_cfg()
+        orientation, anchor = _norm_hud_frame_values(
+            getattr(cfg.hud_frame, "orientation", "vertical"),
+            getattr(cfg.hud_frame, "anchor", "center"),
+        )
+        try:
+            hud_frame_orientation_var.set(str(orientation))
+            hud_frame_anchor_var.set(str(anchor))
+        except Exception:
+            pass
+        cfg.hud_frame.orientation = str(orientation)
+        cfg.hud_frame.anchor = str(anchor)
+        try:
+            _update_hud_mode_visibility()
+        except Exception:
+            pass
+
+    def _apply_hud_frame_from_vars(refresh_preview: bool = True) -> None:
+        cfg = _layout_cfg()
+        orientation, anchor = _norm_hud_frame_values(
+            hud_frame_orientation_var.get(),
+            hud_frame_anchor_var.get(),
+        )
+        cfg.hud_frame.orientation = str(orientation)
+        cfg.hud_frame.anchor = str(anchor)
+        try:
+            hud_frame_orientation_var.set(str(orientation))
+            hud_frame_anchor_var.set(str(anchor))
+        except Exception:
+            pass
+        try:
+            _update_hud_mode_visibility()
+        except Exception:
+            pass
+        if not refresh_preview:
+            return
+        try:
+            refresh_layout_preview()
+        except Exception:
+            pass
+
+    def _on_hud_frame_orientation_changed(refresh_preview: bool = True) -> None:
+        cfg = _layout_cfg()
+        prev_orientation, _prev_anchor = _norm_hud_frame_values(
+            getattr(cfg.hud_frame, "orientation", "vertical"),
+            getattr(cfg.hud_frame, "anchor", "center"),
+        )
+        new_orientation, _tmp_anchor = _norm_hud_frame_values(
+            hud_frame_orientation_var.get(),
+            hud_frame_anchor_var.get(),
+        )
+        if new_orientation != prev_orientation:
+            if new_orientation == "horizontal":
+                hud_frame_anchor_var.set("bottom")
+            else:
+                hud_frame_anchor_var.set("center")
+        _apply_hud_frame_from_vars(refresh_preview=refresh_preview)
 
     def _coerce_video_scale_pct(raw: object) -> int:
         try:
@@ -519,6 +604,10 @@ def main() -> None:
                 _seed_free_boxes_from_legacy_if_missing()
             except Exception:
                 pass
+        try:
+            _update_hud_mode_visibility()
+        except Exception:
+            pass
         if not refresh_preview:
             return
         try:
@@ -627,6 +716,7 @@ def main() -> None:
         if isinstance(model.png_view.png_view_data, dict):
             png_view_data = model.png_view.png_view_data
         _sync_hud_mode_var_from_model()
+        _sync_hud_frame_vars_from_model()
         _sync_hud_bg_alpha_var_from_model()
         _sync_video_transform_vars_from_model()
 
@@ -655,7 +745,8 @@ def main() -> None:
 
     apply_model_to_ui_state(model_from_ui_state())
 
-    ttk.Label(frame_settings, text="HUD-Breite (px):").grid(row=5, column=0, sticky="w", padx=10, pady=2)
+    lbl_hud_size = ttk.Label(frame_settings, text="HUD-width (px):")
+    lbl_hud_size.grid(row=5, column=0, sticky="w", padx=10, pady=2)
     spn_hud = ttk.Spinbox(frame_settings, from_=0, to=10000, width=10, textvariable=hud_width_var)
     spn_hud.grid(row=5, column=1, sticky="w", padx=10, pady=2)
 
@@ -723,16 +814,36 @@ def main() -> None:
         """
         nonlocal hud_boxes
 
-        def _split_even(total: int, count: int) -> list[int]:
-            n = max(0, int(count))
+        def _hud_weight_for_box(box: dict) -> float:
+            hud_key = ""
+            try:
+                hud_key = str(box.get("type") or "")
+            except Exception:
+                hud_key = ""
+            if hud_key in ("Speed", "Gear & RPM"):
+                return 0.5
+            return 1.0
+
+        def _split_weighted(total: int, items: list[dict]) -> list[int]:
             t = max(0, int(total))
+            n = len(items)
             if n <= 0:
                 return []
-            base = t // n
-            rest = t - (base * n)
-            out = [int(base)] * n
-            for i in range(rest):
-                out[i] += 1
+            weights: list[float] = []
+            for b in items:
+                w = float(_hud_weight_for_box(b))
+                if w <= 0.0:
+                    w = 1.0
+                weights.append(w)
+            weight_sum = float(sum(weights))
+            if weight_sum <= 0.0:
+                weights = [1.0] * n
+                weight_sum = float(n)
+            out = [int(float(t) * (w / weight_sum)) for w in weights]
+            remaining = int(t - sum(out))
+            if remaining > 0:
+                for i in range(remaining):
+                    out[i % n] += 1
             return out
 
         def _active_hud_boxes_in_order(boxes: list[dict], enabled: set[str]) -> list[dict]:
@@ -755,16 +866,17 @@ def main() -> None:
             if orientation not in ("vertical", "horizontal"):
                 orientation = "vertical"
 
+            default_anchor = "center" if orientation == "vertical" else "bottom"
             try:
-                anchor = str(cfg.hud_frame.anchor or "center").strip().lower()
+                anchor = str(cfg.hud_frame.anchor or default_anchor).strip().lower()
             except Exception:
-                anchor = "center"
+                anchor = default_anchor
             if orientation == "vertical":
                 if anchor not in ("left", "center", "right"):
                     anchor = "center"
             else:
                 if anchor not in ("top", "center", "bottom", "top_bottom"):
-                    anchor = "center"
+                    anchor = "bottom"
             return orientation, anchor
 
         def _to_rect_xywh(rect: object) -> tuple[int, int, int, int] | None:
@@ -865,7 +977,7 @@ def main() -> None:
                 _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
             else:
                 fx, fy, fw, fh = r
-                heights = _split_even(fh, len(active_boxes))
+                heights = _split_weighted(fh, active_boxes)
                 cur_y = int(fy)
                 for i, b in enumerate(active_boxes):
                     h_i = int(heights[i]) if i < len(heights) else 0
@@ -877,7 +989,7 @@ def main() -> None:
         else:
             def _place_horizontal(items: list[dict], rect_xywh: tuple[int, int, int, int]) -> None:
                 rx, ry, rw, rh = rect_xywh
-                widths = _split_even(rw, len(items))
+                widths = _split_weighted(rw, items)
                 cur_x = int(rx)
                 for i, b in enumerate(items):
                     w_i = int(widths[i]) if i < len(widths) else 0
@@ -929,15 +1041,98 @@ def main() -> None:
     ttk.Separator(frame_settings, orient="horizontal").grid(
         row=hud_mode_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
     )
+    ttk.Label(frame_settings, text="HUD mode", font=("Segoe UI", 10, "bold")).grid(
+        row=hud_mode_row + 1, column=0, sticky="w", padx=10, pady=(0, 2)
+    )
     cb_hud_free = ttk.Checkbutton(
         frame_settings,
-        text="HUD frei platzierbar (global)",
+        text="Free-Mode",
+        style="Switch.TCheckbutton",
         variable=hud_free_mode_var,
         command=lambda: _apply_hud_mode_from_var(refresh_preview=True),
     )
-    cb_hud_free.grid(row=hud_mode_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 4))
-    ttk.Label(frame_settings, text="HUD Background Alpha:").grid(
-        row=hud_mode_row + 2, column=0, sticky="w", padx=10, pady=(0, 2)
+    cb_hud_free.grid(row=hud_mode_row + 1, column=1, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+    frm_hud_frame_controls = ttk.Frame(frame_settings)
+    frm_hud_frame_controls.grid(row=hud_mode_row + 2, column=0, columnspan=3, sticky="ew", padx=10, pady=(2, 4))
+    frm_hud_frame_controls.columnconfigure(0, weight=0)
+    frm_hud_frame_controls.columnconfigure(1, weight=1)
+
+    ttk.Label(frm_hud_frame_controls, text="Alignment:").grid(row=0, column=0, sticky="w", pady=(0, 2))
+    frm_orientation = ttk.Frame(frm_hud_frame_controls)
+    frm_orientation.grid(row=0, column=1, sticky="w", pady=(0, 2))
+    ttk.Radiobutton(
+        frm_orientation,
+        text="Vertical",
+        value="vertical",
+        variable=hud_frame_orientation_var,
+        command=lambda: _on_hud_frame_orientation_changed(refresh_preview=True),
+    ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frm_orientation,
+        text="Horizontal",
+        value="horizontal",
+        variable=hud_frame_orientation_var,
+        command=lambda: _on_hud_frame_orientation_changed(refresh_preview=True),
+    ).grid(row=0, column=1, sticky="w")
+
+    frm_anchor_vertical = ttk.Frame(frm_hud_frame_controls)
+    frm_anchor_vertical.grid(row=1, column=1, sticky="w", pady=(0, 2))
+    ttk.Radiobutton(
+        frm_anchor_vertical,
+        text="Left",
+        value="left",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frm_anchor_vertical,
+        text="Centre",
+        value="center",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=1, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frm_anchor_vertical,
+        text="Right",
+        value="right",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=2, sticky="w")
+
+    frm_anchor_horizontal = ttk.Frame(frm_hud_frame_controls)
+    frm_anchor_horizontal.grid(row=1, column=1, sticky="w", pady=(0, 2))
+    ttk.Radiobutton(
+        frm_anchor_horizontal,
+        text="Top",
+        value="top",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frm_anchor_horizontal,
+        text="Middle",
+        value="center",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=1, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frm_anchor_horizontal,
+        text="Bottom",
+        value="bottom",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=2, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frm_anchor_horizontal,
+        text="Top & Bottom",
+        value="top_bottom",
+        variable=hud_frame_anchor_var,
+        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+    ).grid(row=0, column=3, sticky="w")
+
+    lbl_hud_bg_alpha = ttk.Label(frame_settings, text="HUD Background Alpha:")
+    lbl_hud_bg_alpha.grid(
+        row=hud_mode_row + 3, column=0, sticky="w", padx=10, pady=(0, 2)
     )
     sld_hud_bg_alpha = ttk.Scale(
         frame_settings,
@@ -947,9 +1142,43 @@ def main() -> None:
         variable=hud_bg_alpha_var,
         command=lambda _v: _apply_hud_bg_alpha_from_var(refresh_preview=True),
     )
-    sld_hud_bg_alpha.grid(row=hud_mode_row + 2, column=1, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
+    sld_hud_bg_alpha.grid(row=hud_mode_row + 3, column=1, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
 
-    video_place_row = hud_mode_row + 3
+    def _update_hud_mode_visibility() -> None:
+        is_free = bool(hud_free_mode_var.get())
+        orientation, anchor = _norm_hud_frame_values(
+            hud_frame_orientation_var.get(),
+            hud_frame_anchor_var.get(),
+        )
+        try:
+            hud_frame_orientation_var.set(str(orientation))
+            hud_frame_anchor_var.set(str(anchor))
+        except Exception:
+            pass
+        if orientation == "vertical":
+            lbl_hud_size.config(text="HUD-width (px):")
+            frm_anchor_horizontal.grid_remove()
+            frm_anchor_vertical.grid()
+        else:
+            lbl_hud_size.config(text="HUD-height (px):")
+            frm_anchor_vertical.grid_remove()
+            frm_anchor_horizontal.grid()
+        if is_free:
+            lbl_hud_size.grid_remove()
+            spn_hud.grid_remove()
+            frm_hud_frame_controls.grid_remove()
+            lbl_hud_bg_alpha.grid()
+            sld_hud_bg_alpha.grid()
+        else:
+            lbl_hud_size.grid()
+            spn_hud.grid()
+            frm_hud_frame_controls.grid()
+            lbl_hud_bg_alpha.grid_remove()
+            sld_hud_bg_alpha.grid_remove()
+
+    _update_hud_mode_visibility()
+
+    video_place_row = hud_mode_row + 4
     ttk.Separator(frame_settings, orient="horizontal").grid(
         row=video_place_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
     )
@@ -1310,6 +1539,7 @@ def main() -> None:
             loaded = Profile.from_dict(d if isinstance(d, dict) else {})
             app_model.layout_config = loaded.layout_config
             _sync_hud_mode_var_from_model()
+            _sync_hud_frame_vars_from_model()
             _sync_hud_bg_alpha_var_from_model()
             _sync_video_transform_vars_from_model()
         except Exception:
@@ -1374,6 +1604,7 @@ def main() -> None:
         try:
             _seed_free_boxes_from_legacy_if_missing()
             _sync_hud_mode_var_from_model()
+            _sync_hud_frame_vars_from_model()
             _sync_hud_bg_alpha_var_from_model()
             _sync_video_transform_vars_from_model()
         except Exception:

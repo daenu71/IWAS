@@ -78,10 +78,11 @@ class HudFrameConfig:
         if orientation not in ("vertical", "horizontal"):
             orientation = "vertical"
 
-        anchor = str(data.get("anchor") or "center").strip().lower()
+        default_anchor = "center" if orientation == "vertical" else "bottom"
+        anchor = str(data.get("anchor") or default_anchor).strip().lower()
         valid_anchors = ("center", "left", "right") if orientation == "vertical" else ("top", "center", "bottom", "top_bottom")
         if anchor not in valid_anchors:
-            anchor = "center"
+            anchor = default_anchor
 
         return cls(
             orientation=orientation,
