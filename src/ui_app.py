@@ -536,7 +536,7 @@ def main() -> None:
             except Exception:
                 dbg_fit = False
             if dbg_fit:
-                print(f"[IRVC_DEBUG] HUD fit trigger #{hud_fit_trigger_count} ({reason})")
+                print(f"[IRVC_DEBUG] HUD fit trigger #{hud_fit_trigger_count} (reason={reason})")
             return True
         except Exception:
             return False
@@ -579,12 +579,19 @@ def main() -> None:
                 pass
         if not refresh_preview:
             return
-        if frame_changed and _run_hud_fit_if_frame_mode("hud_frame_changed"):
-            return
         try:
             refresh_layout_preview()
         except Exception:
             pass
+        if not frame_changed:
+            return
+        fit_reason = f"radio-after-ui: orientation={orientation}, anchor={anchor}"
+        if str(anchor) == "top_bottom":
+            fit_reason = "radio-after-ui: top_bottom"
+        try:
+            root.after(0, lambda reason=fit_reason: _run_hud_fit_if_frame_mode(reason))
+        except Exception:
+            _run_hud_fit_if_frame_mode(fit_reason)
 
     def _on_hud_frame_orientation_changed(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
@@ -605,6 +612,21 @@ def main() -> None:
                 hud_frame_anchor_var.set("center")
                 size_transform = "horizontal_to_vertical"
         _apply_hud_frame_from_vars(refresh_preview=refresh_preview, size_transform=size_transform)
+
+    def _on_hud_frame_anchor_changed(refresh_preview: bool = True) -> None:
+        orientation, anchor = _norm_hud_frame_values(
+            hud_frame_orientation_var.get(),
+            hud_frame_anchor_var.get(),
+        )
+        dbg_fit = False
+        try:
+            dbg_raw = str(os.environ.get("IRVC_DEBUG") or "").strip().lower()
+            dbg_fit = _debug_swallowed_enabled() or (dbg_raw in ("1", "true", "yes", "on"))
+        except Exception:
+            dbg_fit = False
+        if dbg_fit and str(anchor) == "top_bottom":
+            print(f"[IRVC_DEBUG] HUD anchor radio set (orientation={orientation}, anchor={anchor})")
+        _apply_hud_frame_from_vars(refresh_preview=refresh_preview)
 
     def _coerce_video_scale_pct(raw: object) -> int:
         try:
@@ -1182,21 +1204,21 @@ def main() -> None:
         text="Left",
         value="left",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=0, sticky="w", padx=(0, 8))
     ttk.Radiobutton(
         frm_anchor_vertical,
         text="Centre",
         value="center",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=1, sticky="w", padx=(0, 8))
     ttk.Radiobutton(
         frm_anchor_vertical,
         text="Right",
         value="right",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=2, sticky="w")
 
     frm_anchor_horizontal = ttk.Frame(frm_hud_frame_controls)
@@ -1206,28 +1228,28 @@ def main() -> None:
         text="Top",
         value="top",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=0, sticky="w", padx=(0, 8))
     ttk.Radiobutton(
         frm_anchor_horizontal,
         text="Middle",
         value="center",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=1, sticky="w", padx=(0, 8))
     ttk.Radiobutton(
         frm_anchor_horizontal,
         text="Bottom",
         value="bottom",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=2, sticky="w", padx=(0, 8))
     ttk.Radiobutton(
         frm_anchor_horizontal,
         text="Top & Bottom",
         value="top_bottom",
         variable=hud_frame_anchor_var,
-        command=lambda: _apply_hud_frame_from_vars(refresh_preview=True),
+        command=lambda: _on_hud_frame_anchor_changed(refresh_preview=True),
     ).grid(row=0, column=3, sticky="w")
 
     lbl_hud_size.grid(row=hud_mode_row + 3, column=0, sticky="w", padx=10, pady=(0, 2))
