@@ -3234,29 +3234,20 @@ def _render_hud_scroll_frames_png(
                         int(hud_pedals_abs_debounce_ms),
                     )
                     if renderer_state.helpers.get("tb_layout_sig") != tb_layout_sig or ("tb" not in renderer_state.layout):
-                        try:
-                            tb_headroom = float((os.environ.get("IRVC_PEDAL_HEADROOM") or "").strip() or "1.12")
-                        except Exception:
-                            tb_headroom = 1.12
-                        if tb_headroom < 1.00:
-                            tb_headroom = 1.00
-                        if tb_headroom > 2.00:
-                            tb_headroom = 2.00
-
-                        tb_font_sz = int(round(max(12.0, min(23.0, float(h) * 0.165))))
-                        tb_font_val_sz = int(round(max(13.0, min(26.0, float(h) * 0.185))))
-                        tb_font_title = _load_hud_font(tb_font_sz)
+                        tb_title_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
+                        tb_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                        tb_font_title = _load_hud_font(tb_title_font_sz)
                         tb_font_val = _load_hud_font(tb_font_val_sz)
-                        tb_font_axis = _load_hud_font(max(10, int(tb_font_sz - 1)))
-                        tb_font_axis_small = _load_hud_font(max(9, int(tb_font_sz - 2)))
+                        tb_font_axis = _load_hud_font(max(8, int(tb_title_font_sz - 2)))
+                        tb_font_axis_small = _load_hud_font(max(7, int(tb_title_font_sz - 3)))
 
                         tb_y_txt = int(2)
-                        tb_title_h = int(max(10, min(30, round(float(h) * 0.16))))
+                        tb_title_h = int(max(9, min(24, int(tb_title_font_sz + 1))))
 
                         tb_table_top = int(tb_y_txt + tb_title_h + 2)
                         tb_table_h = int(max(28, min(58, round(float(h) * 0.30))))
-                        tb_table_header_h = int(max(10, min(tb_table_h - 8, round(float(tb_table_h) * 0.45))))
-                        tb_table_value_h = int(max(8, tb_table_h - tb_table_header_h))
+                        tb_table_header_h = int(max(9, min(tb_table_h - 10, round(float(tb_table_h) * 0.38))))
+                        tb_table_value_h = int(max(10, tb_table_h - tb_table_header_h))
                         tb_table_bottom = int(tb_table_top + tb_table_h - 1)
 
                         tb_table_outer_pad_x = int(max(2, min(10, round(float(w) * 0.015))))
@@ -3272,7 +3263,9 @@ def _render_hud_scroll_frames_png(
                         tb_table_cols_per_side = int(len(tb_table_cols))
                         tb_table_col_w = float(tb_table_side_w) / max(1.0, float(tb_table_cols_per_side))
                         tb_table_cell_pad_x = int(max(1, min(6, round(tb_table_col_w * 0.08))))
+                        tb_table_value_cell_pad_x = int(max(1, min(4, round(tb_table_col_w * 0.04))))
                         tb_table_header_fit_w = int(max(6, round(tb_table_col_w) - (2 * tb_table_cell_pad_x)))
+                        tb_table_value_fit_w = int(max(6, round(tb_table_col_w) - (2 * tb_table_value_cell_pad_x)))
                         tb_table_header_fit_h = int(max(6, tb_table_header_h - 2))
                         tb_table_value_fit_h = int(max(6, tb_table_value_h - 2))
 
@@ -3311,31 +3304,34 @@ def _render_hud_scroll_frames_png(
                             fit_h=int(tb_table_header_fit_h),
                         )
                         tb_font_tbl_val = _tb_fit_font(
-                            max_sz=int(max(8, min(30, tb_table_value_fit_h))),
+                            max_sz=int(max(8, min(34, tb_table_value_fit_h))),
                             min_sz=8,
                             labels=("100%",),
-                            fit_w=int(tb_table_header_fit_w),
+                            fit_w=int(tb_table_value_fit_w),
                             fit_h=int(tb_table_value_fit_h),
                         )
 
                         tb_abs_h = int(max(6, min(9, round(float(h) * 0.045))))
                         tb_abs_gap_y = 1
+                        tb_abs_to_plot_gap_px = 2
                         tb_y_abs0 = int(tb_table_bottom + 2)
                         tb_y_abs_s = tb_y_abs0
                         tb_y_abs_f = tb_y_abs0 + tb_abs_h + tb_abs_gap_y
-                        tb_plot_top = tb_y_abs_f + tb_abs_h + 1
+                        tb_abs_bar_bottom_y = int(tb_y_abs_f + tb_abs_h - 1)
+                        tb_plot_top = int(tb_abs_bar_bottom_y + tb_abs_to_plot_gap_px)
                         tb_plot_bottom = int(h - 2)
-                        if tb_plot_bottom <= tb_plot_top + 5:
-                            tb_plot_top = int(max(0, int(float(h) * 0.30)))
-                        tb_plot_h = max(10, tb_plot_bottom - tb_plot_top)
+                        tb_min_plot_h = 10
+                        if tb_plot_bottom <= tb_plot_top + tb_min_plot_h:
+                            tb_plot_top = int(max(0, tb_plot_bottom - tb_min_plot_h))
+                        tb_plot_top_y = int(tb_plot_top)
+                        tb_plot_h = max(1, tb_plot_bottom - tb_plot_top_y)
                         tb_mx = int(w // 2)
                         tb_half_w = float(w) / 2.0
                         tb_marker_xf = float(tb_mx)
 
                         def _tb_y_from_01(v01: float) -> int:
                             v01_c = _clamp(float(v01), 0.0, 1.0)
-                            v_scaled = float(v01_c) / max(1.0, float(tb_headroom))
-                            yy = float(tb_plot_top) + float(tb_plot_h) - (v_scaled * float(tb_plot_h))
+                            yy = float(tb_plot_top_y) + float(tb_plot_h) - (float(v01_c) * float(tb_plot_h))
                             return int(round(yy))
 
                         tb_layout = {
@@ -3358,7 +3354,10 @@ def _render_hud_scroll_frames_png(
                             "abs_h": int(tb_abs_h),
                             "y_abs_s": int(tb_y_abs_s),
                             "y_abs_f": int(tb_y_abs_f),
+                            "abs_bar_bottom_y": int(tb_abs_bar_bottom_y),
+                            "abs_plot_gap_px": int(tb_plot_top_y - tb_abs_bar_bottom_y),
                             "plot_top": int(tb_plot_top),
+                            "plot_top_y": int(tb_plot_top_y),
                             "plot_bottom": int(tb_plot_bottom),
                             "mx": int(tb_mx),
                             "marker_xf": float(tb_marker_xf),
@@ -3847,6 +3846,33 @@ def _render_hud_scroll_frames_png(
                             static_dr_local.text((4, int(tb_layout["y_txt"])), "Throttle / Brake", fill=COL_WHITE, font=tb_layout.get("font_title"))
                         except Exception:
                             pass
+                        if hud_dbg:
+                            abs_bottom_dbg = int(
+                                tb_layout.get(
+                                    "abs_bar_bottom_y",
+                                    int(tb_layout.get("y_abs_f", 0)) + int(tb_layout.get("abs_h", 0)) - 1,
+                                )
+                            )
+                            plot_top_dbg = int(tb_layout.get("plot_top_y", tb_layout.get("plot_top", 0)))
+                            gap_dbg = int(plot_top_dbg - abs_bottom_dbg)
+                            try:
+                                static_dr_local.line([(0, abs_bottom_dbg), (int(w) - 1, abs_bottom_dbg)], fill=(80, 180, 255, 220), width=1)
+                            except Exception:
+                                pass
+                            try:
+                                static_dr_local.line([(0, plot_top_dbg), (int(w) - 1, plot_top_dbg)], fill=(255, 220, 120, 220), width=1)
+                            except Exception:
+                                pass
+                            try:
+                                dbg_font = tb_layout.get("font_axis_small") or tb_layout.get("font_axis")
+                                static_dr_local.text(
+                                    (int(max(2, int(w) - 96)), int(max(0, plot_top_dbg - 12))),
+                                    f"gap_px={gap_dbg}",
+                                    fill=COL_WHITE,
+                                    font=dbg_font,
+                                )
+                            except Exception:
+                                pass
                         mx_s = int(tb_layout["mx"])
                         static_dr_local.rectangle([mx_s, 0, mx_s + 1, int(h)], fill=(255, 255, 255, 230))
                         return static_img_local
