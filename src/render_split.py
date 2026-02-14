@@ -205,6 +205,7 @@ class HudSignals:
     fast_brake_frames: list[float] | None = None
     slow_abs_frames: list[int] | None = None
     fast_abs_frames: list[int] | None = None
+    fast_lapdist_frames: list[float] | None = None
     line_delta_m_frames: list[float] | None = None
     line_delta_y_abs_m: float | None = None
     under_oversteer_slow_frames: list[float] | None = None
@@ -229,6 +230,8 @@ class HudRenderSettings:
     curve_points_overrides: Any | None = None
     pedals_sample_mode: str = "time"
     pedals_abs_debounce_ms: int = 60
+    max_brake_delay_distance: float = 0.003
+    max_brake_delay_pressure: float = 35.0
 
 
 @dataclass(frozen=True)
@@ -1997,6 +2000,7 @@ def _render_hud_scroll_frames_png(
     fast_brake_frames = ctx.signals.fast_brake_frames
     slow_abs_frames = ctx.signals.slow_abs_frames
     fast_abs_frames = ctx.signals.fast_abs_frames
+    fast_lapdist_frames = ctx.signals.fast_lapdist_frames
     line_delta_m_frames = ctx.signals.line_delta_m_frames
     line_delta_y_abs_m = ctx.signals.line_delta_y_abs_m
     under_oversteer_slow_frames = ctx.signals.under_oversteer_slow_frames
@@ -2024,6 +2028,26 @@ def _render_hud_scroll_frames_png(
         hud_pedals_abs_debounce_ms = 0
     if hud_pedals_abs_debounce_ms > 500:
         hud_pedals_abs_debounce_ms = 500
+    try:
+        hud_max_brake_delay_distance = float(getattr(ctx.settings, "max_brake_delay_distance", 0.003))
+    except Exception:
+        hud_max_brake_delay_distance = 0.003
+    if (not math.isfinite(float(hud_max_brake_delay_distance))) or float(hud_max_brake_delay_distance) < 0.0:
+        hud_max_brake_delay_distance = 0.0
+    if float(hud_max_brake_delay_distance) > 1.0:
+        hud_max_brake_delay_distance = 1.0
+
+    try:
+        hud_max_brake_delay_pressure = float(getattr(ctx.settings, "max_brake_delay_pressure", 35.0))
+    except Exception:
+        hud_max_brake_delay_pressure = 35.0
+    if not math.isfinite(float(hud_max_brake_delay_pressure)):
+        hud_max_brake_delay_pressure = 35.0
+    if float(hud_max_brake_delay_pressure) < 0.0:
+        hud_max_brake_delay_pressure = 0.0
+    if float(hud_max_brake_delay_pressure) > 100.0:
+        hud_max_brake_delay_pressure = 100.0
+    hud_max_brake_delay_pressure_scale = float(hud_max_brake_delay_pressure) / 100.0
 
     log_file = ctx.log_file
     table_cache_dbg = (os.environ.get("IRVC_DEBUG_TABLE_CACHE") or "0").strip().lower() in ("1", "true", "yes", "on")
@@ -2278,6 +2302,7 @@ def _render_hud_scroll_frames_png(
             fast_throttle_frames,
             fast_brake_frames,
             fast_abs_frames,
+            fast_lapdist_frames,
             under_oversteer_fast_frames,
         )
         for arr in fast_candidates:
@@ -3110,9 +3135,76 @@ def _render_hud_scroll_frames_png(
                         tb_font_axis_small = _load_hud_font(max(7, int(tb_font_sz - 3)))
 
                         tb_y_txt = int(2)
+                        tb_title_h = int(max(8, min(24, round(float(h) * 0.13))))
+
+                        tb_table_top = int(tb_y_txt + tb_title_h + 2)
+                        tb_table_h = int(max(22, min(44, round(float(h) * 0.24))))
+                        tb_table_header_h = int(max(10, min(tb_table_h - 8, round(float(tb_table_h) * 0.45))))
+                        tb_table_value_h = int(max(8, tb_table_h - tb_table_header_h))
+                        tb_table_bottom = int(tb_table_top + tb_table_h - 1)
+
+                        tb_table_outer_pad_x = int(max(2, min(10, round(float(w) * 0.015))))
+                        tb_table_gap_x = int(max(4, min(16, round(float(w) * 0.03))))
+                        tb_table_side_w = int((int(w) - (2 * tb_table_outer_pad_x) - tb_table_gap_x) // 2)
+                        if tb_table_side_w < 16:
+                            tb_table_side_w = max(16, int((int(w) - 2) // 2))
+                            tb_table_outer_pad_x = 1
+                            tb_table_gap_x = max(0, int(w) - (2 * tb_table_side_w) - (2 * tb_table_outer_pad_x))
+                        tb_table_left_x = int(tb_table_outer_pad_x)
+                        tb_table_right_x = int(tb_table_left_x + tb_table_side_w + tb_table_gap_x)
+                        tb_table_cols = ("Throttle", "Brake", "ABS", "Max. Brake")
+                        tb_table_cols_per_side = int(len(tb_table_cols))
+                        tb_table_col_w = float(tb_table_side_w) / max(1.0, float(tb_table_cols_per_side))
+                        tb_table_cell_pad_x = int(max(1, min(6, round(tb_table_col_w * 0.08))))
+                        tb_table_header_fit_w = int(max(6, round(tb_table_col_w) - (2 * tb_table_cell_pad_x)))
+                        tb_table_header_fit_h = int(max(6, tb_table_header_h - 2))
+                        tb_table_value_fit_h = int(max(6, tb_table_value_h - 2))
+
+                        probe_img_tb = Image.new("RGBA", (max(1, int(w)), max(1, int(h))), (0, 0, 0, 0))
+                        probe_dr_tb = ImageDraw.Draw(probe_img_tb)
+
+                        def _tb_probe_wh(text_probe: str, font_probe: Any) -> tuple[int, int]:
+                            try:
+                                bb = probe_dr_tb.textbbox((0, 0), str(text_probe), font=font_probe)
+                                return int(bb[2] - bb[0]), int(bb[3] - bb[1])
+                            except Exception:
+                                return int(max(1, len(str(text_probe))) * 7), 12
+
+                        def _tb_fit_font(max_sz: int, min_sz: int, labels: tuple[str, ...], fit_w: int, fit_h: int) -> Any:
+                            f_best = _load_hud_font(int(min_sz))
+                            for sz in range(int(max_sz), int(min_sz) - 1, -1):
+                                f_try = _load_hud_font(int(sz))
+                                if f_try is None:
+                                    continue
+                                ok = True
+                                for lbl in labels:
+                                    tw, th = _tb_probe_wh(str(lbl), f_try)
+                                    if tw > int(fit_w) or th > int(fit_h):
+                                        ok = False
+                                        break
+                                if ok:
+                                    f_best = f_try
+                                    break
+                            return f_best
+
+                        tb_font_tbl_head = _tb_fit_font(
+                            max_sz=int(max(6, min(22, tb_table_header_fit_h))),
+                            min_sz=6,
+                            labels=tuple(tb_table_cols),
+                            fit_w=int(tb_table_header_fit_w),
+                            fit_h=int(tb_table_header_fit_h),
+                        )
+                        tb_font_tbl_val = _tb_fit_font(
+                            max_sz=int(max(8, min(26, tb_table_value_fit_h))),
+                            min_sz=8,
+                            labels=("100%",),
+                            fit_w=int(tb_table_header_fit_w),
+                            fit_h=int(tb_table_value_fit_h),
+                        )
+
                         tb_abs_h = int(max(10, min(15, round(float(h) * 0.085))))
                         tb_abs_gap_y = 2
-                        tb_y_abs0 = int(tb_font_val_sz + 5)
+                        tb_y_abs0 = int(tb_table_bottom + 3)
                         tb_y_abs_s = tb_y_abs0
                         tb_y_abs_f = tb_y_abs0 + tb_abs_h + tb_abs_gap_y
                         tb_plot_top = tb_y_abs_f + tb_abs_h + 4
@@ -3135,7 +3227,18 @@ def _render_hud_scroll_frames_png(
                             "font_val": tb_font_val,
                             "font_axis": tb_font_axis,
                             "font_axis_small": tb_font_axis_small,
+                            "font_table_header": tb_font_tbl_head,
+                            "font_table_value": tb_font_tbl_val,
                             "y_txt": int(tb_y_txt),
+                            "table_top": int(tb_table_top),
+                            "table_bottom": int(tb_table_bottom),
+                            "table_header_h": int(tb_table_header_h),
+                            "table_value_h": int(tb_table_value_h),
+                            "table_left_x": int(tb_table_left_x),
+                            "table_right_x": int(tb_table_right_x),
+                            "table_side_w": int(tb_table_side_w),
+                            "table_col_w": float(tb_table_col_w),
+                            "table_cols": tuple(tb_table_cols),
                             "abs_h": int(tb_abs_h),
                             "y_abs_s": int(tb_y_abs_s),
                             "y_abs_f": int(tb_y_abs_f),
@@ -3152,6 +3255,8 @@ def _render_hud_scroll_frames_png(
                             "value": tb_font_val,
                             "axis": tb_font_axis,
                             "axis_small": tb_font_axis_small,
+                            "table_header": tb_font_tbl_head,
+                            "table_value": tb_font_tbl_val,
                         }
                         renderer_state.helpers["tb_layout_sig"] = tb_layout_sig
                     else:
@@ -3277,6 +3382,25 @@ def _render_hud_scroll_frames_png(
                             abs_s_raw = _tb_sample_legacy(slow_abs_frames, int(idx_slow), float(tb_a_slow_scale))
                             abs_f_raw = _tb_sample_legacy(fast_abs_frames, int(fi_map), float(tb_a_fast_scale))
 
+                        s_ld = 0.0
+                        try:
+                            if slow_frame_to_lapdist and 0 <= int(idx_slow) < len(slow_frame_to_lapdist):
+                                s_ld = float(slow_frame_to_lapdist[int(idx_slow)])
+                        except Exception:
+                            s_ld = 0.0
+                        s_ld = float(s_ld) % 1.0
+
+                        f_ld = float(s_ld)
+                        try:
+                            if fast_lapdist_frames:
+                                if hud_pedals_sample_mode == "time":
+                                    f_ld = float(_tb_sample_linear_time(fast_lapdist_frames, float(t_fast)))
+                                else:
+                                    f_ld = float(_tb_sample_legacy(fast_lapdist_frames, int(fi_map), 1.0))
+                        except Exception:
+                            f_ld = float(s_ld)
+                        f_ld = float(f_ld) % 1.0
+
                         y_s_t = int(tb_layout["y_from_01"](float(s_t)))
                         y_s_b = int(tb_layout["y_from_01"](float(s_b)))
                         y_f_t = int(tb_layout["y_from_01"](float(f_t)))
@@ -3284,6 +3408,9 @@ def _render_hud_scroll_frames_png(
                         return {
                             "x": int(xi),
                             "slow_idx": int(idx_slow),
+                            "fast_idx": int(fi_map),
+                            "s_ld": float(s_ld),
+                            "f_ld": float(f_ld),
                             "s_t": float(s_t),
                             "s_b": float(s_b),
                             "f_t": float(f_t),
@@ -3357,6 +3484,124 @@ def _render_hud_scroll_frames_png(
                             except Exception:
                                 return int(len(str(text)) * 8)
 
+                    def _tb_max_brake_new_state() -> dict[str, Any]:
+                        return {
+                            "armed": False,
+                            "in_phase": False,
+                            "phase_peak": 0.0,
+                            "last_max_brake_percent": 0.0,
+                            "last_zero_lapdist": None,
+                            "was_zero": False,
+                        }
+
+                    def _tb_max_brake_forward_delta(ld_from: float, ld_to: float) -> float:
+                        return float((float(ld_to) - float(ld_from)) % 1.0)
+
+                    def _tb_update_max_brake_state(
+                        st_local: dict[str, Any],
+                        brake_now: float,
+                        lapdist_now: float,
+                        side_name: str,
+                    ) -> None:
+                        b_now = float(_clamp(float(brake_now), 0.0, 1.0))
+                        ld_now = float(lapdist_now) % 1.0
+                        if not math.isfinite(float(b_now)):
+                            b_now = 0.0
+                        if not math.isfinite(float(ld_now)):
+                            ld_now = 0.0
+                        in_phase = bool(st_local.get("in_phase", False))
+                        was_zero = bool(st_local.get("was_zero", False))
+                        is_zero_now = float(b_now) == 0.0
+
+                        # Strict rule: phase end/rearm is only on exact zero.
+                        if is_zero_now:
+                            if in_phase:
+                                peak = float(_clamp(float(st_local.get("phase_peak", 0.0)), 0.0, 1.0))
+                                peak_pct = float(_clamp(float(round(float(peak) * 100.0)), 0.0, 100.0))
+                                st_local["last_max_brake_percent"] = float(peak_pct)
+                                st_local["in_phase"] = False
+                                st_local["phase_peak"] = 0.0
+                                if hud_dbg:
+                                    _log_print(
+                                        f"[tb-max-brake] side={side_name} event=commit lapdist={ld_now:.6f} peak_pct={peak_pct:.0f}",
+                                        log_file,
+                                    )
+                                st_local["armed"] = True
+                                st_local["last_zero_lapdist"] = float(ld_now)
+                            elif not was_zero:
+                                st_local["armed"] = True
+                                st_local["last_zero_lapdist"] = float(ld_now)
+                            st_local["was_zero"] = True
+                            return
+
+                        st_local["was_zero"] = False
+
+                        if in_phase:
+                            st_local["phase_peak"] = float(max(float(st_local.get("phase_peak", 0.0)), float(b_now)))
+                            return
+
+                        if not bool(st_local.get("armed", False)):
+                            return
+
+                        allow_start = True
+                        zero_ld = st_local.get("last_zero_lapdist")
+                        if (
+                            float(hud_max_brake_delay_distance) > 0.0
+                            and zero_ld is not None
+                        ):
+                            dist_since_zero = _tb_max_brake_forward_delta(float(zero_ld), float(ld_now))
+                            if float(dist_since_zero) < float(hud_max_brake_delay_distance):
+                                allow_start = False
+                                if float(b_now) >= float(hud_max_brake_delay_pressure_scale):
+                                    allow_start = True
+                                    if hud_dbg:
+                                        _log_print(
+                                            f"[tb-max-brake] side={side_name} event=override lapdist={ld_now:.6f} brake_pct={float(b_now) * 100.0:.1f} threshold_pct={float(hud_max_brake_delay_pressure):.1f}",
+                                            log_file,
+                                        )
+
+                        if allow_start:
+                            st_local["in_phase"] = True
+                            st_local["phase_peak"] = float(b_now)
+                            if hud_dbg:
+                                _log_print(
+                                    f"[tb-max-brake] side={side_name} event=start lapdist={ld_now:.6f}",
+                                    log_file,
+                                )
+
+                    def _tb_pct_text(v_01: float) -> str:
+                        pct = int(round(float(_clamp(float(v_01), 0.0, 1.0) * 100.0)))
+                        return f"{pct:03d}%"
+
+                    def _tb_cell_center_text(
+                        dr_any: Any,
+                        x0_cell: int,
+                        x1_cell: int,
+                        y0_cell: int,
+                        y1_cell: int,
+                        text_val: str,
+                        col_val: Any,
+                        font_val_any: Any,
+                    ) -> None:
+                        txt = str(text_val)
+                        try:
+                            bb = dr_any.textbbox((0, 0), txt, font=font_val_any)
+                            tw = int(bb[2] - bb[0])
+                            th = int(bb[3] - bb[1])
+                            bx0 = float(bb[0])
+                            by0 = float(bb[1])
+                        except Exception:
+                            tw = int(max(1, len(txt)) * 7)
+                            th = 12
+                            bx0 = 0.0
+                            by0 = 0.0
+                        tx = ((float(x0_cell) + float(x1_cell)) - float(tw)) / 2.0 - bx0
+                        ty = ((float(y0_cell) + float(y1_cell)) - float(th)) / 2.0 - by0
+                        try:
+                            dr_any.text((int(round(tx)), int(round(ty))), txt, fill=col_val, font=font_val_any)
+                        except Exception:
+                            pass
+
                     def _tb_render_static_layer() -> Any:
                         static_img_local = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
                         static_dr_local = ImageDraw.Draw(static_img_local)
@@ -3416,6 +3661,72 @@ def _render_hud_scroll_frames_png(
                             except Exception:
                                 pass
 
+                        table_top = int(tb_layout.get("table_top", 0))
+                        table_bottom = int(tb_layout.get("table_bottom", table_top))
+                        table_header_h = int(tb_layout.get("table_header_h", 1))
+                        table_side_w = int(tb_layout.get("table_side_w", max(1, int(w // 2))))
+                        table_col_w = float(tb_layout.get("table_col_w", max(1.0, float(table_side_w) / 4.0)))
+                        table_cols = tuple(tb_layout.get("table_cols") or ("Throttle", "Brake", "ABS", "Max. Brake"))
+                        table_hdr_font = tb_layout.get("font_table_header")
+                        row_sep = int(table_top + table_header_h - 1)
+                        if row_sep > table_bottom:
+                            row_sep = int(table_bottom)
+                        header_y0 = int(table_top)
+                        header_y1 = int(max(header_y0, row_sep - 1))
+                        value_y0 = int(min(table_bottom, row_sep + 1))
+                        value_y1 = int(table_bottom)
+                        table_grid_col = (
+                            int(min(255, int(COL_HUD_BG[0]) + 20)),
+                            int(min(255, int(COL_HUD_BG[1]) + 20)),
+                            int(min(255, int(COL_HUD_BG[2]) + 20)),
+                            int(min(255, max(int(COL_HUD_BG[3]), 150))),
+                        )
+
+                        def _tb_table_edges(side_x_local: int) -> list[int]:
+                            edges_local = [int(side_x_local + int(round(float(ci) * float(table_col_w)))) for ci in range(int(len(table_cols)) + 1)]
+                            edges_local[0] = int(side_x_local)
+                            edges_local[-1] = int(side_x_local + table_side_w)
+                            for ei in range(1, len(edges_local)):
+                                if edges_local[ei] <= edges_local[ei - 1]:
+                                    edges_local[ei] = edges_local[ei - 1] + 1
+                            return edges_local
+
+                        def _tb_draw_table_static(side_x_local: int, col_side: Any) -> None:
+                            edges_local = _tb_table_edges(int(side_x_local))
+                            left_local = int(edges_local[0])
+                            right_local = int(edges_local[-1] - 1)
+                            if right_local <= left_local:
+                                return
+                            try:
+                                static_dr_local.rectangle([left_local, table_top, right_local, table_bottom], outline=table_grid_col, width=1)
+                            except Exception:
+                                pass
+                            try:
+                                static_dr_local.line([(left_local, row_sep), (right_local, row_sep)], fill=table_grid_col, width=1)
+                            except Exception:
+                                pass
+                            for x_sep in edges_local[1:-1]:
+                                try:
+                                    static_dr_local.line([(int(x_sep), table_top), (int(x_sep), table_bottom)], fill=table_grid_col, width=1)
+                                except Exception:
+                                    pass
+                            for c_idx, lbl in enumerate(table_cols):
+                                c0 = int(edges_local[c_idx])
+                                c1 = int(edges_local[c_idx + 1] - 1)
+                                _tb_cell_center_text(
+                                    static_dr_local,
+                                    int(c0),
+                                    int(c1),
+                                    int(header_y0),
+                                    int(header_y1),
+                                    str(lbl),
+                                    col_side,
+                                    table_hdr_font,
+                                )
+
+                        _tb_draw_table_static(int(tb_layout.get("table_left_x", 0)), COL_SLOW_DARKRED)
+                        _tb_draw_table_static(int(tb_layout.get("table_right_x", 0)), COL_FAST_DARKBLUE)
+
                         try:
                             static_dr_local.text((4, int(tb_layout["y_txt"])), "Throttle / Brake", fill=COL_WHITE, font=tb_layout.get("font_title"))
                         except Exception:
@@ -3467,26 +3778,96 @@ def _render_hud_scroll_frames_png(
 
                     def _tb_draw_values_overlay(main_dr_local: Any, base_x: int, base_y: int) -> None:
                         cur_col = _tb_sample_column(int(tb_layout["mx"]))
-                        s_txt = f"T{int(round(_clamp(float(cur_col['s_t']), 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(float(cur_col['s_b']), 0.0, 1.0) * 100.0)):03d}%"
-                        f_txt = f"T{int(round(_clamp(float(cur_col['f_t']), 0.0, 1.0) * 100.0)):03d}% B{int(round(_clamp(float(cur_col['f_b']), 0.0, 1.0) * 100.0)):03d}%"
-                        gap_txt = 12
-                        mx_txt = int(base_x) + int(tb_layout["mx"])
-                        f_w_txt = _tb_text_w(main_dr_local, f_txt, tb_layout.get("font_val"))
-                        f_x_txt = int(mx_txt - gap_txt - f_w_txt)
-                        s_x_txt = int(mx_txt + gap_txt)
-                        if f_x_txt < int(base_x + 2):
-                            f_x_txt = int(base_x + 2)
-                        if s_x_txt > int(base_x + int(w) - 2):
-                            s_x_txt = int(base_x + int(w) - 2)
-                        y_txt_abs = int(base_y) + int(tb_layout["y_txt"])
-                        try:
-                            main_dr_local.text((int(f_x_txt), int(y_txt_abs)), f_txt, fill=COL_SLOW_DARKRED, font=tb_layout.get("font_val"))
-                        except Exception:
-                            pass
-                        try:
-                            main_dr_local.text((int(s_x_txt), int(y_txt_abs)), s_txt, fill=COL_FAST_DARKBLUE, font=tb_layout.get("font_val"))
-                        except Exception:
-                            pass
+                        tb_max_states = renderer_state.helpers.get("tb_max_brake_states")
+                        if not isinstance(tb_max_states, dict):
+                            tb_max_states = {
+                                "slow": _tb_max_brake_new_state(),
+                                "fast": _tb_max_brake_new_state(),
+                            }
+                            renderer_state.helpers["tb_max_brake_states"] = tb_max_states
+                        if not isinstance(tb_max_states.get("slow"), dict):
+                            tb_max_states["slow"] = _tb_max_brake_new_state()
+                        if not isinstance(tb_max_states.get("fast"), dict):
+                            tb_max_states["fast"] = _tb_max_brake_new_state()
+
+                        idx_cur = int(cur_col.get("slow_idx", -1))
+                        last_idx = renderer_state.helpers.get("tb_max_brake_last_idx")
+                        if last_idx is None or int(last_idx) != int(idx_cur):
+                            _tb_update_max_brake_state(
+                                tb_max_states["slow"],
+                                float(cur_col.get("s_b", 0.0)),
+                                float(cur_col.get("s_ld", 0.0)),
+                                "slow",
+                            )
+                            _tb_update_max_brake_state(
+                                tb_max_states["fast"],
+                                float(cur_col.get("f_b", 0.0)),
+                                float(cur_col.get("f_ld", 0.0)),
+                                "fast",
+                            )
+                            renderer_state.helpers["tb_max_brake_last_idx"] = int(idx_cur)
+
+                        s_max_pct = int(round(float(_clamp(float(tb_max_states["slow"].get("last_max_brake_percent", 0.0)), 0.0, 100.0))))
+                        f_max_pct = int(round(float(_clamp(float(tb_max_states["fast"].get("last_max_brake_percent", 0.0)), 0.0, 100.0))))
+                        s_abs_pct = 100 if bool(cur_col.get("abs_s_raw_on", False)) else 0
+                        f_abs_pct = 100 if bool(cur_col.get("abs_f_raw_on", False)) else 0
+
+                        slow_vals = (
+                            _tb_pct_text(float(cur_col.get("s_t", 0.0))),
+                            _tb_pct_text(float(cur_col.get("s_b", 0.0))),
+                            f"{int(s_abs_pct):03d}%",
+                            f"{int(s_max_pct):03d}%",
+                        )
+                        fast_vals = (
+                            _tb_pct_text(float(cur_col.get("f_t", 0.0))),
+                            _tb_pct_text(float(cur_col.get("f_b", 0.0))),
+                            f"{int(f_abs_pct):03d}%",
+                            f"{int(f_max_pct):03d}%",
+                        )
+
+                        table_top = int(tb_layout.get("table_top", 0))
+                        table_bottom = int(tb_layout.get("table_bottom", table_top))
+                        table_header_h = int(tb_layout.get("table_header_h", 1))
+                        table_side_w = int(tb_layout.get("table_side_w", max(1, int(w // 2))))
+                        table_col_w = float(tb_layout.get("table_col_w", max(1.0, float(table_side_w) / 4.0)))
+                        table_cols = tuple(tb_layout.get("table_cols") or ("Throttle", "Brake", "ABS", "Max. Brake"))
+                        row_sep = int(table_top + table_header_h - 1)
+                        if row_sep > table_bottom:
+                            row_sep = int(table_bottom)
+                        value_y0 = int(min(table_bottom, row_sep + 1))
+                        value_y1 = int(table_bottom)
+                        font_tbl_val = tb_layout.get("font_table_value") or tb_layout.get("font_val")
+
+                        def _tb_table_edges(side_x_local: int) -> list[int]:
+                            edges_local = [int(side_x_local + int(round(float(ci) * float(table_col_w)))) for ci in range(int(len(table_cols)) + 1)]
+                            edges_local[0] = int(side_x_local)
+                            edges_local[-1] = int(side_x_local + table_side_w)
+                            for ei in range(1, len(edges_local)):
+                                if edges_local[ei] <= edges_local[ei - 1]:
+                                    edges_local[ei] = edges_local[ei - 1] + 1
+                            return edges_local
+
+                        def _tb_draw_values_row(side_x_local: int, vals_local: tuple[str, str, str, str], col_side: Any) -> None:
+                            edges_local = _tb_table_edges(int(side_x_local))
+                            for c_idx, txt_val in enumerate(vals_local):
+                                if c_idx + 1 >= len(edges_local):
+                                    break
+                                c0 = int(base_x) + int(edges_local[c_idx])
+                                c1 = int(base_x) + int(edges_local[c_idx + 1] - 1)
+                                _tb_cell_center_text(
+                                    main_dr_local,
+                                    int(c0),
+                                    int(c1),
+                                    int(base_y + value_y0),
+                                    int(base_y + value_y1),
+                                    str(txt_val),
+                                    col_side,
+                                    font_tbl_val,
+                                )
+
+                        # Keep existing side orientation (left=fast, right=slow).
+                        _tb_draw_values_row(int(tb_layout.get("table_left_x", 0)), fast_vals, COL_SLOW_DARKRED)
+                        _tb_draw_values_row(int(tb_layout.get("table_right_x", 0)), slow_vals, COL_FAST_DARKBLUE)
                     renderer_state.helpers["tb_fns"] = {
                         "layout": tb_layout,
                         "sample_column": _tb_sample_column,
@@ -4924,6 +5305,8 @@ def _render_hud_scroll_frames_png(
 
                 if first_frame or reset_now:
                     if is_throttle_brake:
+                        renderer_state.helpers.pop("tb_max_brake_states", None)
+                        renderer_state.helpers.pop("tb_max_brake_last_idx", None)
                         static_layer = _tb_render_static_layer()
                         dynamic_layer, tb_cols_fill, tb_abs_state_fill = _tb_render_dynamic_full()
                         tb_last_col_fill = tb_cols_fill[-1] if tb_cols_fill else _tb_sample_column(int(w) - 1)
@@ -5662,6 +6045,8 @@ def render_split_screen(
     hud_gear_rpm_update_hz: int = 60,
     hud_pedals_sample_mode: str = "time",
     hud_pedals_abs_debounce_ms: int = 60,
+    hud_max_brake_delay_distance: float = 0.003,
+    hud_max_brake_delay_pressure: float = 35.0,
     log_file: "Path | None" = None,
 ) -> None:
     # 1) Config reading
@@ -5774,6 +6159,8 @@ def render_split_screen_sync(
     hud_gear_rpm_update_hz: int = 60,
     hud_pedals_sample_mode: str = "time",
     hud_pedals_abs_debounce_ms: int = 60,
+    hud_max_brake_delay_distance: float = 0.003,
+    hud_max_brake_delay_pressure: float = 35.0,
     under_oversteer_curve_center: float = 0.0,
     log_file: "Path | None" = None,
 ) -> None:
@@ -5831,6 +6218,25 @@ def render_split_screen_sync(
         hud_pedals_abs_debounce_ms = 0
     if hud_pedals_abs_debounce_ms > 500:
         hud_pedals_abs_debounce_ms = 500
+    try:
+        hud_max_brake_delay_distance = float(hud_max_brake_delay_distance)
+    except Exception:
+        hud_max_brake_delay_distance = 0.003
+    if (not math.isfinite(float(hud_max_brake_delay_distance))) or float(hud_max_brake_delay_distance) < 0.0:
+        hud_max_brake_delay_distance = 0.0
+    if float(hud_max_brake_delay_distance) > 1.0:
+        hud_max_brake_delay_distance = 1.0
+
+    try:
+        hud_max_brake_delay_pressure = float(hud_max_brake_delay_pressure)
+    except Exception:
+        hud_max_brake_delay_pressure = 35.0
+    if not math.isfinite(float(hud_max_brake_delay_pressure)):
+        hud_max_brake_delay_pressure = 35.0
+    if float(hud_max_brake_delay_pressure) < 0.0:
+        hud_max_brake_delay_pressure = 0.0
+    if float(hud_max_brake_delay_pressure) > 100.0:
+        hud_max_brake_delay_pressure = 100.0
 
     preset = f"{ms.width}x{ms.height}"
     if preset_w > 0 and preset_h > 0:
@@ -5900,6 +6306,7 @@ def render_split_screen_sync(
     fast_brake_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "Brake")
     slow_abs_frames = _sample_csv_col_to_frames_float(run_slow, ms.duration_s, float(fps_int), "ABSActive")
     fast_abs_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "ABSActive")
+    fast_lapdist_frames = _sample_csv_col_to_frames_float(run_fast, mf.duration_s, float(fps_int), "LapDistPct")
     line_delta_m_frames: list[float] = []
     line_delta_y_abs_m = 0.0
     under_oversteer_slow_frames: list[float] = []
@@ -6107,6 +6514,7 @@ def render_split_screen_sync(
                 fast_brake_frames=fast_brake_frames,
                 slow_abs_frames=slow_abs_frames,
                 fast_abs_frames=fast_abs_frames,
+                fast_lapdist_frames=fast_lapdist_frames,
                 line_delta_m_frames=line_delta_m_frames,
                 line_delta_y_abs_m=line_delta_y_abs_m,
                 under_oversteer_slow_frames=under_oversteer_slow_frames,
@@ -6127,6 +6535,8 @@ def render_split_screen_sync(
                 curve_points_overrides=hud_curve_points_overrides,
                 pedals_sample_mode=str(hud_pedals_sample_mode),
                 pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
+                max_brake_delay_distance=float(hud_max_brake_delay_distance),
+                max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
             ),
             log_file=log_file,
         )

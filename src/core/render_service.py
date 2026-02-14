@@ -253,6 +253,18 @@ def build_payload(
     if pedals_abs_debounce_ms > 500:
         pedals_abs_debounce_ms = 500
 
+    max_brake_delay_distance = persistence._cfg_float("video_compare", "max_brake_delay_distance", 0.003)
+    if max_brake_delay_distance < 0.0:
+        max_brake_delay_distance = 0.0
+    if max_brake_delay_distance > 1.0:
+        max_brake_delay_distance = 1.0
+
+    max_brake_delay_pressure = persistence._cfg_float("video_compare", "max_brake_delay_pressure", 35.0)
+    if max_brake_delay_pressure < 0.0:
+        max_brake_delay_pressure = 0.0
+    if max_brake_delay_pressure > 100.0:
+        max_brake_delay_pressure = 100.0
+
     hud_win_default_before = persistence._cfg_float("video_compare", "hud_window_default_before_s", 10.0)
     hud_win_default_after = persistence._cfg_float("video_compare", "hud_window_default_after_s", 10.0)
 
@@ -315,6 +327,8 @@ def build_payload(
         "hud_pedals": {
             "sample_mode": str(pedals_sample_mode),
             "abs_debounce_ms": int(pedals_abs_debounce_ms),
+            "max_brake_delay_distance": float(max_brake_delay_distance),
+            "max_brake_delay_pressure": float(max_brake_delay_pressure),
         },
         "png_view_key": "",
         "png_view_state": {"L": {}, "R": {}},

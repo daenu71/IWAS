@@ -484,6 +484,8 @@ def main() -> None:
 
     hud_pedals_sample_mode = "time"
     hud_pedals_abs_debounce_ms = 60
+    hud_max_brake_delay_distance = 0.003
+    hud_max_brake_delay_pressure = 35.0
     try:
         hp = ui.get("hud_pedals") if isinstance(ui, dict) else None
         if isinstance(hp, dict):
@@ -497,11 +499,35 @@ def main() -> None:
             if ms > 500:
                 ms = 500
             hud_pedals_abs_debounce_ms = ms
+
+            d_raw = hp.get("max_brake_delay_distance")
+            if d_raw is not None:
+                dd = float(d_raw)
+                if dd != dd:  # NaN guard
+                    dd = 0.003
+                if dd < 0.0:
+                    dd = 0.0
+                if dd > 1.0:
+                    dd = 1.0
+                hud_max_brake_delay_distance = float(dd)
+
+            p_raw = hp.get("max_brake_delay_pressure")
+            if p_raw is not None:
+                dp = float(p_raw)
+                if dp != dp:  # NaN guard
+                    dp = 35.0
+                if dp < 0.0:
+                    dp = 0.0
+                if dp > 100.0:
+                    dp = 100.0
+                hud_max_brake_delay_pressure = float(dp)
     except Exception:
         pass
 
     log.kv("hud_pedals_sample_mode", str(hud_pedals_sample_mode))
     log.kv("hud_pedals_abs_debounce_ms", str(hud_pedals_abs_debounce_ms))
+    log.kv("hud_max_brake_delay_distance", str(hud_max_brake_delay_distance))
+    log.kv("hud_max_brake_delay_pressure", str(hud_max_brake_delay_pressure))
 
     if slow_csv and fast_csv:
         render_split_screen_sync(
@@ -530,6 +556,8 @@ def main() -> None:
             hud_speed_update_hz=int(hud_speed_update_hz),
             hud_pedals_sample_mode=str(hud_pedals_sample_mode),
             hud_pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
+            hud_max_brake_delay_distance=float(hud_max_brake_delay_distance),
+            hud_max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
             under_oversteer_curve_center=float(under_oversteer_curve_center),
             log_file=log.log_file,
         )
@@ -558,6 +586,8 @@ def main() -> None:
             hud_speed_update_hz=int(hud_speed_update_hz),
             hud_pedals_sample_mode=str(hud_pedals_sample_mode),
             hud_pedals_abs_debounce_ms=int(hud_pedals_abs_debounce_ms),
+            hud_max_brake_delay_distance=float(hud_max_brake_delay_distance),
+            hud_max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
             log_file=log.log_file,
         )
     log.msg("render done")
