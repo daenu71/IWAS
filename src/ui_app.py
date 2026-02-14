@@ -438,6 +438,10 @@ def main() -> None:
     app_model = AppModel()
     hud_free_mode_var = tk.BooleanVar(value=False)
     hud_bg_alpha_var = tk.DoubleVar(value=255.0)
+    video_scale_pct_var = tk.IntVar(value=100)
+    video_shift_x_var = tk.IntVar(value=0)
+    video_shift_y_var = tk.IntVar(value=0)
+    video_transform_var_syncing = False
 
     def _sync_hud_mode_var_from_model() -> None:
         try:
@@ -459,6 +463,46 @@ def main() -> None:
         except Exception:
             pass
 
+    def _coerce_video_scale_pct(raw: object) -> int:
+        try:
+            v = int(round(float(raw)))
+        except Exception:
+            v = 100
+        if v < 10:
+            v = 10
+        if v > 300:
+            v = 300
+        return int(v)
+
+    def _coerce_video_shift_px(raw: object) -> int:
+        try:
+            v = int(round(float(raw)))
+        except Exception:
+            v = 0
+        if v < -2000:
+            v = -2000
+        if v > 2000:
+            v = 2000
+        return int(v)
+
+    def _sync_video_transform_vars_from_model() -> None:
+        nonlocal video_transform_var_syncing
+        cfg = _layout_cfg()
+        vt = cfg.video_transform
+        scale_pct = _coerce_video_scale_pct(getattr(vt, "scale_pct", 100))
+        shift_x_px = _coerce_video_shift_px(getattr(vt, "shift_x_px", 0))
+        shift_y_px = _coerce_video_shift_px(getattr(vt, "shift_y_px", 0))
+        vt.scale_pct = int(scale_pct)
+        vt.shift_x_px = int(shift_x_px)
+        vt.shift_y_px = int(shift_y_px)
+        video_transform_var_syncing = True
+        try:
+            video_scale_pct_var.set(int(scale_pct))
+            video_shift_x_var.set(int(shift_x_px))
+            video_shift_y_var.set(int(shift_y_px))
+        finally:
+            video_transform_var_syncing = False
+
     def _apply_hud_mode_from_var(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
         cfg.hud_mode = "free" if bool(hud_free_mode_var.get()) else "frame"
@@ -477,6 +521,44 @@ def main() -> None:
     def _apply_hud_bg_alpha_from_var(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
         cfg.hud_free.bg_alpha = _coerce_hud_bg_alpha(hud_bg_alpha_var.get())
+        if not refresh_preview:
+            return
+        try:
+            refresh_layout_preview()
+        except Exception:
+            pass
+
+    def _apply_video_transform_from_vars(refresh_preview: bool = True) -> None:
+        nonlocal video_transform_var_syncing
+        if video_transform_var_syncing:
+            return
+        cfg = _layout_cfg()
+        vt = cfg.video_transform
+        try:
+            raw_scale = video_scale_pct_var.get()
+        except Exception:
+            raw_scale = 100
+        try:
+            raw_shift_x = video_shift_x_var.get()
+        except Exception:
+            raw_shift_x = 0
+        try:
+            raw_shift_y = video_shift_y_var.get()
+        except Exception:
+            raw_shift_y = 0
+        scale_pct = _coerce_video_scale_pct(raw_scale)
+        shift_x_px = _coerce_video_shift_px(raw_shift_x)
+        shift_y_px = _coerce_video_shift_px(raw_shift_y)
+        video_transform_var_syncing = True
+        try:
+            video_scale_pct_var.set(int(scale_pct))
+            video_shift_x_var.set(int(shift_x_px))
+            video_shift_y_var.set(int(shift_y_px))
+        finally:
+            video_transform_var_syncing = False
+        vt.scale_pct = int(scale_pct)
+        vt.shift_x_px = int(shift_x_px)
+        vt.shift_y_px = int(shift_y_px)
         if not refresh_preview:
             return
         try:
@@ -524,6 +606,7 @@ def main() -> None:
             png_view_data = model.png_view.png_view_data
         _sync_hud_mode_var_from_model()
         _sync_hud_bg_alpha_var_from_model()
+        _sync_video_transform_vars_from_model()
 
     def set_app_model(model: AppModel) -> None:
         nonlocal app_model
@@ -844,6 +927,91 @@ def main() -> None:
     )
     sld_hud_bg_alpha.grid(row=hud_mode_row + 2, column=1, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
 
+    video_place_row = hud_mode_row + 3
+    ttk.Separator(frame_settings, orient="horizontal").grid(
+        row=video_place_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
+    )
+    ttk.Label(frame_settings, text="Video-Placement", font=("Segoe UI", 10, "bold")).grid(
+        row=video_place_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6)
+    )
+
+    ttk.Label(frame_settings, text="Scale (%):").grid(row=video_place_row + 2, column=0, sticky="w", padx=10, pady=2)
+    sld_video_scale = tk.Scale(
+        frame_settings,
+        from_=10,
+        to=300,
+        resolution=1,
+        orient="horizontal",
+        showvalue=False,
+        variable=video_scale_pct_var,
+    )
+    sld_video_scale.grid(row=video_place_row + 2, column=1, sticky="ew", padx=10, pady=2)
+    spn_video_scale = ttk.Spinbox(
+        frame_settings,
+        from_=10,
+        to=300,
+        increment=1,
+        width=8,
+        textvariable=video_scale_pct_var,
+        command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
+    )
+    spn_video_scale.grid(row=video_place_row + 2, column=2, sticky="w", padx=10, pady=2)
+
+    ttk.Label(frame_settings, text="Shift X (px):").grid(row=video_place_row + 3, column=0, sticky="w", padx=10, pady=2)
+    spn_video_shift_x = ttk.Spinbox(
+        frame_settings,
+        from_=-2000,
+        to=2000,
+        increment=10,
+        width=8,
+        textvariable=video_shift_x_var,
+        command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
+    )
+    spn_video_shift_x.grid(row=video_place_row + 3, column=1, sticky="w", padx=10, pady=2)
+
+    ttk.Label(frame_settings, text="Shift Y (px):").grid(row=video_place_row + 4, column=0, sticky="w", padx=10, pady=2)
+    spn_video_shift_y = ttk.Spinbox(
+        frame_settings,
+        from_=-2000,
+        to=2000,
+        increment=10,
+        width=8,
+        textvariable=video_shift_y_var,
+        command=lambda: _apply_video_transform_from_vars(refresh_preview=True),
+    )
+    spn_video_shift_y.grid(row=video_place_row + 4, column=1, sticky="w", padx=10, pady=2)
+
+    def reset_video_placement() -> None:
+        cfg = _layout_cfg()
+        vt = cfg.video_transform
+        vt.scale_pct = 100
+        vt.shift_x_px = 0
+        vt.shift_y_px = 0
+        _sync_video_transform_vars_from_model()
+        try:
+            refresh_layout_preview()
+        except Exception:
+            pass
+
+    btn_reset_video_placement = ttk.Button(
+        frame_settings,
+        text="Video-Placement reset",
+        command=reset_video_placement,
+    )
+    btn_reset_video_placement.grid(row=video_place_row + 5, column=0, sticky="w", padx=10, pady=(6, 2))
+
+    for _video_var in (video_scale_pct_var, video_shift_x_var, video_shift_y_var):
+        try:
+            _video_var.trace_add("write", lambda *_: _apply_video_transform_from_vars(refresh_preview=True))
+        except Exception:
+            pass
+    spn_video_scale.bind("<Return>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+    spn_video_scale.bind("<FocusOut>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+    spn_video_shift_x.bind("<Return>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+    spn_video_shift_x.bind("<FocusOut>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+    spn_video_shift_y.bind("<Return>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+    spn_video_shift_y.bind("<FocusOut>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+
 
     def parse_preset(preset: str) -> tuple[int, int]:
         s = (preset or "").lower().replace("×", "x").strip()
@@ -1101,6 +1269,7 @@ def main() -> None:
             app_model.layout_config = loaded.layout_config
             _sync_hud_mode_var_from_model()
             _sync_hud_bg_alpha_var_from_model()
+            _sync_video_transform_vars_from_model()
         except Exception:
             pass
 
@@ -1164,6 +1333,7 @@ def main() -> None:
             _seed_free_boxes_from_legacy_if_missing()
             _sync_hud_mode_var_from_model()
             _sync_hud_bg_alpha_var_from_model()
+            _sync_video_transform_vars_from_model()
         except Exception:
             pass
 
@@ -1488,6 +1658,7 @@ def main() -> None:
         get_enabled_types=lambda: enabled_types(),
         get_overlay_flags=get_preview_overlay_flags,
         on_preview_geometry=on_preview_geometry,
+        on_video_transform_changed=lambda: _sync_video_transform_vars_from_model(),
     )
 
     def png_load_state_for_current() -> None:

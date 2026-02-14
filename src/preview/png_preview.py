@@ -80,6 +80,7 @@ class PngPreviewController:
         get_enabled_types: Callable[[], set[str]] | None = None,
         get_overlay_flags: Callable[[], dict[str, bool]] | None = None,
         on_preview_geometry: Callable[[Any, int, int, float, int, int, int], None] | None = None,
+        on_video_transform_changed: Callable[[], None] | None = None,
     ) -> None:
         self.canvas = canvas
         self._get_preview_area_size = get_preview_area_size
@@ -95,6 +96,7 @@ class PngPreviewController:
         self._get_enabled_types = get_enabled_types
         self._get_overlay_flags = get_overlay_flags
         self._on_preview_geometry = on_preview_geometry
+        self._on_video_transform_changed = on_video_transform_changed
 
         self.PNG_DEBUG = False
 
@@ -126,6 +128,14 @@ class PngPreviewController:
         self.png_right_name = ""
         self.png_left_start = -1
         self.png_right_start = -1
+
+    def _notify_video_transform_changed(self) -> None:
+        if self._on_video_transform_changed is None:
+            return
+        try:
+            self._on_video_transform_changed()
+        except Exception:
+            pass
 
     def _png_dbg(self, msg: str) -> None:
         if not self.PNG_DEBUG:
@@ -167,13 +177,14 @@ class PngPreviewController:
         if vt is None:
             return
         try:
-            zoom = float(getattr(vt, "scale_pct", 100.0)) / 100.0
+            scale_pct = int(round(float(getattr(vt, "scale_pct", 100))))
         except Exception:
-            zoom = 1.0
-        if zoom < 0.1:
-            zoom = 0.1
-        if zoom > 20.0:
-            zoom = 20.0
+            scale_pct = 100
+        if scale_pct < 10:
+            scale_pct = 10
+        if scale_pct > 300:
+            scale_pct = 300
+        zoom = float(scale_pct) / 100.0
         try:
             off_x = int(getattr(vt, "shift_x_px", 0))
         except Exception:
@@ -209,25 +220,54 @@ class PngPreviewController:
             z = 1.0
         if z < 0.1:
             z = 0.1
-        if z > 20.0:
-            z = 20.0
+        if z > 3.0:
+            z = 3.0
+        scale_pct = int(round(z * 100.0))
+        if scale_pct < 10:
+            scale_pct = 10
+        if scale_pct > 300:
+            scale_pct = 300
+        z = float(scale_pct) / 100.0
+        s["zoom"] = float(z)
+        changed = False
         try:
-            vt.scale_pct = float(z * 100.0)
+            shift_x_px = int(s.get("off_x", 0))
         except Exception:
-            pass
+            shift_x_px = 0
         try:
-            vt.shift_x_px = int(s.get("off_x", 0))
+            shift_y_px = int(s.get("off_y", 0))
         except Exception:
-            pass
+            shift_y_px = 0
         try:
-            vt.shift_y_px = int(s.get("off_y", 0))
+            if int(getattr(vt, "scale_pct", 100)) != int(scale_pct):
+                vt.scale_pct = int(scale_pct)
+                changed = True
         except Exception:
-            pass
+            try:
+                vt.scale_pct = int(scale_pct)
+                changed = True
+            except Exception:
+                pass
         try:
-            fit_flag = bool(s.get("fit_to_height", False))
-            vt.fit_button_mode = "fit_height" if fit_flag else "fit_width"
+            if int(getattr(vt, "shift_x_px", 0)) != int(shift_x_px):
+                vt.shift_x_px = int(shift_x_px)
+                changed = True
         except Exception:
-            pass
+            try:
+                vt.shift_x_px = int(shift_x_px)
+                changed = True
+            except Exception:
+                pass
+        try:
+            if int(getattr(vt, "shift_y_px", 0)) != int(shift_y_px):
+                vt.shift_y_px = int(shift_y_px)
+                changed = True
+        except Exception:
+            try:
+                vt.shift_y_px = int(shift_y_px)
+                changed = True
+            except Exception:
+                pass
         for other in ("L", "R"):
             if other == side:
                 continue
@@ -235,56 +275,11 @@ class PngPreviewController:
             self.png_state[other]["off_x"] = int(self.png_state[side].get("off_x", 0))
             self.png_state[other]["off_y"] = int(self.png_state[side].get("off_y", 0))
             self.png_state[other]["fit_to_height"] = bool(self.png_state[side].get("fit_to_height", False))
+        if changed:
+            self._notify_video_transform_changed()
 
     def png_load_state_for_current(self) -> None:
-        key = self._get_png_view_key()
-        png_view_data = self._load_png_view_data()
-        d = png_view_data.get(key) if isinstance(png_view_data, dict) else None
-        if not isinstance(d, dict):
-            self._sync_state_from_video_transform()
-            return
-
-        def _get_float(name: str, default: float) -> float:
-            try:
-                return float(d.get(name, default))
-            except Exception:
-                return float(default)
-
-        def _get_int(name: str, default: int) -> int:
-            try:
-                return int(d.get(name, default))
-            except Exception:
-                return int(default)
-
-        def _get_bool(name: str, default: bool) -> bool:
-            try:
-                v = d.get(name, default)
-                return bool(v)
-            except Exception:
-                return bool(default)
-
-        zl = _get_float("zoom_l", 1.0)
-        zr = _get_float("zoom_r", 1.0)
-
-        if zl < 0.1:
-            zl = 0.1
-        if zl > 20.0:
-            zl = 20.0
-        if zr < 0.1:
-            zr = 0.1
-        if zr > 20.0:
-            zr = 20.0
-
-        self.png_state["L"]["zoom"] = float(zl)
-        self.png_state["L"]["off_x"] = _get_int("off_lx", 0)
-        self.png_state["L"]["off_y"] = _get_int("off_ly", 0)
-        self.png_state["L"]["fit_to_height"] = _get_bool("fit_l", False)
-
-        self.png_state["R"]["zoom"] = float(zr)
-        self.png_state["R"]["off_x"] = _get_int("off_rx", 0)
-        self.png_state["R"]["off_y"] = _get_int("off_ry", 0)
-        self.png_state["R"]["fit_to_height"] = _get_bool("fit_r", False)
-        self._sync_video_transform_from_state("L")
+        self._sync_state_from_video_transform()
 
     def png_save_state_for_current(self) -> None:
         self._sync_state_from_video_transform()
@@ -378,27 +373,23 @@ class PngPreviewController:
         # Minimaler Zoom, damit Region komplett abgedeckt wird (Cover)
         min_zoom = max(float(rw) / sw, float(rh) / sh)
 
-        fit = bool(self.png_state[side].get("fit_to_height", False))
-
         # Grund-Zoom aus State
         try:
             z_out = float(self.png_state[side].get("zoom", 1.0))
         except Exception:
             z_out = 1.0
 
-        # Fit-Modus: exakt Cover-Zoom
-        if fit:
-            z_out = float(min_zoom)
-
         # Zoom clamp (immer)
         if z_out < 0.1:
             z_out = 0.1
-        if z_out > 20.0:
-            z_out = 20.0
+        if z_out > 3.0:
+            z_out = 3.0
 
         # Cover-Zoom nur wenn gewuenscht
         if enforce_cover and enforce_cover_zoom and z_out < min_zoom:
             z_out = float(min_zoom)
+            if z_out > 3.0:
+                z_out = 3.0
 
         self.png_state[side]["zoom"] = float(z_out)
 
@@ -601,23 +592,12 @@ class PngPreviewController:
             rw = max(1, rx1 - rx0)
             rh = max(1, ry1 - ry0)
 
-            fit = bool(self.png_state[side].get("fit_to_height", False))
-
-            if fit:
-                # "Fit" bedeutet hier: Cover (keine Luecken)
-                sw = max(1.0, float(src_img.size[0]))
-                sh = max(1.0, float(src_img.size[1]))
-                # region ist in Preview-Pixeln -> wir wollen Output-Zoom:
-                # Preview-Zoom = Output-Zoom * scale  => Output-Zoom = (CoverZoomPx / scale)
-                min_zoom_px = max(float(rw) / sw, float(rh) / sh)
-                z_out = float(min_zoom_px) / max(0.0001, float(scale))
-            else:
-                z_out = float(self.png_state[side].get("zoom", 1.0))
+            z_out = float(self.png_state[side].get("zoom", 1.0))
 
             if z_out < 0.1:
                 z_out = 0.1
-            if z_out > 20.0:
-                z_out = 20.0
+            if z_out > 3.0:
+                z_out = 3.0
 
             # Zoom in Preview-Pixel umrechnen
             z_px = float(z_out) * float(scale)
@@ -789,6 +769,12 @@ class PngPreviewController:
             d = int(e.delta)
         except Exception:
             d = 0
+        if d == 0:
+            return
+        if d > 0:
+            notches = max(1, int(abs(d) // 120))
+        else:
+            notches = -max(1, int(abs(d) // 120))
 
         # Bild holen
         if self.png_img_left is None or self.png_img_right is None:
@@ -808,39 +794,22 @@ class PngPreviewController:
         hud_w = max(0, min(hud_w, max(0, out_w - 2)))
         layout_config = getattr(output, "layout_config", None)
 
-        rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
-        rw = max(1, rx1 - rx0)
-        rh = max(1, ry1 - ry0)
-
-        sw = max(1.0, float(src_img.size[0]))
-        sh = max(1.0, float(src_img.size[1]))
-
-        # Minimaler Zoom, damit die Region vollstaendig abgedeckt ist (Cover)
-        min_zoom = max(float(rw) / sw, float(rh) / sh)
-
-        # Wenn wir im Fit-Modus waren, starte sauber bei min_zoom (kein Sprung)
-        fit_now = bool(self.png_state[side].get("fit_to_height", False))
         try:
             cur_z = float(self.png_state[side].get("zoom", 1.0))
         except Exception:
             cur_z = 1.0
 
-        z = float(cur_z)
-
-        if d > 0:
-            z *= 1.10
-        elif d < 0:
-            z /= 1.10
-
-        # Manuell darf kleiner werden (kein Cover-Zwang)
-        if z < 0.1:
-            z = 0.1
-        if z > 20.0:
-            z = 20.0
-
-        # Wheel-Zoom bedeutet: ab jetzt manuell
-        self.png_state[side]["fit_to_height"] = False
-        self.png_state[side]["zoom"] = float(z)
+        cur_scale_pct = int(round(float(cur_z) * 100.0))
+        if cur_scale_pct < 10:
+            cur_scale_pct = 10
+        if cur_scale_pct > 300:
+            cur_scale_pct = 300
+        new_scale_pct = cur_scale_pct + int(notches)
+        if new_scale_pct < 10:
+            new_scale_pct = 10
+        if new_scale_pct > 300:
+            new_scale_pct = 300
+        self.png_state[side]["zoom"] = float(new_scale_pct) / 100.0
 
         # Nur clampen ohne "Snap"/Cover
         try:
@@ -863,7 +832,7 @@ class PngPreviewController:
                 f"fit={bool(self.png_state[side].get('fit_to_height', False))} "
                 f"zoom={float(self.png_state[side].get('zoom', 0.0)):.6f} "
                 f"off=({int(self.png_state[side].get('off_x', 0))},{int(self.png_state[side].get('off_y', 0))}) "
-                f"min_zoom={float(min_zoom):.6f}"
+                f"notches={int(notches)}"
             )
         except Exception:
             pass
@@ -874,6 +843,7 @@ class PngPreviewController:
     def png_on_down(self, e: Any) -> None:
         if not self._is_png_mode():
             return
+        self._sync_state_from_video_transform()
         side = self.png_hit_side(int(e.x), int(e.y))
         if side not in ("L", "R"):
             return
@@ -995,40 +965,65 @@ class PngPreviewController:
         hud_w = int(output.hud_w)
         hud_w = max(0, min(hud_w, max(0, out_w - 2)))
         layout_config = getattr(output, "layout_config", None)
+        layout_mode = "LR"
+        try:
+            layout_mode = str(getattr(layout_config, "video_layout", "LR") or "LR").strip().upper()
+        except Exception:
+            layout_mode = "LR"
+        if layout_mode not in ("LR", "TB"):
+            layout_mode = "LR"
+        fit_button_mode = "fit_height" if layout_mode == "LR" else "fit_width"
 
-        def cover_zoom_for(side: str, img: Image.Image) -> float:
+        def fit_scale_pct_for(side: str, img: Image.Image) -> int:
             rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
-            rw = max(1, rx1 - rx0)
-            rh = max(1, ry1 - ry0)
+            rw = max(1, int(rx1 - rx0))
+            rh = max(1, int(ry1 - ry0))
             sw = max(1.0, float(img.size[0]))
             sh = max(1.0, float(img.size[1]))
-            z = max(float(rw) / sw, float(rh) / sh)
-            if z < 0.1:
-                z = 0.1
-            if z > 20.0:
-                z = 20.0
-            return float(z)
+            if fit_button_mode == "fit_width":
+                # Render-Basis fuer TB: scale={target_w}:-2, danach * scale_pct.
+                base_w = float(rw)
+                target_w = float(rw)
+                pct = (target_w / max(1e-6, base_w)) * 100.0
+            else:
+                # Render-Basis fuer LR: scale=-2:{target_h}, danach * scale_pct.
+                _base_w = sw * (float(rh) / max(1.0, sh))
+                _base_h = float(rh)
+                target_h = float(rh)
+                pct = (target_h / max(1e-6, _base_h)) * 100.0
+            p = int(round(pct))
+            if p < 10:
+                p = 10
+            if p > 300:
+                p = 300
+            return int(p)
 
-        zl = cover_zoom_for("L", self.png_img_left)
-        zr = cover_zoom_for("R", self.png_img_right)
+        pcts = [
+            fit_scale_pct_for("L", self.png_img_left),
+            fit_scale_pct_for("R", self.png_img_right),
+        ]
+        scale_pct = int(round(sum(pcts) / max(1, len(pcts))))
+        if scale_pct < 10:
+            scale_pct = 10
+        if scale_pct > 300:
+            scale_pct = 300
 
-        # Fit-Mode aktiv, Zoom auf "Cover" setzen, Offsets neutral
-        self.png_state["L"]["fit_to_height"] = True
-        self.png_state["R"]["fit_to_height"] = True
-        self.png_state["L"]["zoom"] = float(zl)
-        self.png_state["R"]["zoom"] = float(zr)
-        self.png_state["L"]["off_x"] = 0
-        self.png_state["L"]["off_y"] = 0
-        self.png_state["R"]["off_x"] = 0
-        self.png_state["R"]["off_y"] = 0
-
-        # Final clamp (eigentlich redundant, aber safe)
-        try:
-            self._clamp_png_cover("L", self.png_img_left, out_w, out_h, hud_w, layout_config=layout_config)
-            self._clamp_png_cover("R", self.png_img_right, out_w, out_h, hud_w, layout_config=layout_config)
-        except Exception:
-            pass
-        self._sync_video_transform_from_state("L")
+        cfg = self._layout_config()
+        vt = getattr(cfg, "video_transform", None) if cfg is not None else None
+        if vt is not None:
+            vt.fit_button_mode = str(fit_button_mode)
+            vt.scale_pct = int(scale_pct)
+            vt.shift_x_px = 0
+            vt.shift_y_px = 0
+            self._notify_video_transform_changed()
+            self._sync_state_from_video_transform()
+        else:
+            self.png_state["L"]["zoom"] = float(scale_pct) / 100.0
+            self.png_state["R"]["zoom"] = float(scale_pct) / 100.0
+            self.png_state["L"]["off_x"] = 0
+            self.png_state["L"]["off_y"] = 0
+            self.png_state["R"]["off_x"] = 0
+            self.png_state["R"]["off_y"] = 0
 
         self.png_save_state_for_current()
         self.render_png_preview(force_reload=False)

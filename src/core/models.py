@@ -92,14 +92,14 @@ class HudFrameConfig:
 
 @dataclass
 class VideoTransformConfig:
-    scale_pct: float = 100.0
+    scale_pct: int = 100
     shift_x_px: int = 0
     shift_y_px: int = 0
     fit_button_mode: str = "fit_height"
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "scale_pct": float(self.scale_pct),
+            "scale_pct": int(self.scale_pct),
             "shift_x_px": int(self.shift_x_px),
             "shift_y_px": int(self.shift_y_px),
             "fit_button_mode": str(self.fit_button_mode),
@@ -113,7 +113,7 @@ class VideoTransformConfig:
         if fit_button_mode not in ("fit_height", "fit_width"):
             fit_button_mode = default_fit
         return cls(
-            scale_pct=_to_float(data.get("scale_pct", 100.0), 100.0),
+            scale_pct=_to_int(data.get("scale_pct", 100), 100),
             shift_x_px=_to_int(data.get("shift_x_px", 0), 0),
             shift_y_px=_to_int(data.get("shift_y_px", 0), 0),
             fit_button_mode=fit_button_mode,
