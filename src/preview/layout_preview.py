@@ -54,6 +54,37 @@ class LayoutPreviewController:
         self.hud_start_w: float = 0.0
         self.hud_start_h: float = 0.0
 
+    def update_layout_state(
+        self,
+        *,
+        geom: Any,
+        out_w: int,
+        out_h: int,
+        hud_w: int,
+        x0: int,
+        y0: int,
+        scale: float,
+    ) -> None:
+        self.layout_last["out_w"] = int(out_w)
+        self.layout_last["out_h"] = int(out_h)
+        self.layout_last["hud_w"] = int(hud_w)
+        self.layout_last["side_w"] = int(geom.video_slow_rect.w if str(geom.video_layout) == "LR" else 0)
+        self.layout_last["hud_mode"] = str(getattr(geom, "hud_mode", "frame") or "frame")
+        self.layout_last["x0"] = int(x0)
+        self.layout_last["y0"] = int(y0)
+        self.layout_last["scale"] = float(scale)
+        if tuple(geom.hud_rects):
+            hud_x0 = min(int(r.x) for r in tuple(geom.hud_rects))
+            hud_x1 = max(int(r.x) + int(r.w) for r in tuple(geom.hud_rects))
+            hud_y0 = min(int(r.y) for r in tuple(geom.hud_rects))
+            hud_y1 = max(int(r.y) + int(r.h) for r in tuple(geom.hud_rects))
+        else:
+            hud_x0, hud_x1, hud_y0, hud_y1 = 0, out_w, 0, out_h
+        self.layout_last["hud_x0"] = int(hud_x0)
+        self.layout_last["hud_x1"] = int(hud_x1)
+        self.layout_last["hud_y0"] = int(hud_y0)
+        self.layout_last["hud_y1"] = int(hud_y1)
+
     @staticmethod
     def _clamp(v: int, lo: int, hi: int) -> int:
         if v < lo:
@@ -140,25 +171,15 @@ class LayoutPreviewController:
         x1 = x0 + draw_w
         y1 = y0 + draw_h
 
-        self.layout_last["out_w"] = int(out_w)
-        self.layout_last["out_h"] = int(out_h)
-        self.layout_last["hud_w"] = int(hud_w)
-        self.layout_last["side_w"] = int(geom.video_slow_rect.w if str(geom.video_layout) == "LR" else 0)
-        self.layout_last["hud_mode"] = str(getattr(geom, "hud_mode", "frame") or "frame")
-        self.layout_last["x0"] = int(x0)
-        self.layout_last["y0"] = int(y0)
-        self.layout_last["scale"] = float(scale)
-        if tuple(geom.hud_rects):
-            hud_x0 = min(int(r.x) for r in tuple(geom.hud_rects))
-            hud_x1 = max(int(r.x) + int(r.w) for r in tuple(geom.hud_rects))
-            hud_y0 = min(int(r.y) for r in tuple(geom.hud_rects))
-            hud_y1 = max(int(r.y) + int(r.h) for r in tuple(geom.hud_rects))
-        else:
-            hud_x0, hud_x1, hud_y0, hud_y1 = 0, out_w, 0, out_h
-        self.layout_last["hud_x0"] = int(hud_x0)
-        self.layout_last["hud_x1"] = int(hud_x1)
-        self.layout_last["hud_y0"] = int(hud_y0)
-        self.layout_last["hud_y1"] = int(hud_y1)
+        self.update_layout_state(
+            geom=geom,
+            out_w=int(out_w),
+            out_h=int(out_h),
+            hud_w=int(hud_w),
+            x0=int(x0),
+            y0=int(y0),
+            scale=float(scale),
+        )
 
         self.canvas.delete("all")
 

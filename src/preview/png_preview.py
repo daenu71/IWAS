@@ -76,6 +76,10 @@ class PngPreviewController:
         choose_slow_fast_paths: Callable[[], tuple[Path | None, Path | None]],
         get_start_for_video: Callable[[Path], int],
         read_frame_as_pil: Callable[[Path, int], Image.Image | None],
+        get_hud_boxes: Callable[[], list[dict]] | None = None,
+        get_enabled_types: Callable[[], set[str]] | None = None,
+        get_overlay_flags: Callable[[], dict[str, bool]] | None = None,
+        on_preview_geometry: Callable[[Any, int, int, float, int, int, int], None] | None = None,
     ) -> None:
         self.canvas = canvas
         self._get_preview_area_size = get_preview_area_size
@@ -87,6 +91,10 @@ class PngPreviewController:
         self._choose_slow_fast_paths = choose_slow_fast_paths
         self._get_start_for_video = get_start_for_video
         self._read_frame_as_pil = read_frame_as_pil
+        self._get_hud_boxes = get_hud_boxes
+        self._get_enabled_types = get_enabled_types
+        self._get_overlay_flags = get_overlay_flags
+        self._on_preview_geometry = on_preview_geometry
 
         self.PNG_DEBUG = False
 
@@ -131,11 +139,109 @@ class PngPreviewController:
         except Exception:
             pass
 
+    def _layout_config(self) -> Any | None:
+        try:
+            output = self._get_output_format()
+        except Exception:
+            return None
+        return getattr(output, "layout_config", None)
+
+    def _overlay_flags(self) -> dict[str, bool]:
+        if self._get_overlay_flags is None:
+            return {"video_rects": True, "hud_boxes": True, "labels": True}
+        try:
+            flags = self._get_overlay_flags()
+        except Exception:
+            return {"video_rects": True, "hud_boxes": True, "labels": True}
+        if not isinstance(flags, dict):
+            return {"video_rects": True, "hud_boxes": True, "labels": True}
+        return {
+            "video_rects": bool(flags.get("video_rects", True)),
+            "hud_boxes": bool(flags.get("hud_boxes", True)),
+            "labels": bool(flags.get("labels", True)),
+        }
+
+    def _sync_state_from_video_transform(self) -> None:
+        cfg = self._layout_config()
+        vt = getattr(cfg, "video_transform", None) if cfg is not None else None
+        if vt is None:
+            return
+        try:
+            zoom = float(getattr(vt, "scale_pct", 100.0)) / 100.0
+        except Exception:
+            zoom = 1.0
+        if zoom < 0.1:
+            zoom = 0.1
+        if zoom > 20.0:
+            zoom = 20.0
+        try:
+            off_x = int(getattr(vt, "shift_x_px", 0))
+        except Exception:
+            off_x = 0
+        try:
+            off_y = int(getattr(vt, "shift_y_px", 0))
+        except Exception:
+            off_y = 0
+        try:
+            fit_mode = str(getattr(vt, "fit_button_mode", "fit_height") or "fit_height").strip().lower()
+        except Exception:
+            fit_mode = "fit_height"
+        if fit_mode not in ("fit_height", "fit_width"):
+            fit_mode = "fit_height"
+        fit_to_height = fit_mode == "fit_height"
+        for side in ("L", "R"):
+            self.png_state[side]["zoom"] = float(zoom)
+            self.png_state[side]["off_x"] = int(off_x)
+            self.png_state[side]["off_y"] = int(off_y)
+            self.png_state[side]["fit_to_height"] = bool(fit_to_height)
+
+    def _sync_video_transform_from_state(self, side: str = "L") -> None:
+        cfg = self._layout_config()
+        vt = getattr(cfg, "video_transform", None) if cfg is not None else None
+        if vt is None:
+            return
+        s = self.png_state.get(side)
+        if not isinstance(s, dict):
+            return
+        try:
+            z = float(s.get("zoom", 1.0))
+        except Exception:
+            z = 1.0
+        if z < 0.1:
+            z = 0.1
+        if z > 20.0:
+            z = 20.0
+        try:
+            vt.scale_pct = float(z * 100.0)
+        except Exception:
+            pass
+        try:
+            vt.shift_x_px = int(s.get("off_x", 0))
+        except Exception:
+            pass
+        try:
+            vt.shift_y_px = int(s.get("off_y", 0))
+        except Exception:
+            pass
+        try:
+            fit_flag = bool(s.get("fit_to_height", False))
+            vt.fit_button_mode = "fit_height" if fit_flag else "fit_width"
+        except Exception:
+            pass
+        for other in ("L", "R"):
+            if other == side:
+                continue
+            self.png_state[other]["zoom"] = float(self.png_state[side].get("zoom", 1.0))
+            self.png_state[other]["off_x"] = int(self.png_state[side].get("off_x", 0))
+            self.png_state[other]["off_y"] = int(self.png_state[side].get("off_y", 0))
+            self.png_state[other]["fit_to_height"] = bool(self.png_state[side].get("fit_to_height", False))
+
     def png_load_state_for_current(self) -> None:
         key = self._get_png_view_key()
         png_view_data = self._load_png_view_data()
         d = png_view_data.get(key) if isinstance(png_view_data, dict) else None
         if not isinstance(d, dict):
+            self._sync_state_from_video_transform()
             return
 
         def _get_float(name: str, default: float) -> float:
@@ -178,8 +284,10 @@ class PngPreviewController:
         self.png_state["R"]["off_x"] = _get_int("off_rx", 0)
         self.png_state["R"]["off_y"] = _get_int("off_ry", 0)
         self.png_state["R"]["fit_to_height"] = _get_bool("fit_r", False)
+        self._sync_video_transform_from_state("L")
 
     def png_save_state_for_current(self) -> None:
+        self._sync_state_from_video_transform()
         key = self._get_png_view_key()
         png_view_data = self._load_png_view_data()
         if not isinstance(png_view_data, dict):
@@ -355,6 +463,7 @@ class PngPreviewController:
     def render_png_preview(self, force_reload: bool = False) -> None:
         if not self._is_png_mode():
             return
+        self._sync_state_from_video_transform()
 
         slow_p, fast_p = self._choose_slow_fast_paths()
         if slow_p is None or fast_p is None:
@@ -411,9 +520,15 @@ class PngPreviewController:
                 hud_width_px=int(hud_w),
                 layout_config=None,
             )
+        if self._on_preview_geometry is not None:
+            try:
+                self._on_preview_geometry(geom, int(x0), int(y0), float(scale), int(out_w), int(out_h), int(hud_w))
+            except Exception:
+                pass
 
         draw_w = max(1, x1 - x0)
         draw_h = max(1, y1 - y0)
+        overlays = self._overlay_flags()
 
         def out_rect_to_frame(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
             fx0 = int(round(float(x) * float(scale)))
@@ -536,24 +651,75 @@ class PngPreviewController:
         self.canvas.delete("all")
         self.canvas.create_image(x0, y0, anchor="nw", image=tk_img)
 
-        # Rahmen + Bereiche
+        # Output-Frame always visible
         self.canvas.create_rectangle(x0, y0, x1, y1)
-        self.canvas.create_rectangle(x0 + lx0, y0 + ly0, x0 + lx1, y0 + ly1)
-        self.canvas.create_rectangle(x0 + rx0, y0 + ry0, x0 + rx1, y0 + ry1)
-        for hr in hud_regions:
-            hx0, hy0, hx1, hy1 = hr
-            self.canvas.create_rectangle(x0 + hx0, y0 + hy0, x0 + hx1, y0 + hy1)
 
-        self.canvas.create_text(int(x0 + (lx0 + lx1) / 2), int(y0 + ly0 + 14), anchor="n", text="Slow")
-        self.canvas.create_text(int(x0 + (rx0 + rx1) / 2), int(y0 + ry0 + 14), anchor="n", text="Fast")
-        for idx, hr in enumerate(hud_regions):
-            hx0, hy0, hx1, hy1 = hr
-            self.canvas.create_text(
-                int(x0 + (hx0 + hx1) / 2),
-                int(y0 + (hy0 + hy1) / 2),
-                anchor="center",
-                text=f"HUD {idx + 1}",
-            )
+        if overlays["video_rects"]:
+            self.canvas.create_rectangle(x0 + lx0, y0 + ly0, x0 + lx1, y0 + ly1)
+            self.canvas.create_rectangle(x0 + rx0, y0 + ry0, x0 + rx1, y0 + ry1)
+            for hr in hud_regions:
+                hx0, hy0, hx1, hy1 = hr
+                self.canvas.create_rectangle(x0 + hx0, y0 + hy0, x0 + hx1, y0 + hy1)
+
+        if overlays["labels"]:
+            self.canvas.create_text(int(x0 + (lx0 + lx1) / 2), int(y0 + ly0 + 14), anchor="n", text="Video 1")
+            self.canvas.create_text(int(x0 + (rx0 + rx1) / 2), int(y0 + ry0 + 14), anchor="n", text="Video 2")
+            for idx, hr in enumerate(hud_regions):
+                hx0, hy0, hx1, hy1 = hr
+                self.canvas.create_text(
+                    int(x0 + (hx0 + hx1) / 2),
+                    int(y0 + (hy0 + hy1) / 2),
+                    anchor="center",
+                    text=f"HUD {idx + 1}",
+                )
+
+        hud_boxes: list[dict] = []
+        if self._get_hud_boxes is not None:
+            try:
+                boxes = self._get_hud_boxes()
+                if isinstance(boxes, list):
+                    hud_boxes = boxes
+            except Exception:
+                hud_boxes = []
+        enabled_types: set[str] = set()
+        if self._get_enabled_types is not None:
+            try:
+                enabled_types = set(self._get_enabled_types())
+            except Exception:
+                enabled_types = set()
+
+        if overlays["hud_boxes"] or overlays["labels"]:
+            for b in hud_boxes:
+                t = str(b.get("type") or "")
+                if t not in enabled_types:
+                    continue
+                try:
+                    bx = int(b.get("x", 0))
+                    by = int(b.get("y", 0))
+                    bw = int(b.get("w", 200))
+                    bh = int(b.get("h", 100))
+                except Exception:
+                    continue
+                cx0, cy0, cx1, cy1 = out_rect_to_frame(bx, by, bw, bh)
+                tag = f"hud_{t.replace(' ', '_').replace('/', '_')}"
+                if overlays["hud_boxes"]:
+                    self.canvas.create_rectangle(
+                        x0 + cx0,
+                        y0 + cy0,
+                        x0 + cx1,
+                        y0 + cy1,
+                        tags=("hud_box", tag),
+                    )
+                    hx0 = max(x0 + cx0, x0 + cx1 - 12)
+                    hy0 = max(y0 + cy0, y0 + cy1 - 12)
+                    self.canvas.create_rectangle(hx0, hy0, x0 + cx1, y0 + cy1, tags=("hud_handle", tag))
+                if overlays["labels"]:
+                    self.canvas.create_text(
+                        int(x0 + (cx0 + cx1) / 2),
+                        int(y0 + (cy0 + cy1) / 2),
+                        text=t,
+                        tags=("hud_box", tag),
+                    )
 
         # Wichtig: Referenz halten
         self.canvas._tk_img = tk_img
@@ -584,6 +750,7 @@ class PngPreviewController:
     def png_on_wheel(self, e: Any) -> None:
         if not self._is_png_mode():
             return
+        self._sync_state_from_video_transform()
 
         try:
             self._png_dbg(
@@ -678,6 +845,7 @@ class PngPreviewController:
             )
         except Exception:
             pass
+        self._sync_video_transform_from_state(side)
 
         try:
             self._png_dbg(
@@ -707,6 +875,7 @@ class PngPreviewController:
     def png_on_move(self, e: Any) -> None:
         if not self._is_png_mode():
             return
+        self._sync_state_from_video_transform()
         if not self.png_state.get("drag"):
             return
         side = str(self.png_state.get("drag_side") or "")
@@ -738,6 +907,7 @@ class PngPreviewController:
 
         self.png_state[side]["off_x"] = int(self.png_state[side]["off_x"]) + dx_out
         self.png_state[side]["off_y"] = int(self.png_state[side]["off_y"]) + dy_out
+        self._sync_video_transform_from_state(side)
 
         self.render_png_preview(force_reload=False)
 
@@ -748,6 +918,7 @@ class PngPreviewController:
             pass
         if not self._is_png_mode():
             return
+        self._sync_state_from_video_transform()
 
         side = str(self.png_state.get("drag_side") or "")
         self.png_state["drag"] = False
@@ -790,6 +961,8 @@ class PngPreviewController:
                 )
         except Exception:
             pass
+        if side in ("L", "R"):
+            self._sync_video_transform_from_state(side)
 
         self.png_save_state_for_current()
         self.render_png_preview(force_reload=False)
@@ -797,6 +970,7 @@ class PngPreviewController:
     def png_fit_to_height_both(self) -> None:
         if not self._is_png_mode():
             return
+        self._sync_state_from_video_transform()
         if self.png_img_left is None or self.png_img_right is None:
             self.render_png_preview(force_reload=True)
         if self.png_img_left is None or self.png_img_right is None:
@@ -844,6 +1018,7 @@ class PngPreviewController:
             self._clamp_png_cover("R", self.png_img_right, out_w, out_h, hud_w, layout_config=layout_config)
         except Exception:
             pass
+        self._sync_video_transform_from_state("L")
 
         self.png_save_state_for_current()
         self.render_png_preview(force_reload=False)

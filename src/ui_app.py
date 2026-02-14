@@ -470,10 +470,7 @@ def main() -> None:
         if not refresh_preview:
             return
         try:
-            if preview_mode_var.get() == "png":
-                render_png_preview(force_reload=False)
-            else:
-                refresh_layout_preview()
+            refresh_layout_preview()
         except Exception:
             pass
 
@@ -483,10 +480,7 @@ def main() -> None:
         if not refresh_preview:
             return
         try:
-            if preview_mode_var.get() == "png":
-                render_png_preview(force_reload=False)
-            else:
-                refresh_layout_preview()
+            refresh_layout_preview()
         except Exception:
             pass
 
@@ -594,10 +588,7 @@ def main() -> None:
         def _make_cb_handler():
             def _h(*_args):
                 try:
-                    if preview_mode_var.get() == "png":
-                        render_png_preview(force_reload=False)
-                    else:
-                        refresh_layout_preview()
+                    refresh_layout_preview()
                 except Exception:
                     pass
             return _h
@@ -734,10 +725,7 @@ def main() -> None:
             except Exception:
                 pass
             try:
-                if preview_mode_var.get() == "png":
-                    render_png_preview(force_reload=False)
-                else:
-                    refresh_layout_preview()
+                refresh_layout_preview()
             except Exception:
                 pass
             return
@@ -825,10 +813,7 @@ def main() -> None:
             pass
 
         try:
-            if preview_mode_var.get() == "png":
-                render_png_preview(force_reload=False)
-            else:
-                refresh_layout_preview()
+            refresh_layout_preview()
         except Exception:
             pass
 
@@ -1265,11 +1250,8 @@ def main() -> None:
                     {"aspect": out_aspect_var.get(), "preset": out_preset_var.get(), "quality": out_quality_var.get()}
                 )
                 if video_preview_ctrl is None or video_preview_ctrl.cap is None:
-                    if preview_mode_var.get() == "png":
-                        png_load_state_for_current()
-                        render_png_preview(force_reload=False)
-                    else:
-                        refresh_layout_preview()
+                    png_load_state_for_current()
+                    refresh_layout_preview()
         except Exception:
             pass
 
@@ -1334,20 +1316,45 @@ def main() -> None:
     frame_preview.rowconfigure(1, weight=1)
     frame_preview.rowconfigure(2, weight=0)
 
-    # Vorschau-Modus (Layout vs PNG)
+    # Unified Preview
     preview_mode_bar = ttk.Frame(frame_preview)
     preview_mode_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
     preview_mode_bar.columnconfigure(10, weight=1)
 
-    preview_mode_var = tk.StringVar(value="layout")
+    preview_mode_var = tk.StringVar(value="png")
 
-    btn_mode_layout = ttk.Radiobutton(preview_mode_bar, text="Layout", value="layout", variable=preview_mode_var)
-    btn_mode_png = ttk.Radiobutton(preview_mode_bar, text="PNG", value="png", variable=preview_mode_var)
-    btn_mode_layout.grid(row=0, column=0, sticky="w", padx=(0, 10))
-    btn_mode_png.grid(row=0, column=1, sticky="w")
+    show_video_rects_var = tk.BooleanVar(value=True)
+    show_hud_boxes_var = tk.BooleanVar(value=True)
+    show_labels_var = tk.BooleanVar(value=True)
 
-    btn_png_fit = ttk.Button(preview_mode_bar, text="PNG auf Rahmenhöhe")
-    btn_png_fit.grid(row=0, column=2, sticky="w", padx=(16, 0))
+    btn_png_fit = ttk.Button(preview_mode_bar, text="Video auf Rahmenh\u00f6he")
+    btn_png_fit.grid(row=0, column=0, sticky="w", padx=(0, 12))
+    ttk.Checkbutton(preview_mode_bar, text="Show video rects", variable=show_video_rects_var).grid(
+        row=0, column=1, sticky="w", padx=(0, 8)
+    )
+    ttk.Checkbutton(preview_mode_bar, text="Show HUD boxes", variable=show_hud_boxes_var).grid(
+        row=0, column=2, sticky="w", padx=(0, 8)
+    )
+    ttk.Checkbutton(preview_mode_bar, text="Show labels", variable=show_labels_var).grid(
+        row=0, column=3, sticky="w"
+    )
+
+    def get_preview_overlay_flags() -> dict[str, bool]:
+        return {
+            "video_rects": bool(show_video_rects_var.get()),
+            "hud_boxes": bool(show_hud_boxes_var.get()),
+            "labels": bool(show_labels_var.get()),
+        }
+
+    def update_png_fit_button_text() -> None:
+        try:
+            layout_mode = str(_layout_cfg().video_layout or "LR").strip().upper()
+        except Exception:
+            layout_mode = "LR"
+        if layout_mode == "TB":
+            btn_png_fit.config(text="Video auf Rahmenbreite")
+        else:
+            btn_png_fit.config(text="Video auf Rahmenh\u00f6he")
 
     # Crop-Controls bleiben (werden nur bei Zuschneiden eingeblendet)
     preview_top = ttk.Frame(frame_preview)
@@ -1394,12 +1401,8 @@ def main() -> None:
     preview_label = ttk.Label(preview_area, text="")
     preview_label.grid(row=0, column=0, sticky="nsew")
 
-    layout_canvas = tk.Canvas(preview_area, highlightthickness=0)
-    layout_canvas.grid(row=0, column=0, sticky="nsew")
-
-    png_canvas = tk.Canvas(preview_area, highlightthickness=0)
-    png_canvas.grid(row=0, column=0, sticky="nsew")
-    png_canvas.grid_remove()
+    preview_canvas = tk.Canvas(preview_area, highlightthickness=0)
+    preview_canvas.grid(row=0, column=0, sticky="nsew")
 
     def choose_slow_fast_paths() -> tuple[Path | None, Path | None]:
         if len(videos) != 2:
@@ -1453,17 +1456,38 @@ def main() -> None:
         png_view_data = data
         persistence.save_png_view(png_view_data)
 
+    layout_preview_ctrl: LayoutPreviewController | None = None
+
+    def on_preview_geometry(geom: object, x0: int, y0: int, scale: float, out_w: int, out_h: int, hud_w: int) -> None:
+        nonlocal hud_boxes, layout_preview_ctrl
+        if layout_preview_ctrl is None:
+            return
+        layout_preview_ctrl.update_layout_state(
+            geom=geom,
+            out_w=int(out_w),
+            out_h=int(out_h),
+            hud_w=int(hud_w),
+            x0=int(x0),
+            y0=int(y0),
+            scale=float(scale),
+        )
+        layout_preview_ctrl.ensure_boxes_in_hud_area(hud_boxes)
+
     png_preview_ctrl = PngPreviewController(
-        canvas=png_canvas,
+        canvas=preview_canvas,
         get_preview_area_size=lambda: (preview_area.winfo_width(), preview_area.winfo_height()),
         get_output_format=current_png_output_format,
-        is_png_mode=lambda: preview_mode_var.get() == "png",
+        is_png_mode=lambda: True,
         get_png_view_key=png_view_key,
         load_png_view_data=load_png_view_data,
         save_png_view_data=save_png_view_data,
         choose_slow_fast_paths=choose_slow_fast_paths,
         get_start_for_video=get_start_for_video,
         read_frame_as_pil=read_frame_as_pil,
+        get_hud_boxes=lambda: hud_boxes,
+        get_enabled_types=lambda: enabled_types(),
+        get_overlay_flags=get_preview_overlay_flags,
+        on_preview_geometry=on_preview_geometry,
     )
 
     def png_load_state_for_current() -> None:
@@ -1494,10 +1518,6 @@ def main() -> None:
 
     btn_png_fit.config(command=png_fit_to_height_both)
 
-    png_canvas.bind("<MouseWheel>", png_on_wheel)
-    png_canvas.bind("<ButtonPress-1>", png_on_down)
-    png_canvas.bind("<B1-Motion>", png_on_move)
-    png_canvas.bind("<ButtonRelease-1>", png_on_up)
 
     # Transform-Merker (für Layout Maus-Events)
     hud_boxes: list[dict] = get_hud_boxes_for_current()
@@ -1546,51 +1566,75 @@ def main() -> None:
             layout_config=app_model.layout_config,
         )
 
-    layout_preview_ctrl: LayoutPreviewController | None = None
-
     def refresh_layout_preview() -> None:
         nonlocal hud_boxes, layout_preview_ctrl
         if layout_preview_ctrl is None:
             return
-
-        try:
-            area_w = max(200, preview_area.winfo_width())
-            area_h = max(200, preview_area.winfo_height())
-        except Exception:
-            return
-
-        hud_boxes = layout_preview_ctrl.draw_layout_preview(
-            output_format=current_layout_output_format(),
-            hud_boxes=hud_boxes,
-            enabled_types=enabled_types(),
-            area_w=area_w,
-            area_h=area_h,
-            load_current_boxes=get_hud_boxes_for_current,
-        )
+        if (layout_preview_ctrl.hud_active_id is None) and (layout_preview_ctrl.hud_mode == ""):
+            hud_boxes = get_hud_boxes_for_current()
+        layout_preview_ctrl.ensure_boxes_in_hud_area(hud_boxes)
+        update_png_fit_button_text()
+        render_png_preview(force_reload=False)
 
     layout_preview_ctrl = LayoutPreviewController(
-        canvas=layout_canvas,
+        canvas=preview_canvas,
         save_current_boxes=save_current_boxes,
         redraw_preview=refresh_layout_preview,
         is_locked=lambda: video_preview_ctrl is not None and video_preview_ctrl.cap is not None,
     )
 
-    layout_canvas.bind("<Motion>", lambda e: layout_preview_ctrl.on_layout_hover(e, hud_boxes, enabled_types()))
-    layout_canvas.bind("<Leave>", lambda e: layout_preview_ctrl.on_layout_leave(e))
-    layout_canvas.bind("<ButtonPress-1>", lambda e: layout_preview_ctrl.on_layout_mouse_down(e, hud_boxes, enabled_types()))
-    layout_canvas.bind("<B1-Motion>", lambda e: layout_preview_ctrl.on_layout_mouse_move(e, hud_boxes))
-    layout_canvas.bind("<ButtonRelease-1>", lambda e: layout_preview_ctrl.on_layout_mouse_up(e))
+    def on_preview_canvas_motion(e) -> None:
+        if layout_preview_ctrl.hud_active_id is not None:
+            return
+        if bool(png_state.get("drag")):
+            return
+        layout_preview_ctrl.on_layout_hover(e, hud_boxes, enabled_types())
 
-    # Default: Layout sichtbar
+    def on_preview_canvas_down(e) -> None:
+        if bool(show_hud_boxes_var.get()):
+            t, _mode = layout_preview_ctrl.hit_test_box(int(e.x), int(e.y), hud_boxes, enabled_types())
+            if t is not None:
+                layout_preview_ctrl.on_layout_mouse_down(e, hud_boxes, enabled_types())
+                return
+        png_on_down(e)
+
+    def on_preview_canvas_drag(e) -> None:
+        if layout_preview_ctrl.hud_active_id is not None:
+            layout_preview_ctrl.on_layout_mouse_move(e, hud_boxes)
+            return
+        png_on_move(e)
+
+    def on_preview_canvas_up(e) -> None:
+        if layout_preview_ctrl.hud_active_id is not None:
+            layout_preview_ctrl.on_layout_mouse_up(e)
+            return
+        png_on_up(e)
+        layout_preview_ctrl.on_layout_leave(e)
+
+    preview_canvas.bind("<MouseWheel>", png_on_wheel)
+    preview_canvas.bind("<Motion>", on_preview_canvas_motion)
+    preview_canvas.bind("<Leave>", lambda e: layout_preview_ctrl.on_layout_leave(e))
+    preview_canvas.bind("<ButtonPress-1>", on_preview_canvas_down)
+    preview_canvas.bind("<B1-Motion>", on_preview_canvas_drag)
+    preview_canvas.bind("<ButtonRelease-1>", on_preview_canvas_up)
+
+    for _overlay_var in (show_video_rects_var, show_hud_boxes_var, show_labels_var):
+        try:
+            _overlay_var.trace_add("write", lambda *_: refresh_layout_preview())
+        except Exception:
+            pass
+
+    # Default: Unified Preview sichtbar
     try:
         preview_label.grid_remove()
     except Exception:
         pass
     try:
-        layout_canvas.lift()
+        preview_canvas.lift()
     except Exception:
         pass
     try:
+        png_load_state_for_current()
         refresh_layout_preview()
     except Exception:
         pass
@@ -1711,11 +1755,7 @@ def main() -> None:
             scrub.grid()
 
             try:
-                layout_canvas.grid_remove()
-            except Exception:
-                pass
-            try:
-                png_canvas.grid_remove()
+                preview_canvas.grid_remove()
             except Exception:
                 pass
 
@@ -1738,36 +1778,16 @@ def main() -> None:
             except Exception:
                 pass
 
-            mode = preview_mode_var.get()
-            if mode == "png":
-                try:
-                    layout_canvas.grid_remove()
-                except Exception:
-                    pass
-                try:
-                    png_canvas.grid()
-                    png_canvas.lift()
-                except Exception:
-                    pass
-                try:
-                    png_load_state_for_current()
-                    render_png_preview(force_reload=True)
-                except Exception:
-                    pass
-            else:
-                try:
-                    png_canvas.grid_remove()
-                except Exception:
-                    pass
-                try:
-                    layout_canvas.grid()
-                    layout_canvas.lift()
-                except Exception:
-                    pass
-                try:
-                    refresh_layout_preview()
-                except Exception:
-                    pass
+            try:
+                preview_canvas.grid()
+                preview_canvas.lift()
+            except Exception:
+                pass
+            try:
+                png_load_state_for_current()
+                refresh_layout_preview()
+            except Exception:
+                pass
 
     def on_preview_mode_change(*_args) -> None:
         if controller is None:
