@@ -3243,18 +3243,18 @@ def _render_hud_scroll_frames_png(
                         if tb_headroom > 2.00:
                             tb_headroom = 2.00
 
-                        tb_font_sz = int(round(max(10.0, min(18.0, float(h) * 0.13))))
-                        tb_font_val_sz = int(round(max(11.0, min(20.0, float(h) * 0.15))))
+                        tb_font_sz = int(round(max(12.0, min(23.0, float(h) * 0.165))))
+                        tb_font_val_sz = int(round(max(13.0, min(26.0, float(h) * 0.185))))
                         tb_font_title = _load_hud_font(tb_font_sz)
                         tb_font_val = _load_hud_font(tb_font_val_sz)
-                        tb_font_axis = _load_hud_font(max(8, int(tb_font_sz - 2)))
-                        tb_font_axis_small = _load_hud_font(max(7, int(tb_font_sz - 3)))
+                        tb_font_axis = _load_hud_font(max(10, int(tb_font_sz - 1)))
+                        tb_font_axis_small = _load_hud_font(max(9, int(tb_font_sz - 2)))
 
                         tb_y_txt = int(2)
-                        tb_title_h = int(max(8, min(24, round(float(h) * 0.13))))
+                        tb_title_h = int(max(10, min(30, round(float(h) * 0.16))))
 
                         tb_table_top = int(tb_y_txt + tb_title_h + 2)
-                        tb_table_h = int(max(22, min(44, round(float(h) * 0.24))))
+                        tb_table_h = int(max(28, min(58, round(float(h) * 0.30))))
                         tb_table_header_h = int(max(10, min(tb_table_h - 8, round(float(tb_table_h) * 0.45))))
                         tb_table_value_h = int(max(8, tb_table_h - tb_table_header_h))
                         tb_table_bottom = int(tb_table_top + tb_table_h - 1)
@@ -3304,26 +3304,26 @@ def _render_hud_scroll_frames_png(
                             return f_best
 
                         tb_font_tbl_head = _tb_fit_font(
-                            max_sz=int(max(6, min(22, tb_table_header_fit_h))),
+                            max_sz=int(max(6, min(26, tb_table_header_fit_h))),
                             min_sz=6,
                             labels=tuple(tb_table_cols),
                             fit_w=int(tb_table_header_fit_w),
                             fit_h=int(tb_table_header_fit_h),
                         )
                         tb_font_tbl_val = _tb_fit_font(
-                            max_sz=int(max(8, min(26, tb_table_value_fit_h))),
+                            max_sz=int(max(8, min(30, tb_table_value_fit_h))),
                             min_sz=8,
                             labels=("100%",),
                             fit_w=int(tb_table_header_fit_w),
                             fit_h=int(tb_table_value_fit_h),
                         )
 
-                        tb_abs_h = int(max(10, min(15, round(float(h) * 0.085))))
-                        tb_abs_gap_y = 2
-                        tb_y_abs0 = int(tb_table_bottom + 3)
+                        tb_abs_h = int(max(6, min(9, round(float(h) * 0.045))))
+                        tb_abs_gap_y = 1
+                        tb_y_abs0 = int(tb_table_bottom + 2)
                         tb_y_abs_s = tb_y_abs0
                         tb_y_abs_f = tb_y_abs0 + tb_abs_h + tb_abs_gap_y
-                        tb_plot_top = tb_y_abs_f + tb_abs_h + 4
+                        tb_plot_top = tb_y_abs_f + tb_abs_h + 1
                         tb_plot_bottom = int(h - 2)
                         if tb_plot_bottom <= tb_plot_top + 5:
                             tb_plot_top = int(max(0, int(float(h) * 0.30)))

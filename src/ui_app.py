@@ -22,6 +22,7 @@ from core.output_geometry import (
     layout_horizontal_frame_hud_boxes,
     split_horizontal_top_bottom_rows,
     split_weighted_lengths,
+    vertical_fit_weight_for_hud_key,
 )
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from preview.png_preview import PngPreviewController
@@ -968,9 +969,7 @@ def main() -> None:
                 hud_key = str(box.get("type") or "")
             except Exception:
                 hud_key = ""
-            if hud_key in ("Speed", "Gear & RPM"):
-                return 0.5
-            return 1.0
+            return float(vertical_fit_weight_for_hud_key(hud_key))
 
         def _split_weighted(total: int, items: list[dict]) -> list[int]:
             weights: list[float] = []

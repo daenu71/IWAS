@@ -213,6 +213,15 @@ def _hud_type_from_box(box: dict[str, Any]) -> str:
         return ""
 
 
+def vertical_fit_weight_for_hud_key(hud_key: str) -> float:
+    if hud_key == "Throttle / Brake":
+        return 1.5
+    elif hud_key in ("Speed", "Gear & RPM"):
+        return 0.5
+    else:
+        return 1.0
+
+
 def _layout_horizontal_frame_row(
     items: list[dict[str, Any]],
     row_rect: Rect,
