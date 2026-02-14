@@ -2130,7 +2130,12 @@ def _render_hud_scroll_frames_png(
     if int(hud_stream_w) <= 0 or int(hud_stream_h) <= 0:
         _log_print("[hudpy] hud stream rect ungueltig -> kein HUD moeglich", log_file)
         return None
-    hud_free_mode = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower() == "free"
+    hud_mode_value = str(getattr(geom, "hud_mode", "frame") or "frame").strip().lower()
+    hud_free_mode = hud_mode_value == "free"
+    hud_rect_items = tuple(getattr(geom, "hud_rects", ()) or ())
+    # top_bottom produces two disjoint HUD strips; flattening a full-frame HUD stream to black
+    # would mask the first video before the second overlay is applied.
+    preserve_alpha_in_frame_mode = (not hud_free_mode) and len(hud_rect_items) >= 2
     try:
         hud_bg_alpha = int(getattr(ctx.settings, "bg_alpha", 255))
     except Exception:
@@ -6028,7 +6033,7 @@ def _render_hud_scroll_frames_png(
 
 
         src_rgba = img if getattr(img, "mode", "") == "RGBA" else img.convert("RGBA")
-        if hud_free_mode:
+        if hud_free_mode or preserve_alpha_in_frame_mode:
             rgba_bytes = src_rgba.tobytes()
         else:
             # Legacy frame mode keeps the flattened black base.

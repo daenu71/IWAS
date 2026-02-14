@@ -347,6 +347,7 @@ def _debug_geometry_dump(
     orientation: str,
     anchor: str,
     hud_px: int,
+    video_area_rect: Rect | None,
     video_slow_rect: Rect,
     video_fast_rect: Rect,
     hud_rects: tuple[Rect, ...],
@@ -354,10 +355,12 @@ def _debug_geometry_dump(
     if not _geom_debug_enabled():
         return
     hud_s = "none" if not hud_rects else ",".join(_rect_dbg(r) for r in hud_rects)
+    video_area_s = "none" if video_area_rect is None else _rect_dbg(video_area_rect)
     print(
         "[geomdbg] "
         f"out={int(W)}x{int(H)} mode={str(hud_mode)} layout={str(video_layout)} "
         f"orientation={str(orientation)} anchor={str(anchor)} hud_px={int(hud_px)} "
+        f"video_area={video_area_s} "
         f"slow={_rect_dbg(video_slow_rect)} fast={_rect_dbg(video_fast_rect)} hud={hud_s}",
         flush=True,
     )
@@ -379,9 +382,10 @@ def build_output_geometry_for_size(
     orientation = "free"
     anchor = "free"
     hud_px = int(hud_width_px)
+    video_area_rect: Rect | None = Rect(0, 0, W, H)
 
     if hud_mode == "free":
-        video_slow_rect, video_fast_rect = _split_video_rects(video_layout, Rect(0, 0, W, H))
+        video_slow_rect, video_fast_rect = _split_video_rects(video_layout, video_area_rect)
         hud_rects: tuple[Rect, ...] = ()
     else:
         orientation, anchor, frame_thickness_px = _parse_hud_frame(layout_config)
@@ -391,7 +395,8 @@ def build_output_geometry_for_size(
         hud_px = int(hud)
 
         if hud <= 0:
-            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, Rect(0, 0, W, H))
+            video_area_rect = Rect(0, 0, W, H)
+            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, video_area_rect)
             hud_rects = ()
         elif orientation == "horizontal" and anchor == "top_bottom":
             if (2 * hud) >= H - 2:
@@ -400,7 +405,8 @@ def build_output_geometry_for_size(
                 Rect(0, 0, W, hud),
                 Rect(0, H - hud, W, hud),
             )
-            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, Rect(0, hud, W, H - (2 * hud)))
+            video_area_rect = Rect(0, hud, W, H - (2 * hud))
+            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, video_area_rect)
         elif orientation == "vertical" and anchor == "center" and video_layout == "LR":
             if hud >= W - 2:
                 raise RuntimeError("hud_frame.frame_thickness_px ist zu gross fuer vertical/center.")
@@ -411,6 +417,7 @@ def build_output_geometry_for_size(
             video_slow_rect = Rect(0, 0, left_w, H)
             video_fast_rect = Rect(left_w + hud, 0, right_w, H)
             hud_rects = (Rect(left_w, 0, hud, H),)
+            video_area_rect = None
         elif orientation == "horizontal" and anchor == "center" and video_layout == "TB":
             if hud >= H - 2:
                 raise RuntimeError("hud_frame.frame_thickness_px ist zu gross fuer horizontal/center.")
@@ -421,6 +428,7 @@ def build_output_geometry_for_size(
             video_slow_rect = Rect(0, 0, W, top_h)
             video_fast_rect = Rect(0, top_h + hud, W, bottom_h)
             hud_rects = (Rect(0, top_h, W, hud),)
+            video_area_rect = None
         elif orientation == "vertical":
             if hud >= W - 2:
                 raise RuntimeError("hud_frame.frame_thickness_px ist zu gross fuer vertical.")
@@ -435,7 +443,8 @@ def build_output_geometry_for_size(
                 hud_x = W - hud
                 content_x = 0
             hud_rects = (Rect(hud_x, 0, hud, H),)
-            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, Rect(content_x, 0, content_w, H))
+            video_area_rect = Rect(content_x, 0, content_w, H)
+            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, video_area_rect)
         else:
             if hud >= H - 2:
                 raise RuntimeError("hud_frame.frame_thickness_px ist zu gross fuer horizontal.")
@@ -450,7 +459,8 @@ def build_output_geometry_for_size(
                 hud_y = H - hud
                 content_y = 0
             hud_rects = (Rect(0, hud_y, W, hud),)
-            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, Rect(0, content_y, W, content_h))
+            video_area_rect = Rect(0, content_y, W, content_h)
+            video_slow_rect, video_fast_rect = _split_video_rects(video_layout, video_area_rect)
 
     _validate_rect_inside_output("video_slow_rect", video_slow_rect, W, H)
     _validate_rect_inside_output("video_fast_rect", video_fast_rect, W, H)
@@ -466,6 +476,7 @@ def build_output_geometry_for_size(
         orientation=orientation,
         anchor=anchor,
         hud_px=hud_px,
+        video_area_rect=video_area_rect,
         video_slow_rect=video_slow_rect,
         video_fast_rect=video_fast_rect,
         hud_rects=hud_rects,
