@@ -20,6 +20,7 @@ from core.output_geometry import (
     Rect,
     build_output_geometry_for_size,
     layout_horizontal_frame_hud_boxes,
+    split_horizontal_top_bottom_rows,
     split_weighted_lengths,
 )
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
@@ -514,6 +515,21 @@ def main() -> None:
         except Exception:
             pass
 
+    def _auto_refit_huds_if_frame_mode(cfg: LayoutConfig | None = None) -> bool:
+        if cfg is None:
+            cfg = _layout_cfg()
+        try:
+            hud_mode_now = str(getattr(cfg, "hud_mode", "frame") or "frame").strip().lower()
+        except Exception:
+            hud_mode_now = "frame"
+        if hud_mode_now != "frame":
+            return False
+        try:
+            hud_fit_to_frame_width()
+            return True
+        except Exception:
+            return False
+
     def _apply_hud_frame_from_vars(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
         prev_orientation, prev_anchor = _norm_hud_frame_values(
@@ -538,18 +554,7 @@ def main() -> None:
             pass
         if not refresh_preview:
             return
-        did_refit = False
-        try:
-            hud_mode_now = str(getattr(cfg, "hud_mode", "frame") or "frame").strip().lower()
-        except Exception:
-            hud_mode_now = "frame"
-        if frame_changed and hud_mode_now == "frame":
-            try:
-                hud_fit_to_frame_width()
-                did_refit = True
-            except Exception:
-                did_refit = False
-        if did_refit:
+        if frame_changed and _auto_refit_huds_if_frame_mode(cfg):
             return
         try:
             refresh_layout_preview()
@@ -621,7 +626,6 @@ def main() -> None:
 
     def _apply_hud_mode_from_var(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
-        prev_mode = str(getattr(cfg, "hud_mode", "frame") or "frame").strip().lower()
         cfg.hud_mode = "free" if bool(hud_free_mode_var.get()) else "frame"
         if str(cfg.hud_mode) == "free":
             try:
@@ -634,14 +638,7 @@ def main() -> None:
             pass
         if not refresh_preview:
             return
-        did_refit = False
-        if str(cfg.hud_mode) == "frame" and str(prev_mode) != "frame":
-            try:
-                hud_fit_to_frame_width()
-                did_refit = True
-            except Exception:
-                did_refit = False
-        if did_refit:
+        if _auto_refit_huds_if_frame_mode(cfg):
             return
         try:
             refresh_layout_preview()
@@ -1084,10 +1081,7 @@ def main() -> None:
             elif orientation == "horizontal":
                 rect_items_dbg.sort(key=lambda it: (int(it[1]), int(it[0])))
                 if anchor == "top_bottom" and len(rect_items_dbg) >= 2:
-                    n = len(active_boxes)
-                    n_top = (n + 1) // 2
-                    top_items = active_boxes[:n_top]
-                    bottom_items = active_boxes[n_top:]
+                    top_items, bottom_items = split_horizontal_top_bottom_rows(active_boxes)
                     top_w = _sum_unique_column_width(top_items)
                     if int(top_w) != int(rect_items_dbg[0][2]):
                         raise AssertionError(f"HUD-Fit: Top-Width-Summe stimmt nicht ({top_w} != {rect_items_dbg[0][2]}).")
@@ -2565,7 +2559,30 @@ def main() -> None:
     btn_c1.bind("<Button-1>", lambda e: show_menu_for_item(e, "csv", 0))
     btn_c2.bind("<Button-1>", lambda e: show_menu_for_item(e, "csv", 1))
 
+    def _startup_initialize_png_preview() -> None:
+        try:
+            mode = str(preview_mode_var.get() or "png").strip().lower()
+        except Exception:
+            mode = "png"
+        if mode != "png":
+            return
+        try:
+            png_load_state_for_current()
+        except Exception:
+            pass
+        try:
+            png_fit_to_height_both()
+        except Exception:
+            try:
+                refresh_layout_preview()
+            except Exception:
+                pass
+
     sync_from_folders_if_needed_ui(force=True)
+    try:
+        root.after(0, _startup_initialize_png_preview)
+    except Exception:
+        _startup_initialize_png_preview()
     root.mainloop()
 
 
