@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from core import persistence
 from log import build_log_file_path
-from core.models import AppModel, OutputFormat, RenderPayload
+from core.models import AppModel, RenderPayload
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -334,27 +334,9 @@ def build_payload(
         "png_view_state": {"L": {}, "R": {}},
         "hud_layout_data": app_model.hud_layout.hud_layout_data,
         "png_view_data": app_model.png_view.png_view_data,
+        **app_model.layout_config.to_dict(),
     }
-    payload = RenderPayload(
-        version=payload.get("version", 1),
-        videos=payload.get("videos", []),
-        csvs=payload.get("csvs", []),
-        slow_video=payload.get("slow_video", ""),
-        fast_video=payload.get("fast_video", ""),
-        out_video=payload.get("out_video", ""),
-        output=OutputFormat.from_dict(payload.get("output") if isinstance(payload.get("output"), dict) else {}),
-        hud_enabled=payload.get("hud_enabled", {}),
-        hud_boxes=payload.get("hud_boxes", {}),
-        hud_window=payload.get("hud_window", {}),
-        hud_speed=payload.get("hud_speed", {}),
-        hud_curve_points=payload.get("hud_curve_points", {}),
-        hud_gear_rpm=payload.get("hud_gear_rpm", {}),
-        hud_pedals=payload.get("hud_pedals", {}),
-        png_view_key=payload.get("png_view_key", ""),
-        png_view_state=payload.get("png_view_state", {"L": {}, "R": {}}),
-        hud_layout_data=payload.get("hud_layout_data", {}),
-        png_view_data=payload.get("png_view_data", {}),
-    ).to_dict()
+    payload = RenderPayload.from_dict(payload).to_dict()
 
     try:
         boxes_list = get_hud_boxes_for_current()

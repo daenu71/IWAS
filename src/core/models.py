@@ -28,6 +28,231 @@ def _to_bool(value: Any, default: bool = False) -> bool:
         return bool(default)
 
 
+def _to_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+
+def _set_if_changed(target: dict[str, Any], key: str, value: Any) -> bool:
+    if target.get(key) == value:
+        return False
+    target[key] = value
+    return True
+
+
+def _merge_known_keys(existing: Any, known: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    out = dict(existing) if isinstance(existing, dict) else {}
+    changed = not isinstance(existing, dict)
+    for k, v in known.items():
+        if out.get(k) != v:
+            out[k] = v
+            changed = True
+    return out, changed
+
+
+@dataclass
+class HudFrameConfig:
+    orientation: str = "vertical"
+    anchor: str = "center"
+    frame_thickness_px: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "orientation": str(self.orientation),
+            "anchor": str(self.anchor),
+            "frame_thickness_px": self.frame_thickness_px if self.frame_thickness_px is None else int(self.frame_thickness_px),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "HudFrameConfig":
+        data = d if isinstance(d, dict) else {}
+
+        orientation = str(data.get("orientation") or "vertical").strip().lower()
+        if orientation not in ("vertical", "horizontal"):
+            orientation = "vertical"
+
+        anchor = str(data.get("anchor") or "center").strip().lower()
+        valid_anchors = ("center", "left", "right") if orientation == "vertical" else ("top", "center", "bottom", "top_bottom")
+        if anchor not in valid_anchors:
+            anchor = "center"
+
+        return cls(
+            orientation=orientation,
+            anchor=anchor,
+            frame_thickness_px=_to_int_or_none(data.get("frame_thickness_px")),
+        )
+
+
+@dataclass
+class VideoTransformConfig:
+    scale_pct: float = 100.0
+    shift_x_px: int = 0
+    shift_y_px: int = 0
+    fit_button_mode: str = "fit_height"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scale_pct": float(self.scale_pct),
+            "shift_x_px": int(self.shift_x_px),
+            "shift_y_px": int(self.shift_y_px),
+            "fit_button_mode": str(self.fit_button_mode),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None, *, video_layout: str = "LR") -> "VideoTransformConfig":
+        data = d if isinstance(d, dict) else {}
+        default_fit = "fit_height" if str(video_layout) == "LR" else "fit_width"
+        fit_button_mode = str(data.get("fit_button_mode") or default_fit).strip().lower()
+        if fit_button_mode not in ("fit_height", "fit_width"):
+            fit_button_mode = default_fit
+        return cls(
+            scale_pct=_to_float(data.get("scale_pct", 100.0), 100.0),
+            shift_x_px=_to_int(data.get("shift_x_px", 0), 0),
+            shift_y_px=_to_int(data.get("shift_y_px", 0), 0),
+            fit_button_mode=fit_button_mode,
+        )
+
+
+@dataclass
+class HudFreeConfig:
+    bg_alpha: int = 255
+    boxes_abs_out: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bg_alpha": int(self.bg_alpha),
+            "boxes_abs_out": {
+                str(k): {
+                    "x": int(v.get("x", 0)),
+                    "y": int(v.get("y", 0)),
+                    "w": int(v.get("w", 0)),
+                    "h": int(v.get("h", 0)),
+                }
+                for k, v in self.boxes_abs_out.items()
+                if isinstance(v, dict)
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "HudFreeConfig":
+        data = d if isinstance(d, dict) else {}
+        boxes_raw = data.get("boxes_abs_out")
+        boxes: dict[str, dict[str, int]] = {}
+        if isinstance(boxes_raw, dict):
+            for key, box in boxes_raw.items():
+                if not isinstance(box, dict):
+                    continue
+                boxes[str(key)] = {
+                    "x": _to_int(box.get("x", 0), 0),
+                    "y": _to_int(box.get("y", 0), 0),
+                    "w": _to_int(box.get("w", 0), 0),
+                    "h": _to_int(box.get("h", 0), 0),
+                }
+        return cls(
+            bg_alpha=_to_int(data.get("bg_alpha", 255), 255),
+            boxes_abs_out=boxes,
+        )
+
+
+@dataclass
+class LayoutConfig:
+    layout_version: int = 1
+    video_layout: str = "LR"
+    hud_mode: str = "frame"
+    hud_frame: HudFrameConfig = field(default_factory=HudFrameConfig)
+    video_transform: VideoTransformConfig = field(default_factory=VideoTransformConfig)
+    hud_free: HudFreeConfig = field(default_factory=HudFreeConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "layout_version": int(self.layout_version),
+            "video_layout": str(self.video_layout),
+            "hud_mode": str(self.hud_mode),
+            "hud_frame": self.hud_frame.to_dict(),
+            "video_transform": self.video_transform.to_dict(),
+            "hud_free": self.hud_free.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "LayoutConfig":
+        data = d if isinstance(d, dict) else {}
+
+        video_layout = str(data.get("video_layout") or "LR").strip().upper()
+        if video_layout not in ("LR", "TB"):
+            video_layout = "LR"
+
+        hud_mode = str(data.get("hud_mode") or "frame").strip().lower()
+        if hud_mode not in ("frame", "free"):
+            hud_mode = "frame"
+
+        return cls(
+            layout_version=_to_int(data.get("layout_version", 1), 1),
+            video_layout=video_layout,
+            hud_mode=hud_mode,
+            hud_frame=HudFrameConfig.from_dict(data.get("hud_frame") if isinstance(data.get("hud_frame"), dict) else {}),
+            video_transform=VideoTransformConfig.from_dict(
+                data.get("video_transform") if isinstance(data.get("video_transform"), dict) else {},
+                video_layout=video_layout,
+            ),
+            hud_free=HudFreeConfig.from_dict(data.get("hud_free") if isinstance(data.get("hud_free"), dict) else {}),
+        )
+
+
+def migrate_layout_contract_dict(data: dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    cfg = LayoutConfig.from_dict(data)
+    migrated = False
+
+    migrated = _set_if_changed(data, "layout_version", int(cfg.layout_version)) or migrated
+    migrated = _set_if_changed(data, "video_layout", str(cfg.video_layout)) or migrated
+    migrated = _set_if_changed(data, "hud_mode", str(cfg.hud_mode)) or migrated
+
+    hud_frame_value, changed = _merge_known_keys(data.get("hud_frame"), cfg.hud_frame.to_dict())
+    if changed:
+        data["hud_frame"] = hud_frame_value
+        migrated = True
+
+    video_transform_value, changed = _merge_known_keys(data.get("video_transform"), cfg.video_transform.to_dict())
+    if changed:
+        data["video_transform"] = video_transform_value
+        migrated = True
+
+    hud_free_existing = data.get("hud_free")
+    hud_free_value, changed = _merge_known_keys(
+        hud_free_existing,
+        {
+            "bg_alpha": int(cfg.hud_free.bg_alpha),
+        },
+    )
+    if changed:
+        migrated = True
+
+    boxes_existing = None
+    if isinstance(hud_free_existing, dict):
+        boxes_existing = hud_free_existing.get("boxes_abs_out")
+    boxes_value = dict(boxes_existing) if isinstance(boxes_existing, dict) else {}
+    if not isinstance(boxes_existing, dict):
+        migrated = True
+    for hud_key, box in cfg.hud_free.boxes_abs_out.items():
+        merged_box, box_changed = _merge_known_keys(boxes_value.get(hud_key), box)
+        if box_changed:
+            boxes_value[hud_key] = merged_box
+            migrated = True
+    hud_free_value["boxes_abs_out"] = boxes_value
+    data["hud_free"] = hud_free_value
+
+    return migrated
+
+
 @dataclass
 class OutputFormat:
     aspect: str = ""
@@ -190,9 +415,10 @@ class Profile:
     output: OutputFormat = field(default_factory=OutputFormat)
     hud_layout_data: dict[str, Any] = field(default_factory=dict)
     png_view_data: dict[str, Any] = field(default_factory=dict)
+    layout_config: LayoutConfig = field(default_factory=LayoutConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "version": self.version,
             "videos": [str(v) for v in self.videos],
             "csvs": [str(v) for v in self.csvs],
@@ -207,6 +433,8 @@ class Profile:
             "hud_layout_data": self.hud_layout_data,
             "png_view_data": self.png_view_data,
         }
+        out.update(self.layout_config.to_dict())
+        return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "Profile":
@@ -215,6 +443,7 @@ class Profile:
         csvs_raw = data.get("csvs")
         starts_raw = data.get("startframes")
         ends_raw = data.get("endframes")
+        layout = LayoutConfig.from_dict(data)
         return cls(
             version=data.get("version", 1),
             videos=[str(v) for v in (videos_raw if isinstance(videos_raw, list) else [])],
@@ -224,6 +453,7 @@ class Profile:
             output=OutputFormat.from_dict(data.get("output") if isinstance(data.get("output"), dict) else {}),
             hud_layout_data=data.get("hud_layout_data") if isinstance(data.get("hud_layout_data"), dict) else {},
             png_view_data=data.get("png_view_data") if isinstance(data.get("png_view_data"), dict) else {},
+            layout_config=layout,
         )
 
 
@@ -232,6 +462,7 @@ class AppModel:
     output: OutputFormat = field(default_factory=OutputFormat)
     hud_layout: HudLayoutState = field(default_factory=HudLayoutState)
     png_view: PngViewState = field(default_factory=PngViewState)
+    layout_config: LayoutConfig = field(default_factory=LayoutConfig)
 
 
 @dataclass
@@ -261,9 +492,10 @@ class RenderPayload:
     png_view_state: dict[str, Any] = field(default_factory=lambda: {"L": {}, "R": {}})
     hud_layout_data: dict[str, Any] = field(default_factory=dict)
     png_view_data: dict[str, Any] = field(default_factory=dict)
+    layout_config: LayoutConfig = field(default_factory=LayoutConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "version": self.version,
             "videos": list(self.videos),
             "csvs": list(self.csvs),
@@ -288,3 +520,30 @@ class RenderPayload:
             "hud_layout_data": self.hud_layout_data,
             "png_view_data": self.png_view_data,
         }
+        out.update(self.layout_config.to_dict())
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "RenderPayload":
+        data = d if isinstance(d, dict) else {}
+        return cls(
+            version=data.get("version", 1),
+            videos=list(data.get("videos", [])) if isinstance(data.get("videos"), list) else [],
+            csvs=list(data.get("csvs", [])) if isinstance(data.get("csvs"), list) else [],
+            slow_video=str(data.get("slow_video") or ""),
+            fast_video=str(data.get("fast_video") or ""),
+            out_video=str(data.get("out_video") or ""),
+            output=OutputFormat.from_dict(data.get("output") if isinstance(data.get("output"), dict) else {}),
+            hud_enabled=data.get("hud_enabled") if isinstance(data.get("hud_enabled"), dict) else {},
+            hud_boxes=data.get("hud_boxes") if isinstance(data.get("hud_boxes"), dict) else {},
+            hud_window=data.get("hud_window") if isinstance(data.get("hud_window"), dict) else {},
+            hud_speed=data.get("hud_speed") if isinstance(data.get("hud_speed"), dict) else {},
+            hud_curve_points=data.get("hud_curve_points") if isinstance(data.get("hud_curve_points"), dict) else {},
+            hud_gear_rpm=data.get("hud_gear_rpm") if isinstance(data.get("hud_gear_rpm"), dict) else {},
+            hud_pedals=data.get("hud_pedals") if isinstance(data.get("hud_pedals"), dict) else {},
+            png_view_key=str(data.get("png_view_key") or ""),
+            png_view_state=data.get("png_view_state") if isinstance(data.get("png_view_state"), dict) else {"L": {}, "R": {}},
+            hud_layout_data=data.get("hud_layout_data") if isinstance(data.get("hud_layout_data"), dict) else {},
+            png_view_data=data.get("png_view_data") if isinstance(data.get("png_view_data"), dict) else {},
+            layout_config=LayoutConfig.from_dict(data),
+        )

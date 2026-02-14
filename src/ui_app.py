@@ -10,6 +10,7 @@ import threading
 from core.models import (
     AppModel,
     HudLayoutState,
+    LayoutConfig,
     OutputFormat,
     PngViewState,
     Profile,
@@ -362,6 +363,7 @@ def main() -> None:
             ),
             hud_layout=HudLayoutState(hud_layout_data=hud_layout_data),
             png_view=PngViewState(png_view_data=png_view_data),
+            layout_config=app_model.layout_config if isinstance(app_model.layout_config, LayoutConfig) else LayoutConfig(),
         )
 
     def apply_model_to_ui_state(model: AppModel) -> None:
@@ -410,6 +412,7 @@ def main() -> None:
             output=m.output,
             hud_layout_data=m.hud_layout.hud_layout_data,
             png_view_data=m.png_view.png_view_data,
+            layout_config=m.layout_config,
         )
 
     apply_model_to_ui_state(model_from_ui_state())
@@ -797,6 +800,12 @@ def main() -> None:
 
     def apply_profile_dict(d: dict) -> None:
         nonlocal videos, csvs, hud_layout_data, png_view_data, last_scan_sig, app_model
+
+        try:
+            loaded = Profile.from_dict(d if isinstance(d, dict) else {})
+            app_model.layout_config = loaded.layout_config
+        except Exception:
+            pass
 
         def _set_hud_layout_data(data: dict) -> None:
             nonlocal hud_layout_data

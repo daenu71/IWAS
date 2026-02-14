@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Tuple
 
 from cfg import load_cfg
 from log import make_logger
+from core.models import migrate_layout_contract_dict
 from render_split import render_split_screen, render_split_screen_sync
 from csv_g61 import get_float_col, load_g61_csv
 from resample_lapdist import build_lapdist_grid, resample_run_linear
@@ -30,12 +32,15 @@ def _extract_time_from_name(p: Path) -> Tuple[str, int]:
     return t, _time_to_ms(t)
 
 
-def _load_ui_json(p: Path) -> dict:
+def _load_ui_json(p: Path) -> tuple[dict, bool]:
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}, False
+        migrated = migrate_layout_contract_dict(data)
+        return data, migrated
     except Exception:
-        return {}
+        return {}, False
 
 
 def main() -> None:
@@ -54,8 +59,11 @@ def main() -> None:
     ui_json = (args.ui_json or "").strip()
     if ui_json:
         ui_path = Path(ui_json).resolve()
-        ui = _load_ui_json(ui_path)
+        ui, migrated_layout = _load_ui_json(ui_path)
         log.kv("ui_json", str(ui_path))
+        debug_swallowed = str(os.environ.get("IRVC_DEBUG_SWALLOWED", "") or "").strip().lower() in ("1", "true", "yes", "on")
+        if migrated_layout and debug_swallowed:
+            log.msg("LayoutConfig: migrated legacy JSON (missing keys) -> defaults applied.")
 
     try:
         out = ui.get("output") if isinstance(ui, dict) else {}

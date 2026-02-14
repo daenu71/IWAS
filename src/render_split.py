@@ -3865,9 +3865,9 @@ def _render_hud_scroll_frames_png(
                                     font_tbl_val,
                                 )
 
-                        # Keep existing side orientation (left=fast, right=slow).
-                        _tb_draw_values_row(int(tb_layout.get("table_left_x", 0)), fast_vals, COL_SLOW_DARKRED)
-                        _tb_draw_values_row(int(tb_layout.get("table_right_x", 0)), slow_vals, COL_FAST_DARKBLUE)
+                        # Side mapping must follow curve colors: left/red=slow, right/blue=fast.
+                        _tb_draw_values_row(int(tb_layout.get("table_left_x", 0)), slow_vals, COL_SLOW_DARKRED)
+                        _tb_draw_values_row(int(tb_layout.get("table_right_x", 0)), fast_vals, COL_FAST_DARKBLUE)
                     renderer_state.helpers["tb_fns"] = {
                         "layout": tb_layout,
                         "sample_column": _tb_sample_column,
