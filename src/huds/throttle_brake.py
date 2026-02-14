@@ -6,6 +6,7 @@ from typing import Any
 
 from huds.common import (
     COL_HUD_BG,
+    draw_text_with_shadow,
     draw_left_axis_labels,
     draw_stripe_grid,
     value_boundaries_to_y,
@@ -544,10 +545,10 @@ def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], d
                 x_pad=6,
                 fallback_font_obj=font_axis_small,
             )
-            dr.text((int(x0 + 4), y_txt), "Throttle / Brake", fill=COL_WHITE, font=font_title)
+            draw_text_with_shadow(dr, (int(x0 + 4), y_txt), "Throttle / Brake", fill=COL_WHITE, font=font_title)
             # Fast links, Slow rechts (wie Steering)
-            dr.text((f_x, y_txt), f_txt, fill=COL_SLOW_BRAKE, font=font_val)
-            dr.text((s_x, y_txt), s_txt, fill=COL_FAST_BRAKE, font=font_val)
+            draw_text_with_shadow(dr, (f_x, y_txt), f_txt, fill=COL_SLOW_BRAKE, font=font_val)
+            draw_text_with_shadow(dr, (s_x, y_txt), s_txt, fill=COL_FAST_BRAKE, font=font_val)
      
         except Exception:
             pass

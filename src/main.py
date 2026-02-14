@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from typing import Tuple
 from cfg import load_cfg
 from log import make_logger
 from core.models import LayoutConfig, migrate_layout_contract_dict
+from huds.common import configure_hud_text_style
 from render_split import render_split_screen, render_split_screen_sync
 from csv_g61 import get_float_col, load_g61_csv
 from resample_lapdist import build_lapdist_grid, resample_run_linear
@@ -501,6 +503,52 @@ def main() -> None:
 
     log.kv("hud_speed_units", str(hud_speed_units))
     log.kv("hud_speed_update_hz", str(hud_speed_update_hz))
+
+    def _ini_int(cp: configparser.ConfigParser, section: str, key: str, default: int) -> int:
+        try:
+            return int(float(str(cp.get(section, key, fallback=str(default))).strip()))
+        except Exception:
+            return int(default)
+
+    def _ini_bool(cp: configparser.ConfigParser, section: str, key: str, default: int) -> bool:
+        raw = str(cp.get(section, key, fallback=str(default))).strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        if raw in ("0", "false", "no", "off"):
+            return False
+        return bool(int(default))
+
+    hud_text_shadow_enable = True
+    hud_text_shadow_offset_px = 1
+    hud_text_shadow_alpha = 160
+    hud_text_brighten_enable = True
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(Path(getattr(cfg, "config_file", project_root / "config/defaults.ini")), encoding="utf-8")
+        hud_text_shadow_enable = bool(_ini_bool(cp, "video_compare", "hud_text_shadow_enable", 1))
+        hud_text_shadow_offset_px = int(_ini_int(cp, "video_compare", "hud_text_shadow_offset_px", 1))
+        hud_text_shadow_alpha = int(_ini_int(cp, "video_compare", "hud_text_shadow_alpha", 160))
+        hud_text_brighten_enable = bool(_ini_bool(cp, "video_compare", "hud_text_brighten_enable", 1))
+    except Exception:
+        pass
+    if hud_text_shadow_offset_px < 0:
+        hud_text_shadow_offset_px = 0
+    if hud_text_shadow_offset_px > 8:
+        hud_text_shadow_offset_px = 8
+    if hud_text_shadow_alpha < 0:
+        hud_text_shadow_alpha = 0
+    if hud_text_shadow_alpha > 255:
+        hud_text_shadow_alpha = 255
+    configure_hud_text_style(
+        shadow_enable=bool(hud_text_shadow_enable),
+        shadow_offset_px=int(hud_text_shadow_offset_px),
+        shadow_alpha=int(hud_text_shadow_alpha),
+        brighten_enable=bool(hud_text_brighten_enable),
+    )
+    log.kv("hud_text_shadow_enable", str(int(bool(hud_text_shadow_enable))))
+    log.kv("hud_text_shadow_offset_px", str(int(hud_text_shadow_offset_px)))
+    log.kv("hud_text_shadow_alpha", str(int(hud_text_shadow_alpha)))
+    log.kv("hud_text_brighten_enable", str(int(bool(hud_text_brighten_enable))))
 
     hud_pedals_sample_mode = "time"
     hud_pedals_abs_debounce_ms = 60

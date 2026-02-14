@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from huds.common import COL_HUD_BG, draw_hud_background
+from huds.common import COL_HUD_BG, draw_hud_background, draw_text_with_shadow
 
 
 def _safe_int(arr: Any, idx: int) -> int:
@@ -81,7 +81,13 @@ def _draw_centered_text(
 
     tx = (((float(x0_cell) + float(x1_cell)) - tw) * 0.5) - bx0
     ty = (((inner_y0 + inner_y1) - th) * 0.5) - by0
-    dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
+    draw_text_with_shadow(
+        dr,
+        (int(round(tx)), int(round(ty))),
+        txt,
+        fill=col,
+        font=font_obj,
+    )
 
 
 def extract_gear_rpm_table_values(ctx: dict[str, Any]) -> tuple[tuple[str, str], tuple[str, str]] | None:
@@ -500,7 +506,13 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
 
             tx = (((float(x0_cell) + float(x1_cell)) - tw) * 0.5) - bx0
             ty = (((inner_y0 + inner_y1) - th) * 0.5) - by0
-            dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
+            draw_text_with_shadow(
+                dr,
+                (int(round(tx)), int(round(ty))),
+                txt,
+                fill=col,
+                font=font_obj,
+            )
 
         header_labels = ("Gear", "RPM")
         slow_values = (str(sg), str(sr))
@@ -665,7 +677,7 @@ def render_gear_rpm(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
         xR = int(x0 + (w // 2) + 6)
         y1 = int(y0 + 6)
         y2 = int(y0 + 26)
-        dr.text((xL, y1), "Gear | RPM", fill=col_slow_darkred)
-        dr.text((xR, y1), "Gear | RPM", fill=col_fast_darkblue)
-        dr.text((xL, y2), f"{sg} | {sr}", fill=col_slow_darkred)
-        dr.text((xR, y2), f"{fg} | {fr}", fill=col_fast_darkblue)
+        draw_text_with_shadow(dr, (xL, y1), "Gear | RPM", fill=col_slow_darkred)
+        draw_text_with_shadow(dr, (xR, y1), "Gear | RPM", fill=col_fast_darkblue)
+        draw_text_with_shadow(dr, (xL, y2), f"{sg} | {sr}", fill=col_slow_darkred)
+        draw_text_with_shadow(dr, (xR, y2), f"{fg} | {fr}", fill=col_fast_darkblue)

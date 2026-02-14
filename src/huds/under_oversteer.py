@@ -10,6 +10,7 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    draw_text_with_shadow,
     filter_axis_labels_by_position,
     format_value_for_step,
     should_suppress_boundary_label,
@@ -333,10 +334,10 @@ def render_under_oversteer(ctx: dict[str, Any], box: tuple[int, int, int, int], 
         fallback_font_obj=font_axis_small,
     )
     try:
-        dr.text((label_x, label_top_y), "Oversteer", fill=COL_WHITE, font=font_title)
+        draw_text_with_shadow(dr, (label_x, label_top_y), "Oversteer", fill=COL_WHITE, font=font_title)
     except Exception:
         pass
     try:
-        dr.text((label_x, label_bottom_y), "Understeer", fill=COL_WHITE, font=font_title)
+        draw_text_with_shadow(dr, (label_x, label_bottom_y), "Understeer", fill=COL_WHITE, font=font_title)
     except Exception:
         pass

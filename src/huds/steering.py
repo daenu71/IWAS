@@ -10,6 +10,7 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    draw_text_with_shadow,
     filter_axis_labels_by_position,
     format_int_or_1dp,
     should_suppress_boundary_label,
@@ -483,16 +484,18 @@ def render_steering(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any
                 fallback_font_obj=font_axis_small,
             )
             if title_pos is not None:
-                dr.text((int(title_pos[0]), int(title_pos[1])), title_txt, fill=COL_WHITE, font=font_title)
+                draw_text_with_shadow(dr, (int(title_pos[0]), int(title_pos[1])), title_txt, fill=COL_WHITE, font=font_title)
             if fast_val_draw is not None:
-                dr.text(
+                draw_text_with_shadow(
+                    dr,
                     (int(fast_val_draw[0]), int(fast_val_draw[1])),
                     str(fast_val_draw[2]),
                     fill=(255, 0, 0, 255),
                     font=font_val,
                 )  # Fast (rot) links am Marker
             if slow_val_draw is not None:
-                dr.text(
+                draw_text_with_shadow(
+                    dr,
                     (int(slow_val_draw[0]), int(slow_val_draw[1])),
                     str(slow_val_draw[2]),
                     fill=(0, 120, 255, 255),

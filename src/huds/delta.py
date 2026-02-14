@@ -8,6 +8,7 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    draw_text_with_shadow,
     filter_axis_labels_by_position,
     format_value_for_step,
     should_suppress_boundary_label,
@@ -371,7 +372,7 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
             )
             try:
                 # Visible title is "Time Delta"; HUD key remains "Delta" (API contract).
-                dr.text((int(x0 + 4), int(y0 + 2)), "Time Delta", fill=COL_WHITE, font=font_title)
+                draw_text_with_shadow(dr, (int(x0 + 4), int(y0 + 2)), "Time Delta", fill=COL_WHITE, font=font_title)
             except Exception as e:
                 if hud_dbg:
                     try:
@@ -397,7 +398,7 @@ def render_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
                 if len(txt) < len(placeholder):
                     txt = txt.rjust(len(placeholder), " ")
 
-                dr.text((x_val, y_val), txt, fill=col_cur, font=font_val)
+                draw_text_with_shadow(dr, (x_val, y_val), txt, fill=col_cur, font=font_val)
             except Exception as e:
                 if hud_dbg:
                     try:

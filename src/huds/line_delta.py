@@ -9,6 +9,7 @@ from huds.common import (
     choose_tick_step,
     draw_left_axis_labels,
     draw_stripe_grid,
+    draw_text_with_shadow,
     filter_axis_labels_by_position,
     format_value_for_step,
     should_suppress_boundary_label,
@@ -264,10 +265,10 @@ def render_line_delta(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: A
         fallback_font_obj=font_axis_small,
     )
     try:
-        dr.text((int(x0 + 4), int(y0 + 2)), "Line delta", fill=COL_WHITE, font=font_title)
+        draw_text_with_shadow(dr, (int(x0 + 4), int(y0 + 2)), "Line delta", fill=COL_WHITE, font=font_title)
     except Exception:
         pass
     try:
-        dr.text((x_val, y_val), txt, fill=COL_WHITE, font=font_val)
+        draw_text_with_shadow(dr, (x_val, y_val), txt, fill=COL_WHITE, font=font_val)
     except Exception:
         pass

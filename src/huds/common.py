@@ -8,8 +8,15 @@ COL_SLOW_DARKRED = (234, 0, 0, 255)
 COL_SLOW_BRIGHTRED = (255, 137, 117, 255)
 COL_FAST_DARKBLUE = (36, 0, 250, 255)
 COL_FAST_BRIGHTBLUE = (1, 253, 255, 255)
+COL_SLOW_TEXT_RED = (255, 120, 102, 255)
+COL_FAST_TEXT_BLUE = (104, 176, 255, 255)
 COL_WHITE = (255, 255, 255, 255)
 COL_HUD_BG = (18, 18, 18, 96)
+
+_HUD_TEXT_SHADOW_ENABLE = True
+_HUD_TEXT_SHADOW_OFFSET_PX = 1
+_HUD_TEXT_SHADOW_ALPHA = 160
+_HUD_TEXT_BRIGHTEN_ENABLE = True
 
 ALLOWED_TICK_STEPS: tuple[float, ...] = (
     100.0,
@@ -50,6 +57,130 @@ def _coerce_rgba(col: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         int(max(0, min(255, int(b)))),
         int(max(0, min(255, int(a)))),
     )
+
+
+def _coerce_bool(v: Any, default: bool) -> bool:
+    if isinstance(v, bool):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return bool(default)
+
+
+def _coerce_int(v: Any, default: int, lo: int, hi: int) -> int:
+    try:
+        iv = int(float(v))
+    except Exception:
+        iv = int(default)
+    if iv < int(lo):
+        iv = int(lo)
+    if iv > int(hi):
+        iv = int(hi)
+    return int(iv)
+
+
+def configure_hud_text_style(
+    *,
+    shadow_enable: Any = True,
+    shadow_offset_px: Any = 1,
+    shadow_alpha: Any = 160,
+    brighten_enable: Any = True,
+) -> None:
+    global _HUD_TEXT_SHADOW_ENABLE
+    global _HUD_TEXT_SHADOW_OFFSET_PX
+    global _HUD_TEXT_SHADOW_ALPHA
+    global _HUD_TEXT_BRIGHTEN_ENABLE
+    _HUD_TEXT_SHADOW_ENABLE = _coerce_bool(shadow_enable, True)
+    _HUD_TEXT_SHADOW_OFFSET_PX = _coerce_int(shadow_offset_px, 1, 0, 8)
+    _HUD_TEXT_SHADOW_ALPHA = _coerce_int(shadow_alpha, 160, 0, 255)
+    _HUD_TEXT_BRIGHTEN_ENABLE = _coerce_bool(brighten_enable, True)
+
+
+def _coerce_rgba_any(col: Any, default: tuple[int, int, int, int] = COL_WHITE) -> tuple[int, int, int, int]:
+    if isinstance(col, (tuple, list)):
+        if len(col) >= 4:
+            return _coerce_rgba((int(col[0]), int(col[1]), int(col[2]), int(col[3])))
+        if len(col) == 3:
+            return _coerce_rgba((int(col[0]), int(col[1]), int(col[2]), 255))
+    return _coerce_rgba(default)
+
+
+def _luma_255(rgb: tuple[int, int, int]) -> float:
+    r, g, b = rgb
+    return (0.2126 * float(r)) + (0.7152 * float(g)) + (0.0722 * float(b))
+
+
+def _brighten_text_rgba(fill: tuple[int, int, int, int], enabled: bool) -> tuple[int, int, int, int]:
+    if not bool(enabled):
+        return fill
+    r, g, b, a = fill
+    rgb = (int(r), int(g), int(b))
+    if rgb == COL_SLOW_DARKRED[:3]:
+        return (COL_SLOW_TEXT_RED[0], COL_SLOW_TEXT_RED[1], COL_SLOW_TEXT_RED[2], int(a))
+    if rgb == COL_FAST_DARKBLUE[:3]:
+        return (COL_FAST_TEXT_BLUE[0], COL_FAST_TEXT_BLUE[1], COL_FAST_TEXT_BLUE[2], int(a))
+    luma = _luma_255(rgb)
+    target = 112.0
+    if luma >= target:
+        return fill
+    mix = (target - luma) / max(1.0, 255.0 - luma)
+    if mix < 0.0:
+        mix = 0.0
+    if mix > 1.0:
+        mix = 1.0
+    nr = int(round(float(r) + ((255.0 - float(r)) * mix)))
+    ng = int(round(float(g) + ((255.0 - float(g)) * mix)))
+    nb = int(round(float(b) + ((255.0 - float(b)) * mix)))
+    return _coerce_rgba((nr, ng, nb, int(a)))
+
+
+def draw_text_with_shadow(
+    dr: Any,
+    xy: tuple[int | float, int | float],
+    text: str,
+    *,
+    font: Any = None,
+    fill: Any = COL_WHITE,
+    shadow_enable: bool | None = None,
+    shadow_strength: int | None = None,
+    shadow_offset_px: int | tuple[int, int] | None = None,
+    brighten_enable: bool | None = None,
+) -> None:
+    txt = str(text)
+    if txt == "":
+        return
+    fill_rgba = _coerce_rgba_any(fill, default=COL_WHITE)
+    do_brighten = _HUD_TEXT_BRIGHTEN_ENABLE if brighten_enable is None else bool(brighten_enable)
+    fill_rgba = _brighten_text_rgba(fill_rgba, enabled=bool(do_brighten))
+    x = int(round(float(xy[0])))
+    y = int(round(float(xy[1])))
+    use_shadow = _HUD_TEXT_SHADOW_ENABLE if shadow_enable is None else bool(shadow_enable)
+    use_alpha = _HUD_TEXT_SHADOW_ALPHA if shadow_strength is None else int(shadow_strength)
+    use_alpha = _coerce_int(use_alpha, 160, 0, 255)
+    if isinstance(shadow_offset_px, (tuple, list)) and len(shadow_offset_px) >= 2:
+        dx = int(shadow_offset_px[0])
+        dy = int(shadow_offset_px[1])
+    else:
+        off = _HUD_TEXT_SHADOW_OFFSET_PX if shadow_offset_px is None else int(shadow_offset_px)
+        off = _coerce_int(off, 1, -8, 8)
+        dx = int(off)
+        dy = int(off)
+
+    if bool(use_shadow) and int(use_alpha) > 0:
+        luma = _luma_255((fill_rgba[0], fill_rgba[1], fill_rgba[2]))
+        sh_rgb = (255, 255, 255) if luma < 105.0 else (0, 0, 0)
+        sh_col = (int(sh_rgb[0]), int(sh_rgb[1]), int(sh_rgb[2]), int(use_alpha))
+        try:
+            dr.text((int(x + dx), int(y + dy)), txt, fill=sh_col, font=font)
+        except Exception:
+            pass
+    try:
+        dr.text((int(x), int(y)), txt, fill=fill_rgba, font=font)
+    except Exception:
+        pass
 
 
 def _darken_rgba(
@@ -282,10 +413,13 @@ def draw_left_axis_labels(
         if y_txt + th > y_max:
             y_txt = max(y_min, y_max - th)
 
-        try:
-            dr.text((int(x_txt), int(y_txt)), text, fill=_coerce_rgba(col_text), font=use_font)
-        except Exception:
-            pass
+        draw_text_with_shadow(
+            dr,
+            (int(x_txt), int(y_txt)),
+            text,
+            fill=_coerce_rgba_any(col_text, default=COL_WHITE),
+            font=use_font,
+        )
 
 
 def format_int_or_1dp(v: float) -> str:

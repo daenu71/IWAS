@@ -4,7 +4,7 @@ import math
 import os
 from typing import Any
 
-from huds.common import COL_HUD_BG, draw_hud_background
+from huds.common import COL_HUD_BG, draw_hud_background, draw_text_with_shadow
 
 
 def build_confirmed_max_speed_display(
@@ -139,7 +139,13 @@ def _draw_centered_text(
 
     tx = ((float(x0_cell) + float(x1_cell)) - float(tw)) / 2.0 - bx0
     ty = (inner_top + inner_bottom - float(th)) / 2.0 - by0
-    dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
+    draw_text_with_shadow(
+        dr,
+        (int(round(tx)), int(round(ty))),
+        txt,
+        fill=col,
+        font=font_obj,
+    )
 
 
 def _safe_val(arr: Any, idx: int) -> float | None:
@@ -650,7 +656,13 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
 
             tx = ((float(x0_cell) + float(x1_cell)) - float(tw)) / 2.0 - bx0
             ty = (inner_top + inner_bottom - float(th)) / 2.0 - by0
-            dr.text((int(round(tx)), int(round(ty))), txt, fill=col, font=font_obj)
+            draw_text_with_shadow(
+                dr,
+                (int(round(tx)), int(round(ty))),
+                txt,
+                fill=col,
+                font=font_obj,
+            )
 
         header_labels = ("Speed", "Min. Speed", "Max. Speed")
         slow_values = (str(sv), str(smin), str(smax_txt))
@@ -843,7 +855,7 @@ def render_speed(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -
         xR = int(x0 + (w // 2) + 6)
         y1 = int(y0 + 6)
         y2 = int(y0 + 26)
-        dr.text((xL, y1), "Speed | Min. Speed | Max. Speed", fill=col_slow_darkred)
-        dr.text((xR, y1), "Speed | Min. Speed | Max. Speed", fill=col_fast_darkblue)
-        dr.text((xL, y2), f"{sv} | {smin} | {smax_txt}", fill=col_slow_darkred)
-        dr.text((xR, y2), f"{fv} | {fmin} | {fmax_txt}", fill=col_fast_darkblue)
+        draw_text_with_shadow(dr, (xL, y1), "Speed | Min. Speed | Max. Speed", fill=col_slow_darkred)
+        draw_text_with_shadow(dr, (xR, y1), "Speed | Min. Speed | Max. Speed", fill=col_fast_darkblue)
+        draw_text_with_shadow(dr, (xL, y2), f"{sv} | {smin} | {smax_txt}", fill=col_slow_darkred)
+        draw_text_with_shadow(dr, (xR, y2), f"{fv} | {fmin} | {fmax_txt}", fill=col_fast_darkblue)
