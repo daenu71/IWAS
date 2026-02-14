@@ -166,6 +166,23 @@ def _validate_rect_inside_output(name: str, r: Rect, W: int, H: int) -> None:
         raise RuntimeError(f"{name} ungueltig: ausserhalb Output")
 
 
+def _validate_rects_no_overlap(name_a: str, a: Rect, name_b: str, b: Rect) -> None:
+    ax0 = int(a.x)
+    ay0 = int(a.y)
+    ax1 = int(a.x) + int(a.w)
+    ay1 = int(a.y) + int(a.h)
+    bx0 = int(b.x)
+    by0 = int(b.y)
+    bx1 = int(b.x) + int(b.w)
+    by1 = int(b.y) + int(b.h)
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    if ix1 > ix0 and iy1 > iy0:
+        raise RuntimeError(f"{name_a}/{name_b} ungueltig: ueberlappen")
+
+
 def split_weighted_lengths(total: int, weights: list[float]) -> list[int]:
     t = max(0, int(total))
     n = len(weights)
@@ -437,6 +454,7 @@ def build_output_geometry_for_size(
 
     _validate_rect_inside_output("video_slow_rect", video_slow_rect, W, H)
     _validate_rect_inside_output("video_fast_rect", video_fast_rect, W, H)
+    _validate_rects_no_overlap("video_slow_rect", video_slow_rect, "video_fast_rect", video_fast_rect)
     for i, hr in enumerate(tuple(hud_rects)):
         _validate_rect_inside_output(f"hud_rect[{int(i)}]", hr, W, H)
 

@@ -201,12 +201,33 @@ def main() -> None:
 
     config_dir = project_root / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
+    ui_last_run_file = config_dir / "ui_last_run.json"
     startframes_by_name: dict[str, int] = persistence.load_startframes()
     
     profiles_dir = config_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
 
     endframes_by_name: dict[str, int] = persistence.load_endframes()
+
+    def _normalize_video_layout(raw: object) -> str:
+        try:
+            layout = str(raw or "LR").strip().upper()
+        except Exception:
+            layout = "LR"
+        if layout not in ("LR", "TB"):
+            layout = "LR"
+        return str(layout)
+
+    def _load_video_layout_from_ui_last_run() -> str:
+        try:
+            if not ui_last_run_file.exists():
+                return "LR"
+            data = json.loads(ui_last_run_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return "LR"
+            return _normalize_video_layout(data.get("video_layout"))
+        except Exception:
+            return "LR"
 
     frame_files = ttk.LabelFrame(root, text="Dateibereich")
     frame_preview = ttk.LabelFrame(root, text="Vorschau")
@@ -442,10 +463,15 @@ def main() -> None:
 
     # --- Mapping-Layer (Story 2): UI-State <-> zentrale Modelle ---
     app_model = AppModel()
+    try:
+        app_model.layout_config.video_layout = _load_video_layout_from_ui_last_run()
+    except Exception:
+        pass
     hud_free_mode_var = tk.BooleanVar(value=False)
     hud_bg_alpha_var = tk.DoubleVar(value=255.0)
     hud_frame_orientation_var = tk.StringVar(value="vertical")
     hud_frame_anchor_var = tk.StringVar(value="center")
+    video_layout_var = tk.StringVar(value="LR")
     video_scale_pct_var = tk.IntVar(value=100)
     video_shift_x_var = tk.IntVar(value=0)
     video_shift_y_var = tk.IntVar(value=0)
@@ -512,6 +538,49 @@ def main() -> None:
         cfg.hud_frame.anchor = str(anchor)
         try:
             _update_hud_mode_visibility()
+        except Exception:
+            pass
+
+    def _save_video_layout_to_ui_last_run() -> None:
+        cfg = _layout_cfg()
+        layout_value = _normalize_video_layout(getattr(cfg, "video_layout", "LR"))
+        try:
+            payload: dict = {}
+            if ui_last_run_file.exists():
+                old_data = json.loads(ui_last_run_file.read_text(encoding="utf-8"))
+                if isinstance(old_data, dict):
+                    payload = old_data
+            payload["video_layout"] = str(layout_value)
+            ui_last_run_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _sync_video_layout_var_from_model() -> None:
+        cfg = _layout_cfg()
+        layout_value = _normalize_video_layout(getattr(cfg, "video_layout", "LR"))
+        cfg.video_layout = str(layout_value)
+        try:
+            video_layout_var.set(str(layout_value))
+        except Exception:
+            pass
+
+    def _apply_video_layout_from_var(refresh_preview: bool = True) -> None:
+        cfg = _layout_cfg()
+        layout_value = _normalize_video_layout(video_layout_var.get())
+        cfg.video_layout = str(layout_value)
+        try:
+            video_layout_var.set(str(layout_value))
+        except Exception:
+            pass
+        _save_video_layout_to_ui_last_run()
+        try:
+            update_png_fit_button_text()
+        except Exception:
+            pass
+        if not refresh_preview:
+            return
+        try:
+            refresh_layout_preview()
         except Exception:
             pass
 
@@ -798,6 +867,7 @@ def main() -> None:
         _sync_hud_mode_var_from_model()
         _sync_hud_frame_vars_from_model()
         _sync_hud_bg_alpha_var_from_model()
+        _sync_video_layout_var_from_model()
         _sync_video_transform_vars_from_model()
 
     def set_app_model(model: AppModel) -> None:
@@ -1306,7 +1376,31 @@ def main() -> None:
 
     _update_hud_mode_visibility()
 
-    video_place_row = hud_mode_row + 5
+    video_align_row = hud_mode_row + 5
+    ttk.Separator(frame_settings, orient="horizontal").grid(
+        row=video_align_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
+    )
+    ttk.Label(frame_settings, text="Video alignment", font=("Segoe UI", 10, "bold")).grid(
+        row=video_align_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2)
+    )
+    frm_video_alignment = ttk.Frame(frame_settings)
+    frm_video_alignment.grid(row=video_align_row + 2, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 4))
+    ttk.Radiobutton(
+        frm_video_alignment,
+        text="Left / Right",
+        value="LR",
+        variable=video_layout_var,
+        command=lambda: _apply_video_layout_from_var(refresh_preview=True),
+    ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+    ttk.Radiobutton(
+        frm_video_alignment,
+        text="Top / Bottom",
+        value="TB",
+        variable=video_layout_var,
+        command=lambda: _apply_video_layout_from_var(refresh_preview=True),
+    ).grid(row=0, column=1, sticky="w")
+
+    video_place_row = video_align_row + 3
     ttk.Separator(frame_settings, orient="horizontal").grid(
         row=video_place_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
     )
@@ -1669,7 +1763,9 @@ def main() -> None:
             _sync_hud_mode_var_from_model()
             _sync_hud_frame_vars_from_model()
             _sync_hud_bg_alpha_var_from_model()
+            _sync_video_layout_var_from_model()
             _sync_video_transform_vars_from_model()
+            _save_video_layout_to_ui_last_run()
         except Exception:
             pass
 
@@ -1734,7 +1830,9 @@ def main() -> None:
             _sync_hud_mode_var_from_model()
             _sync_hud_frame_vars_from_model()
             _sync_hud_bg_alpha_var_from_model()
+            _sync_video_layout_var_from_model()
             _sync_video_transform_vars_from_model()
+            _save_video_layout_to_ui_last_run()
         except Exception:
             pass
 
@@ -2071,8 +2169,21 @@ def main() -> None:
     def render_png_preview(force_reload: bool = False) -> None:
         png_preview_ctrl.render_png_preview(force_reload=force_reload)
 
+    def fit_video_for_LR() -> None:
+        png_preview_ctrl.fit_video_for_LR()
+
+    def fit_video_for_TB() -> None:
+        png_preview_ctrl.fit_video_for_TB()
+
+    def fit_video_for_current_layout() -> None:
+        layout_mode = _normalize_video_layout(_layout_cfg().video_layout)
+        if layout_mode == "TB":
+            fit_video_for_TB()
+        else:
+            fit_video_for_LR()
+
     def png_fit_to_height_both() -> None:
-        png_preview_ctrl.png_fit_to_height_both()
+        fit_video_for_current_layout()
 
     def png_on_wheel(e) -> None:
         png_preview_ctrl.png_on_wheel(e)
@@ -2088,7 +2199,7 @@ def main() -> None:
 
     png_state = png_preview_ctrl.png_state
 
-    btn_png_fit.config(command=png_fit_to_height_both)
+    btn_png_fit.config(command=fit_video_for_current_layout)
 
 
     # Transform-Merker (für Layout Maus-Events)
@@ -2621,7 +2732,7 @@ def main() -> None:
         except Exception:
             pass
         try:
-            png_fit_to_height_both()
+            fit_video_for_current_layout()
         except Exception:
             try:
                 refresh_layout_preview()

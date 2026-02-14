@@ -962,7 +962,7 @@ class PngPreviewController:
         self.png_save_state_for_current()
         self.render_png_preview(force_reload=False)
 
-    def png_fit_to_height_both(self) -> None:
+    def _fit_video_both_for_mode(self, fit_button_mode: str) -> None:
         if not self._is_png_mode():
             return
         self._sync_state_from_video_transform()
@@ -980,14 +980,9 @@ class PngPreviewController:
         hud_w = int(output.hud_w)
         hud_w = max(0, min(hud_w, max(0, out_w - 2)))
         layout_config = getattr(output, "layout_config", None)
-        layout_mode = "LR"
-        try:
-            layout_mode = str(getattr(layout_config, "video_layout", "LR") or "LR").strip().upper()
-        except Exception:
-            layout_mode = "LR"
-        if layout_mode not in ("LR", "TB"):
-            layout_mode = "LR"
-        fit_button_mode = "fit_height" if layout_mode == "LR" else "fit_width"
+        fit_mode = str(fit_button_mode or "fit_height").strip().lower()
+        if fit_mode not in ("fit_height", "fit_width"):
+            fit_mode = "fit_height"
 
         def fit_scale_pct_for(side: str, img: Image.Image) -> int:
             rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
@@ -995,7 +990,7 @@ class PngPreviewController:
             rh = max(1, int(ry1 - ry0))
             sw = max(1.0, float(img.size[0]))
             sh = max(1.0, float(img.size[1]))
-            if fit_button_mode == "fit_width":
+            if fit_mode == "fit_width":
                 # Render-Basis fuer TB: scale={target_w}:-2, danach * scale_pct.
                 base_w = float(rw)
                 target_w = float(rw)
@@ -1026,7 +1021,7 @@ class PngPreviewController:
         cfg = self._layout_config()
         vt = getattr(cfg, "video_transform", None) if cfg is not None else None
         if vt is not None:
-            vt.fit_button_mode = str(fit_button_mode)
+            vt.fit_button_mode = str(fit_mode)
             vt.scale_pct = int(scale_pct)
             vt.shift_x_px = 0
             vt.shift_y_px = 0
@@ -1042,3 +1037,21 @@ class PngPreviewController:
 
         self.png_save_state_for_current()
         self.render_png_preview(force_reload=False)
+
+    def fit_video_for_LR(self) -> None:
+        self._fit_video_both_for_mode("fit_height")
+
+    def fit_video_for_TB(self) -> None:
+        self._fit_video_both_for_mode("fit_width")
+
+    def png_fit_to_height_both(self) -> None:
+        layout_mode = "LR"
+        try:
+            cfg = self._layout_config()
+            layout_mode = str(getattr(cfg, "video_layout", "LR") or "LR").strip().upper()
+        except Exception:
+            layout_mode = "LR"
+        if layout_mode == "TB":
+            self.fit_video_for_TB()
+        else:
+            self.fit_video_for_LR()
