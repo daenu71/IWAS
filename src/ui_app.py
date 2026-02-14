@@ -511,10 +511,15 @@ def main() -> None:
 
     def _apply_hud_frame_from_vars(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
+        prev_orientation, prev_anchor = _norm_hud_frame_values(
+            getattr(cfg.hud_frame, "orientation", "vertical"),
+            getattr(cfg.hud_frame, "anchor", "center"),
+        )
         orientation, anchor = _norm_hud_frame_values(
             hud_frame_orientation_var.get(),
             hud_frame_anchor_var.get(),
         )
+        frame_changed = (str(orientation) != str(prev_orientation)) or (str(anchor) != str(prev_anchor))
         cfg.hud_frame.orientation = str(orientation)
         cfg.hud_frame.anchor = str(anchor)
         try:
@@ -527,6 +532,19 @@ def main() -> None:
         except Exception:
             pass
         if not refresh_preview:
+            return
+        did_refit = False
+        try:
+            hud_mode_now = str(getattr(cfg, "hud_mode", "frame") or "frame").strip().lower()
+        except Exception:
+            hud_mode_now = "frame"
+        if frame_changed and hud_mode_now == "frame":
+            try:
+                hud_fit_to_frame_width()
+                did_refit = True
+            except Exception:
+                did_refit = False
+        if did_refit:
             return
         try:
             refresh_layout_preview()
@@ -598,6 +616,7 @@ def main() -> None:
 
     def _apply_hud_mode_from_var(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
+        prev_mode = str(getattr(cfg, "hud_mode", "frame") or "frame").strip().lower()
         cfg.hud_mode = "free" if bool(hud_free_mode_var.get()) else "frame"
         if str(cfg.hud_mode) == "free":
             try:
@@ -609,6 +628,15 @@ def main() -> None:
         except Exception:
             pass
         if not refresh_preview:
+            return
+        did_refit = False
+        if str(cfg.hud_mode) == "frame" and str(prev_mode) != "frame":
+            try:
+                hud_fit_to_frame_width()
+                did_refit = True
+            except Exception:
+                did_refit = False
+        if did_refit:
             return
         try:
             refresh_layout_preview()
@@ -1022,6 +1050,61 @@ def main() -> None:
                     _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
                 else:
                     _place_horizontal(active_boxes, r)
+
+        dbg_fit = False
+        try:
+            dbg_raw = str(os.environ.get("IRVC_DEBUG") or "").strip().lower()
+            dbg_fit = _debug_swallowed_enabled() or (dbg_raw in ("1", "true", "yes", "on"))
+        except Exception:
+            dbg_fit = False
+        if dbg_fit and hud_mode == "frame" and frame_rects:
+            rect_items_dbg: list[tuple[int, int, int, int]] = []
+            for rr in frame_rects:
+                ri = _to_rect_xywh(rr)
+                if ri is not None:
+                    rect_items_dbg.append(ri)
+
+            for b in active_boxes:
+                try:
+                    bx = int(b.get("x", 0))
+                    by = int(b.get("y", 0))
+                    bw = int(b.get("w", 0))
+                    bh = int(b.get("h", 0))
+                except Exception:
+                    raise AssertionError("HUD-Fit: Box-Koordinaten unlesbar.")
+                ok_in_any = False
+                for rx, ry, rw, rh in rect_items_dbg:
+                    if bx >= rx and by >= ry and (bx + bw) <= (rx + rw) and (by + bh) <= (ry + rh):
+                        ok_in_any = True
+                        break
+                if not ok_in_any:
+                    raise AssertionError(f"HUD-Fit: Box ausserhalb Frame ({b.get('type', '?')}).")
+
+            if orientation == "vertical" and rect_items_dbg:
+                _, _, _, rh = rect_items_dbg[0]
+                sum_h = sum(max(0, int(b.get("h", 0))) for b in active_boxes)
+                if int(sum_h) != int(rh):
+                    raise AssertionError(f"HUD-Fit: Height-Summe stimmt nicht ({sum_h} != {rh}).")
+            elif orientation == "horizontal":
+                rect_items_dbg.sort(key=lambda it: (int(it[1]), int(it[0])))
+                if anchor == "top_bottom" and len(rect_items_dbg) >= 2:
+                    n = len(active_boxes)
+                    n_top = (n + 1) // 2
+                    top_items = active_boxes[:n_top]
+                    bottom_items = active_boxes[n_top:]
+                    top_w = sum(max(0, int(b.get("w", 0))) for b in top_items)
+                    if int(top_w) != int(rect_items_dbg[0][2]):
+                        raise AssertionError(f"HUD-Fit: Top-Width-Summe stimmt nicht ({top_w} != {rect_items_dbg[0][2]}).")
+                    if bottom_items:
+                        bottom_w = sum(max(0, int(b.get("w", 0))) for b in bottom_items)
+                        if int(bottom_w) != int(rect_items_dbg[1][2]):
+                            raise AssertionError(
+                                f"HUD-Fit: Bottom-Width-Summe stimmt nicht ({bottom_w} != {rect_items_dbg[1][2]})."
+                            )
+                elif rect_items_dbg:
+                    sum_w = sum(max(0, int(b.get("w", 0))) for b in active_boxes)
+                    if int(sum_w) != int(rect_items_dbg[0][2]):
+                        raise AssertionError(f"HUD-Fit: Width-Summe stimmt nicht ({sum_w} != {rect_items_dbg[0][2]}).")
 
         # Persistieren + neu zeichnen
         try:
