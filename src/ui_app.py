@@ -16,6 +16,7 @@ from core.models import (
     Profile,
 )
 from core import persistence, filesvc, profile_service, render_service
+from core.output_geometry import build_output_geometry_for_size
 from preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from preview.png_preview import PngPreviewController
 from preview.video_preview import VideoPreviewController
@@ -484,9 +485,89 @@ def main() -> None:
         Setzt alle AKTIVIERTEN HUD-Boxen (Checkbox) auf:
         - x = linke HUD-Kante (hud_x0)
         - w = hud_w (HUD-Breite, z.B. 800px)
-        - y/h bleiben, werden aber in den Output-Bereich geclamped
+        - und verteilt sie je nach Frame-Layout deterministisch auf den Zielbereich
         """
         nonlocal hud_boxes
+
+        def _split_even(total: int, count: int) -> list[int]:
+            n = max(0, int(count))
+            t = max(0, int(total))
+            if n <= 0:
+                return []
+            base = t // n
+            rest = t - (base * n)
+            out = [int(base)] * n
+            for i in range(rest):
+                out[i] += 1
+            return out
+
+        def _active_hud_boxes_in_order(boxes: list[dict], enabled: set[str]) -> list[dict]:
+            out: list[dict] = []
+            for b in boxes:
+                if not isinstance(b, dict):
+                    continue
+                t = str(b.get("type") or "")
+                if t in enabled:
+                    out.append(b)
+            return out
+
+        def _norm_hud_frame(cfg: LayoutConfig) -> tuple[str, str]:
+            orientation = "vertical"
+            anchor = "center"
+            try:
+                orientation = str(cfg.hud_frame.orientation or "vertical").strip().lower()
+            except Exception:
+                orientation = "vertical"
+            if orientation not in ("vertical", "horizontal"):
+                orientation = "vertical"
+
+            try:
+                anchor = str(cfg.hud_frame.anchor or "center").strip().lower()
+            except Exception:
+                anchor = "center"
+            if orientation == "vertical":
+                if anchor not in ("left", "center", "right"):
+                    anchor = "center"
+            else:
+                if anchor not in ("top", "center", "bottom", "top_bottom"):
+                    anchor = "center"
+            return orientation, anchor
+
+        def _to_rect_xywh(rect: object) -> tuple[int, int, int, int] | None:
+            try:
+                x = int(getattr(rect, "x"))
+                y = int(getattr(rect, "y"))
+                w = int(getattr(rect, "w"))
+                h = int(getattr(rect, "h"))
+                if w <= 0 or h <= 0:
+                    return None
+                return x, y, w, h
+            except Exception:
+                return None
+
+        def _fit_legacy(enabled: set[str], hud_x0: int, fit_hud_w: int, fit_out_h: int) -> None:
+            for b in hud_boxes:
+                try:
+                    t = str(b.get("type") or "")
+                except Exception:
+                    continue
+                if t not in enabled:
+                    continue
+
+                try:
+                    y = int(b.get("y", 0))
+                    h = int(b.get("h", 100))
+                except Exception:
+                    y = 0
+                    h = 100
+
+                h = max(30, int(h))
+                y = clamp(int(y), 0, max(0, int(fit_out_h) - h))
+
+                b["x"] = int(hud_x0)
+                b["y"] = int(y)
+                b["w"] = int(fit_hud_w)
+                b["h"] = int(h)
 
         # Aktuellen Zustand holen (damit wir garantiert mit dem aktuellen Layout-Key arbeiten)
         try:
@@ -505,32 +586,99 @@ def main() -> None:
         if side_w < 0:
             side_w = 0
 
-        hud_x0 = int(side_w)
+        hud_x0_legacy = int(side_w)
 
         en = enabled_types()
-
-        for b in hud_boxes:
+        active_boxes = _active_hud_boxes_in_order(hud_boxes, en)
+        if not active_boxes:
             try:
-                t = str(b.get("type") or "")
+                save_current_boxes()
             except Exception:
-                continue
-            if t not in en:
-                continue
-
+                pass
             try:
-                y = int(b.get("y", 0))
-                h = int(b.get("h", 100))
+                if preview_mode_var.get() == "png":
+                    render_png_preview(force_reload=False)
+                else:
+                    refresh_layout_preview()
             except Exception:
-                y = 0
-                h = 100
+                pass
+            return
 
-            h = max(30, int(h))
-            y = clamp(int(y), 0, max(0, int(out_h) - h))
+        layout_cfg = app_model.layout_config if isinstance(app_model.layout_config, LayoutConfig) else LayoutConfig()
+        orientation, anchor = _norm_hud_frame(layout_cfg)
+        hud_mode = str(getattr(layout_cfg, "hud_mode", "frame") or "frame").strip().lower()
+        if hud_mode not in ("frame", "free"):
+            hud_mode = "frame"
 
-            b["x"] = int(hud_x0)
-            b["y"] = int(y)
-            b["w"] = int(hud_w)
-            b["h"] = int(h)
+        try:
+            geom = build_output_geometry_for_size(
+                out_w=int(out_w),
+                out_h=int(out_h),
+                hud_width_px=int(hud_w),
+                layout_config=layout_cfg,
+            )
+        except Exception:
+            geom = build_output_geometry_for_size(
+                out_w=int(out_w),
+                out_h=int(out_h),
+                hud_width_px=int(hud_w),
+                layout_config=None,
+            )
+
+        frame_rects = tuple(getattr(geom, "hud_rects", ()) or ())
+        if hud_mode != "frame" or not frame_rects:
+            _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
+        elif orientation == "vertical":
+            r = _to_rect_xywh(frame_rects[0])
+            if r is None:
+                _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
+            else:
+                fx, fy, fw, fh = r
+                heights = _split_even(fh, len(active_boxes))
+                cur_y = int(fy)
+                for i, b in enumerate(active_boxes):
+                    h_i = int(heights[i]) if i < len(heights) else 0
+                    b["x"] = int(fx)
+                    b["y"] = int(cur_y)
+                    b["w"] = int(fw)
+                    b["h"] = int(h_i)
+                    cur_y += h_i
+        else:
+            def _place_horizontal(items: list[dict], rect_xywh: tuple[int, int, int, int]) -> None:
+                rx, ry, rw, rh = rect_xywh
+                widths = _split_even(rw, len(items))
+                cur_x = int(rx)
+                for i, b in enumerate(items):
+                    w_i = int(widths[i]) if i < len(widths) else 0
+                    b["x"] = int(cur_x)
+                    b["y"] = int(ry)
+                    b["w"] = int(w_i)
+                    b["h"] = int(rh)
+                    cur_x += w_i
+
+            if anchor == "top_bottom" and len(frame_rects) >= 2:
+                rect_items: list[tuple[int, int, int, int]] = []
+                for rr in frame_rects:
+                    ri = _to_rect_xywh(rr)
+                    if ri is not None:
+                        rect_items.append(ri)
+                rect_items.sort(key=lambda it: (int(it[1]), int(it[0])))
+
+                if len(rect_items) >= 2:
+                    n = len(active_boxes)
+                    n_top = (n + 1) // 2
+                    top_items = active_boxes[:n_top]
+                    bottom_items = active_boxes[n_top:]
+                    _place_horizontal(top_items, rect_items[0])
+                    _place_horizontal(bottom_items, rect_items[1])
+                else:
+                    _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
+            else:
+                r = _to_rect_xywh(frame_rects[0])
+                if r is None:
+                    _fit_legacy(en, hud_x0_legacy, hud_w, out_h)
+                else:
+                    _place_horizontal(active_boxes, r)
 
         # Persistieren + neu zeichnen
         try:
