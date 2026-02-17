@@ -14,6 +14,7 @@ from core.models import (
     OutputFormat,
     PngViewState,
     Profile,
+    migrate_layout_contract_dict,
 )
 from core import persistence, filesvc, profile_service, render_service
 from core.output_geometry import (
@@ -219,16 +220,22 @@ def main() -> None:
             layout = "LR"
         return str(layout)
 
-    def _load_video_layout_from_ui_last_run() -> str:
+    def _load_layout_config_from_ui_last_run() -> LayoutConfig:
         try:
             if not ui_last_run_file.exists():
-                return "LR"
+                return LayoutConfig()
             data = json.loads(ui_last_run_file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                return "LR"
-            return _normalize_video_layout(data.get("video_layout"))
+                return LayoutConfig()
+            migrated = migrate_layout_contract_dict(data)
+            if migrated:
+                try:
+                    ui_last_run_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            return LayoutConfig.from_dict(data)
         except Exception:
-            return "LR"
+            return LayoutConfig()
 
     left_column = ttk.Frame(root)
     left_top_files_frame = ttk.LabelFrame(left_column, text="Dateibereich")
@@ -541,7 +548,7 @@ def main() -> None:
     # --- Mapping-Layer (Story 2): UI-State <-> zentrale Modelle ---
     app_model = AppModel()
     try:
-        app_model.layout_config.video_layout = _load_video_layout_from_ui_last_run()
+        app_model.layout_config = _load_layout_config_from_ui_last_run()
     except Exception:
         pass
     hud_free_mode_var = tk.BooleanVar(value=False)
@@ -618,16 +625,16 @@ def main() -> None:
         except Exception:
             pass
 
-    def _save_video_layout_to_ui_last_run() -> None:
+    def _save_layout_to_ui_last_run() -> None:
         cfg = _layout_cfg()
-        layout_value = _normalize_video_layout(getattr(cfg, "video_layout", "LR"))
         try:
             payload: dict = {}
             if ui_last_run_file.exists():
                 old_data = json.loads(ui_last_run_file.read_text(encoding="utf-8"))
                 if isinstance(old_data, dict):
                     payload = old_data
-            payload["video_layout"] = str(layout_value)
+            migrate_layout_contract_dict(payload)
+            payload.update(cfg.to_dict())
             ui_last_run_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -649,7 +656,7 @@ def main() -> None:
             video_layout_var.set(str(layout_value))
         except Exception:
             pass
-        _save_video_layout_to_ui_last_run()
+        _save_layout_to_ui_last_run()
         try:
             update_png_fit_button_text()
         except Exception:
@@ -1833,6 +1840,8 @@ def main() -> None:
         nonlocal videos, csvs, hud_layout_data, png_view_data, last_scan_sig, app_model
 
         try:
+            if isinstance(d, dict):
+                migrate_layout_contract_dict(d)
             loaded = Profile.from_dict(d if isinstance(d, dict) else {})
             app_model.layout_config = loaded.layout_config
             _sync_hud_mode_var_from_model()
@@ -1840,7 +1849,7 @@ def main() -> None:
             _sync_hud_bg_alpha_var_from_model()
             _sync_video_layout_var_from_model()
             _sync_video_transform_vars_from_model()
-            _save_video_layout_to_ui_last_run()
+            _save_layout_to_ui_last_run()
         except Exception:
             pass
 
@@ -1907,7 +1916,7 @@ def main() -> None:
             _sync_hud_bg_alpha_var_from_model()
             _sync_video_layout_var_from_model()
             _sync_video_transform_vars_from_model()
-            _save_video_layout_to_ui_last_run()
+            _save_layout_to_ui_last_run()
         except Exception:
             pass
 
