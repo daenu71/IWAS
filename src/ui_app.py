@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+from typing import Callable
 
 from core.models import (
     AppModel,
@@ -157,6 +158,19 @@ class SettingsView(ttk.Frame):
         super().__init__(master)
         lbl = ttk.Label(self, text="Settings")
         lbl.pack(anchor="center", expand=True, padx=20, pady=20)
+
+
+ViewEntry = type[ttk.Frame] | Callable[[], type[ttk.Frame]]
+
+def _resolve_view_class(entry: ViewEntry) -> type[ttk.Frame]:
+    if isinstance(entry, type):
+        return entry
+    return entry()
+
+VIEW_REGISTRY: dict[str, ViewEntry] = {
+    "Video Analysis": lambda: VideoAnalysisView,
+    "Settings": lambda: SettingsView,
+}
 
 
 def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
@@ -3204,9 +3218,13 @@ def main() -> None:
                 btn.configure(relief="raised")
 
     def _build_view(name: str) -> ttk.Frame:
-        if name == "video_analysis":
-            return VideoAnalysisView(content, root)
-        return SettingsView(content)
+        entry = VIEW_REGISTRY.get(name)
+        if entry is None:
+            return SettingsView(content)
+        cls = _resolve_view_class(entry)
+        if cls is VideoAnalysisView:
+            return cls(content, root)
+        return cls(content)
 
     def show_view(name: str) -> None:
         if active["name"] == name:
@@ -3223,14 +3241,21 @@ def main() -> None:
         active["name"] = name
         _set_active_button(name)
 
-    btn_video = tk.Button(ribbon, text="Video Analysis", command=lambda: show_view("video_analysis"), padx=12, pady=6)
-    btn_settings = tk.Button(ribbon, text="Settings", command=lambda: show_view("settings"), padx=12, pady=6)
-    btn_video.grid(row=0, column=0, sticky="w")
-    btn_settings.grid(row=0, column=1, sticky="w", padx=(8, 0))
-    buttons["video_analysis"] = btn_video
-    buttons["settings"] = btn_settings
+    DEFAULT_VIEW_LABEL = "Video Analysis"
 
-    show_view("video_analysis")
+    for index, label in enumerate(VIEW_REGISTRY):
+        btn = tk.Button(
+            ribbon,
+            text=label,
+            command=lambda name=label: show_view(name),
+            padx=12,
+            pady=6,
+        )
+        padx = (8, 0) if index > 0 else 0
+        btn.grid(row=0, column=index, sticky="w", padx=padx)
+        buttons[label] = btn
+
+    show_view(DEFAULT_VIEW_LABEL)
     root.mainloop()
 
 
