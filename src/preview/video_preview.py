@@ -92,7 +92,7 @@ class VideoPreviewController:
             return dst
 
         try:
-            self.lbl_loaded.config(text=f"Video: Proxy wird erstellt… ({src.name})")
+            self.lbl_loaded.config(text=f"Video: Creating proxy… ({src.name})")
             self.root.update_idletasks()
 
             cmd = [
@@ -179,7 +179,7 @@ class VideoPreviewController:
         except Exception:
             pass
 
-        self.lbl_end.config(text=f"Ende: {self.end_frame_idx}")
+        self.lbl_end.config(text=f"End: {self.end_frame_idx}")
 
         if save and self.current_video_original is not None:
             self.endframes_by_name[self.current_video_original.name] = int(self.end_frame_idx)
@@ -381,14 +381,14 @@ class VideoPreviewController:
         if self.current_video_original is None:
             return
         if not self.ffmpeg_exists():
-            self.lbl_loaded.config(text="Video: ffmpeg fehlt (Schneiden nicht möglich)")
+            self.lbl_loaded.config(text="Video: ffmpeg missing (cut not possible)")
             return
 
         s = self.clamp_frame(int(self.startframes_by_name.get(self.current_video_original.name, 0)))
         e = self.clamp_frame(int(self.end_frame_idx))
 
         if e <= s:
-            self.lbl_loaded.config(text="Video: Endframe muss > Startframe sein")
+            self.lbl_loaded.config(text="Video: End frame must be > start frame")
             return
 
         self.is_playing = False
@@ -407,11 +407,11 @@ class VideoPreviewController:
             proxy_path = self.proxy_dir / (src.stem + "__proxy_h264.mp4")
             self.safe_unlink(proxy_path)
 
-        progress_win, progress_close = self._show_progress("Schneiden", "Video wird geschnitten… Bitte warten.")
+        progress_win, progress_close = self._show_progress("Cutting", "Video is being cut… Please wait.")
         self.root.update()
 
         try:
-            self.lbl_loaded.config(text="Video: Schneiden läuft…")
+            self.lbl_loaded.config(text="Video: Cutting…")
             self.root.update_idletasks()
 
             cmd = [
@@ -430,7 +430,7 @@ class VideoPreviewController:
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
             if not (tmp.exists() and tmp.stat().st_size > 0):
-                self.lbl_loaded.config(text="Video: Schneiden fehlgeschlagen")
+                self.lbl_loaded.config(text="Video: Cut failed")
                 self.safe_unlink(tmp)
                 self._sync_from_folders_if_needed_ui(force=True)
                 return
@@ -444,9 +444,9 @@ class VideoPreviewController:
             self.endframes_by_name[dst_final.name] = self.clamp_frame(int(dur_sec * max(1.0, self.fps)))
             self._save_endframes(self.endframes_by_name)
 
-            self.lbl_loaded.config(text="Video: Geschnitten & ersetzt")
+            self.lbl_loaded.config(text="Video: Cut and replaced")
         except Exception:
-            self.lbl_loaded.config(text="Video: Schneiden fehlgeschlagen")
+            self.lbl_loaded.config(text="Video: Cut failed")
             self.safe_unlink(tmp)
         finally:
             progress_close()
@@ -468,8 +468,8 @@ class VideoPreviewController:
                 c, status = self.try_open_video(proxy)
 
         if c is None:
-            self.lbl_loaded.config(text="Video: Kann nicht gelesen werden (Codec?)")
-            self.preview_label.config(text="Dieses Video kann hier nicht gelesen werden.\nBitte erst in H.264 umwandeln.\nOder ffmpeg installieren.")
+            self.lbl_loaded.config(text="Video: Cannot be read (codec?)")
+            self.preview_label.config(text="This video cannot be read here.\nPlease convert it to H.264 first.\nOr install ffmpeg.")
             self._show_preview_controls(False)
             return
 

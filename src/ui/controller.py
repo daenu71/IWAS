@@ -228,9 +228,9 @@ class Controller:
 
         paths = self.ui.open_file_dialog(
             multiple=True,
-            title="Dateien auswählen (2 Videos + optional CSV)",
+            title="Select Files (2 videos + optional CSV)",
             filetypes=[
-                ("Videos und CSV", "*.mp4 *.csv"),
+                ("Videos and CSV", "*.mp4 *.csv"),
                 ("Video", "*.mp4"),
                 ("CSV", "*.csv"),
             ],
@@ -256,7 +256,7 @@ class Controller:
             if self.ui.refresh_display is not None:
                 self.ui.refresh_display()
             if self.ui.set_fast_text is not None:
-                self.ui.set_fast_text("Fast: Bitte genau 2 Videos wählen")
+                self.ui.set_fast_text("Fast: Please select exactly 2 videos")
             if self.ui.set_slow_text is not None:
                 self.ui.set_slow_text("Slow: –")
             if self.ui.close_preview_video is not None:
@@ -270,14 +270,14 @@ class Controller:
     def on_generate(self) -> None:
         videos, csvs = self.ui.get_selected_files()
         if len(videos) != 2:
-            self.ui.set_status("Video: Bitte genau 2 Videos wählen")
+            self.ui.set_status("Video: Please select exactly 2 videos")
             return
 
         if self.ui.choose_slow_fast_paths is None:
             return
         slow_p, fast_p = self.ui.choose_slow_fast_paths()
         if slow_p is None or fast_p is None:
-            self.ui.set_status("Video: Zeit im Dateinamen fehlt (Fast/Slow)")
+            self.ui.set_status("Video: Missing time in filename (Fast/Slow)")
             return
 
         if self.ui.parse_preset is None:
@@ -315,7 +315,7 @@ class Controller:
         project_root_local = self.ui.get_project_root()
         main_py = project_root_local / "src" / "main.py"
         if not main_py.exists():
-            self.ui.set_status("Video: main.py nicht gefunden")
+            self.ui.set_status("Video: main.py not found")
             return
 
         if self.ui.model_from_ui_state is None:
@@ -333,8 +333,8 @@ class Controller:
         if self.ui.show_progress_with_cancel is None:
             return
         _win, close, set_text, set_progress, is_cancelled = self.ui.show_progress_with_cancel(
-            "Video erzeugen",
-            "Starte main.py…",
+            "Generate Video",
+            "Starting main.py…",
         )
         if self.ui.update_ui is not None:
             try:
@@ -381,11 +381,11 @@ class Controller:
                     cut_zero_segments_fallback = bool(result.get("cut_zero_segments_fallback"))
                     out_ok = out_path.exists() and out_path.stat().st_size > 0
                     if requested_video_mode == "cut" and cut_zero_segments_fallback and out_ok:
-                        self.ui.set_status("Cut: 0 Segmente → Full gerendert")
+                        self.ui.set_status("Cut: 0 segments -> rendered full")
                     elif out_ok:
-                        self.ui.set_status(f"Video: Fertig ({out_path.name})")
+                        self.ui.set_status(f"Video: Done ({out_path.name})")
                     else:
-                        self.ui.set_status("Video: Render fehlgeschlagen (0 KB)")
+                        self.ui.set_status("Video: Render failed (0 KB)")
 
                 def finish_cancel() -> None:
                     close()
@@ -394,17 +394,17 @@ class Controller:
                             out_path.unlink()
                     except Exception:
                         pass
-                    self.ui.set_status("Video: Abgebrochen")
+                    self.ui.set_status("Video: Cancelled")
 
                 def finish_error() -> None:
                     close()
                     err = str(result.get("error") or "")
                     if err == "ui_json_write_failed":
-                        self.ui.set_status("Video: Konnte UI-JSON nicht schreiben")
+                        self.ui.set_status("Video: Could not write UI JSON")
                     elif err == "main_py_not_found":
-                        self.ui.set_status("Video: main.py nicht gefunden")
+                        self.ui.set_status("Video: main.py not found")
                     else:
-                        self.ui.set_status("Video: Render fehlgeschlagen")
+                        self.ui.set_status("Video: Render failed")
 
                 if str(result.get("status") or "") == "cancelled":
                     self._schedule(0, finish_cancel)
@@ -415,7 +415,7 @@ class Controller:
 
             except Exception:
                 try:
-                    self._schedule(0, lambda: self.ui.set_status("Video: Render fehlgeschlagen"))
+                    self._schedule(0, lambda: self.ui.set_status("Video: Render failed"))
                     self._schedule(0, close)
                 except Exception:
                     pass
@@ -432,9 +432,9 @@ class Controller:
             profiles_dir = None
 
         fn = self.ui.save_file_dialog(
-            title="Profil speichern",
+            title="Save Profile",
             defaultextension=".json",
-            filetypes=[("Profil (*.json)", "*.json"), ("Alle Dateien", "*.*")],
+            filetypes=[("Profile (*.json)", "*.json"), ("All Files", "*.*")],
             initialdir=str(profiles_dir) if profiles_dir is not None else "",
             initialfile="profile.json",
         )
@@ -450,18 +450,18 @@ class Controller:
 
             data = self.ui.build_profile_dict() if self.ui.build_profile_dict is not None else {}
             Path(fn).write_text(json.dumps(data, indent=2), encoding="utf-8")
-            self.ui.set_status("Video: Profil gespeichert")
+            self.ui.set_status("Video: Profile saved")
         except Exception:
-            self.ui.set_status("Video: Profil speichern fehlgeschlagen")
+            self.ui.set_status("Video: Failed to save profile")
 
     def on_profile_load(self) -> None:
         if self.ui.open_file_dialog is None:
             return
 
         fn = self.ui.open_file_dialog(
-            title="Profil laden",
+            title="Load Profile",
             defaultextension=".json",
-            filetypes=[("Profil (*.json)", "*.json"), ("Alle Dateien", "*.*")],
+            filetypes=[("Profile (*.json)", "*.json"), ("All Files", "*.*")],
             initialdir=str(self.ui.get_profiles_dir()) if self.ui.get_profiles_dir is not None else "",
         )
         if not fn:
@@ -470,15 +470,15 @@ class Controller:
         try:
             data = json.loads(Path(fn).read_text(encoding="utf-8"))
         except Exception:
-            self.ui.set_status("Video: Profil laden fehlgeschlagen")
+            self.ui.set_status("Video: Failed to load profile")
             return
 
         try:
             if self.ui.apply_profile_dict is not None:
                 self.ui.apply_profile_dict(data)
-            self.ui.set_status("Video: Profil geladen")
+            self.ui.set_status("Video: Profile loaded")
         except Exception:
-            self.ui.set_status("Video: Profil laden fehlgeschlagen")
+            self.ui.set_status("Video: Failed to load profile")
 
     def on_output_change(self, _event: Any = None) -> None:
         try:

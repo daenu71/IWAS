@@ -442,7 +442,7 @@ class PngPreviewController:
         slow_p, fast_p = self._choose_slow_fast_paths()
         if slow_p is None or fast_p is None:
             self.canvas.delete("all")
-            self.canvas.create_text(20, 20, anchor="nw", text="PNG-Vorschau: Bitte 2 Videos mit Zeit im Namen w\u00e4hlen.")
+            self.canvas.create_text(20, 20, anchor="nw", text="PNG Preview: Please select 2 videos with time in the name.")
             self.png_frame_last["valid"] = False
             return
 
@@ -466,7 +466,7 @@ class PngPreviewController:
 
             if img_l is None or img_r is None:
                 self.canvas.delete("all")
-                self.canvas.create_text(20, 20, anchor="nw", text="PNG-Vorschau: Kann Frames nicht lesen (Codec?).")
+                self.canvas.create_text(20, 20, anchor="nw", text="PNG Preview: Cannot read frames (codec?).")
                 self.png_frame_last["valid"] = False
                 return
 

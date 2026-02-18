@@ -294,9 +294,9 @@ def main() -> None:
             return None
 
     left_column = ttk.Frame(root)
-    left_top_files_frame = ttk.LabelFrame(left_column, text="Dateibereich")
-    left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Einstellungen")
-    frame_preview = ttk.LabelFrame(root, text="Vorschau")
+    left_top_files_frame = ttk.LabelFrame(left_column, text="Files")
+    left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Settings")
+    frame_preview = ttk.LabelFrame(root, text="Preview")
 
     left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
     left_column.columnconfigure(0, weight=1)
@@ -606,21 +606,21 @@ def main() -> None:
         command=on_video_mode_changed,
     ).grid(row=0, column=1, sticky="w")
 
-    ttk.Label(frame_settings, text="Seitenverhältnis:").grid(row=1, column=0, sticky="w", padx=10, pady=2)
+    ttk.Label(frame_settings, text="Aspect Ratio:").grid(row=1, column=0, sticky="w", padx=10, pady=2)
     cmb_aspect = ttk.Combobox(frame_settings, values=ASPECTS, textvariable=out_aspect_var, state="readonly", width=10)
     cmb_aspect.grid(row=1, column=1, sticky="w", padx=10, pady=2)
 
     QUALITYS = ["Original", "2160p", "1440p", "1080p", "720p", "480p"]
     out_quality_var = tk.StringVar(value=sel.get("quality", "Original"))
 
-    lbl_in_res = ttk.Label(frame_settings, text="Input-Auflösung: –")
+    lbl_in_res = ttk.Label(frame_settings, text="Input Resolution: –")
     lbl_in_res.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 2))
 
-    ttk.Label(frame_settings, text="Qualität (Output):").grid(row=3, column=0, sticky="w", padx=10, pady=2)
+    ttk.Label(frame_settings, text="Quality (Output):").grid(row=3, column=0, sticky="w", padx=10, pady=2)
     cmb_quality = ttk.Combobox(frame_settings, values=QUALITYS, textvariable=out_quality_var, state="readonly", width=10)
     cmb_quality.grid(row=3, column=1, sticky="w", padx=10, pady=2)
 
-    ttk.Label(frame_settings, text="Auflösung (Output):").grid(row=4, column=0, sticky="w", padx=10, pady=2)
+    ttk.Label(frame_settings, text="Resolution (Output):").grid(row=4, column=0, sticky="w", padx=10, pady=2)
     cmb_preset = ttk.Combobox(
         frame_settings, values=get_presets_for_aspect(out_aspect_var.get()), textvariable=out_preset_var, state="readonly", width=12
     )
@@ -1210,7 +1210,7 @@ def main() -> None:
     lbl_hud_size = ttk.Label(frame_settings, text="HUD-width (px):")
     spn_hud = ttk.Spinbox(frame_settings, from_=0, to=10000, width=10, textvariable=hud_width_var)
 
-    lbl_out_fps = ttk.Label(frame_settings, text="FPS (vom Video): –")
+    lbl_out_fps = ttk.Label(frame_settings, text="FPS (from video): –")
     lbl_out_fps.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(6, 6))
 
     controller: Controller | None = None
@@ -1230,7 +1230,7 @@ def main() -> None:
     # ---- HUD Platzhalter (Story 6) ----
     ttk.Separator(frame_settings, orient="horizontal").grid(row=7, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
 
-    ttk.Label(frame_settings, text="HUD Platzhalter", font=("Segoe UI", 10, "bold")).grid(
+    ttk.Label(frame_settings, text="HUD Placeholders", font=("Segoe UI", 10, "bold")).grid(
         row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6)
     )
 
@@ -1262,7 +1262,7 @@ def main() -> None:
         except Exception:
             pass
 
-    btn_reset_hud = ttk.Button(frame_settings, text="HUD zurücksetzen", command=reset_hud_layout)
+    btn_reset_hud = ttk.Button(frame_settings, text="Reset HUD", command=reset_hud_layout)
     btn_reset_hud.grid(row=9 + len(HUD_TYPES), column=0, sticky="w", padx=10, pady=(6, 2))
 
     def hud_fit_to_frame_width() -> None:
@@ -1537,7 +1537,17 @@ def main() -> None:
         except Exception:
             pass
 
-    btn_hud_fit = ttk.Button(frame_settings, text="HUDs auf Rahmenbreite", command=hud_fit_to_frame_width)
+    fit_button_width = max(
+        len("HUDs to Frame Width"),
+        len("Video to Frame Height"),
+        len("Video to Frame Width"),
+    )
+    btn_hud_fit = ttk.Button(
+        frame_settings,
+        text="HUDs to Frame Width",
+        width=fit_button_width,
+        command=hud_fit_to_frame_width,
+    )
 
     hud_mode_row = 10 + len(HUD_TYPES)
     ttk.Separator(frame_settings, orient="horizontal").grid(
@@ -1634,7 +1644,7 @@ def main() -> None:
 
     lbl_hud_size.grid(row=hud_mode_row + 3, column=0, sticky="w", padx=10, pady=(0, 2))
     spn_hud.grid(row=hud_mode_row + 3, column=1, sticky="w", padx=10, pady=(0, 2))
-    btn_hud_fit.grid(row=hud_mode_row + 3, column=2, sticky="w", padx=(10, 10), pady=(0, 2))
+    btn_hud_fit.grid(row=hud_mode_row + 3, column=2, sticky="e", padx=(10, 10), pady=(0, 2))
 
     lbl_hud_bg_alpha = ttk.Label(frame_settings, text="HUD Background Alpha:")
     lbl_hud_bg_alpha.grid(
@@ -1694,7 +1704,7 @@ def main() -> None:
         row=video_align_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2)
     )
     frm_video_alignment = ttk.Frame(frame_settings)
-    frm_video_alignment.grid(row=video_align_row + 2, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 4))
+    frm_video_alignment.grid(row=video_align_row + 2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
     ttk.Radiobutton(
         frm_video_alignment,
         text="Left / Right",
@@ -1709,12 +1719,14 @@ def main() -> None:
         variable=video_layout_var,
         command=lambda: _apply_video_layout_from_var(refresh_preview=True),
     ).grid(row=0, column=1, sticky="w")
+    btn_png_fit = ttk.Button(frame_settings, text="Video to Frame Height", width=fit_button_width)
+    btn_png_fit.grid(row=video_align_row + 2, column=2, sticky="e", padx=(10, 10), pady=(0, 4))
 
     video_place_row = video_align_row + 3
     ttk.Separator(frame_settings, orient="horizontal").grid(
         row=video_place_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
     )
-    ttk.Label(frame_settings, text="Video-Placement", font=("Segoe UI", 10, "bold")).grid(
+    ttk.Label(frame_settings, text="Video Placement", font=("Segoe UI", 10, "bold")).grid(
         row=video_place_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6)
     )
 
@@ -1979,16 +1991,16 @@ def main() -> None:
     top_buttons = ttk.Frame(frame_files)
     top_buttons.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=6)
 
-    btn_select = ttk.Button(top_buttons, text="Dateien auswählen")
+    btn_select = ttk.Button(top_buttons, text="Select Files")
     btn_select.pack(side="left", padx=(0, 10))
 
-    btn_generate = ttk.Button(top_buttons, text="Video erzeugen")
+    btn_generate = ttk.Button(top_buttons, text="Generate Video")
     btn_generate.pack(side="left", padx=(0, 10))
 
-    btn_profile_save = ttk.Button(top_buttons, text="Profil speichern")
+    btn_profile_save = ttk.Button(top_buttons, text="Save Profile")
     btn_profile_save.pack(side="left", padx=(0, 10))
 
-    btn_profile_load = ttk.Button(top_buttons, text="Profil laden")
+    btn_profile_load = ttk.Button(top_buttons, text="Load Profile")
     btn_profile_load.pack(side="left")
 
     videos: list[Path] = []
@@ -2217,24 +2229,24 @@ def main() -> None:
                 w2, h2, _fps2 = info2
 
         if v1 is None and v2 is None:
-            lbl_in_res.config(text="Input-Auflösung: –")
+            lbl_in_res.config(text="Input Resolution: –")
         elif v2 is None:
             if w1 > 0 and h1 > 0:
-                lbl_in_res.config(text=f"Input-Auflösung: V1 {fmt_res(w1, h1)}")
+                lbl_in_res.config(text=f"Input Resolution: V1 {fmt_res(w1, h1)}")
             else:
-                lbl_in_res.config(text="Input-Auflösung: V1 … (lädt)")
+                lbl_in_res.config(text="Input Resolution: V1 … (loading)")
         else:
-            s1 = fmt_res(w1, h1) if (w1 > 0 and h1 > 0) else "… (lädt)"
-            s2 = fmt_res(w2, h2) if (w2 > 0 and h2 > 0) else "… (lädt)"
-            lbl_in_res.config(text=f"Input-Auflösung: V1 {s1} | V2 {s2}")
+            s1 = fmt_res(w1, h1) if (w1 > 0 and h1 > 0) else "… (loading)"
+            s2 = fmt_res(w2, h2) if (w2 > 0 and h2 > 0) else "… (loading)"
+            lbl_in_res.config(text=f"Input Resolution: V1 {s1} | V2 {s2}")
 
         if v1 is None:
-            lbl_out_fps.config(text="FPS (vom Video): –")
+            lbl_out_fps.config(text="FPS (from video): –")
         else:
             if fps1 > 0.1:
-                lbl_out_fps.config(text=f"FPS (vom Video): {fps1:.3f}")
+                lbl_out_fps.config(text=f"FPS (from video): {fps1:.3f}")
             else:
-                lbl_out_fps.config(text="FPS (vom Video): … (lädt)")
+                lbl_out_fps.config(text="FPS (from video): … (loading)")
 
         try:
             base_w = w1
@@ -2265,8 +2277,8 @@ def main() -> None:
             t2_str = extract_time_str(videos[1])
 
             if t1_ms is None or t2_ms is None or t1_str is None or t2_str is None:
-                lbl_fast.config(text="Fast: Zeit im Dateinamen fehlt")
-                lbl_slow.config(text="Slow: Zeit im Dateinamen fehlt")
+                lbl_fast.config(text="Fast: Missing time in filename")
+                lbl_slow.config(text="Slow: Missing time in filename")
                 return
 
             if t1_ms < t2_ms:
@@ -2320,14 +2332,7 @@ def main() -> None:
     frame_preview.rowconfigure(2, weight=0)
 
     # Unified Preview
-    preview_mode_bar = ttk.Frame(frame_preview)
-    preview_mode_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
-    preview_mode_bar.columnconfigure(10, weight=1)
-
     preview_mode_var = tk.StringVar(value="png")
-
-    btn_png_fit = ttk.Button(preview_mode_bar, text="Video auf Rahmenh\u00f6he")
-    btn_png_fit.grid(row=0, column=0, sticky="w", padx=(0, 12))
 
     def update_png_fit_button_text() -> None:
         try:
@@ -2335,9 +2340,9 @@ def main() -> None:
         except Exception:
             layout_mode = "LR"
         if layout_mode == "TB":
-            btn_png_fit.config(text="Video auf Rahmenbreite")
+            btn_png_fit.config(text="Video to Frame Width")
         else:
-            btn_png_fit.config(text="Video auf Rahmenh\u00f6he")
+            btn_png_fit.config(text="Video to Frame Height")
 
     # Crop-Controls bleiben (werden nur bei Zuschneiden eingeblendet)
     preview_top = ttk.Frame(frame_preview)
@@ -2347,21 +2352,21 @@ def main() -> None:
     btn_play = ttk.Button(preview_top, text="▶")
     btn_prev = ttk.Button(preview_top, text="⏮")
     btn_next = ttk.Button(preview_top, text="⏭")
-    btn_set_start = ttk.Button(preview_top, text="Start hier setzen")
-    btn_cancel = ttk.Button(preview_top, text="Abbrechen")
-    btn_cut = ttk.Button(preview_top, text="Schneiden")
+    btn_set_start = ttk.Button(preview_top, text="Set Start Here")
+    btn_cancel = ttk.Button(preview_top, text="Cancel")
+    btn_cut = ttk.Button(preview_top, text="Cut")
 
     lbl_frame = ttk.Label(preview_top, text="Frame: –")
-    lbl_end = ttk.Label(preview_top, text="Ende: –")
+    lbl_end = ttk.Label(preview_top, text="End: –")
     lbl_loaded = ttk.Label(preview_top, text="Video: –")
 
     ttk.Separator(preview_top, orient="horizontal").grid(row=1, column=0, columnspan=8, sticky="ew", pady=(6, 6))
 
-    ttk.Label(preview_top, text="Endframe:").grid(row=2, column=0, sticky="w")
+    ttk.Label(preview_top, text="End Frame:").grid(row=2, column=0, sticky="w")
 
     end_var = tk.IntVar(value=0)
     spn_end = ttk.Spinbox(preview_top, from_=0, to=0, width=10, textvariable=end_var)
-    btn_save_end = ttk.Button(preview_top, text="Ende speichern")
+    btn_save_end = ttk.Button(preview_top, text="Save End")
 
     spn_end.grid(row=2, column=1, sticky="w")
     btn_save_end.grid(row=2, column=2, sticky="w", padx=(8, 0))
@@ -2668,7 +2673,7 @@ def main() -> None:
         bar = ttk.Progressbar(frm, mode="determinate", length=420, maximum=100.0)
         bar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
-        btn_cancel = ttk.Button(frm, text="Abbrechen")
+        btn_cancel = ttk.Button(frm, text="Cancel")
         btn_cancel.grid(row=2, column=0, sticky="e", pady=(10, 0))
 
         win.update_idletasks()
@@ -2735,11 +2740,6 @@ def main() -> None:
 
     def show_preview_controls(show: bool) -> None:
         if show:
-            try:
-                preview_mode_bar.grid_remove()
-            except Exception:
-                pass
-
             preview_top.grid()
             scrub.grid()
 
@@ -2759,11 +2759,6 @@ def main() -> None:
 
             try:
                 preview_label.grid_remove()
-            except Exception:
-                pass
-
-            try:
-                preview_mode_bar.grid()
             except Exception:
                 pass
 
@@ -2989,7 +2984,7 @@ def main() -> None:
         menu = tk.Menu(root, tearoff=0)
 
         if kind == "video":
-            menu.add_command(label="Zuschneiden", command=lambda p=item: start_crop_for_video(p))
+            menu.add_command(label="Cut", command=lambda p=item: start_crop_for_video(p))
             menu.add_separator()
 
         def do_delete() -> None:
@@ -3017,8 +3012,8 @@ def main() -> None:
         def do_open_folder() -> None:
             filesvc.open_folder(item)
 
-        menu.add_command(label="Löschen", command=do_delete)
-        menu.add_command(label="Ordner öffnen", command=do_open_folder)
+        menu.add_command(label="Delete", command=do_delete)
+        menu.add_command(label="Open Folder", command=do_open_folder)
         menu.tk_popup(event.x_root, event.y_root)
 
     btn_v1.bind("<Button-1>", lambda e: show_menu_for_item(e, "video", 0))
