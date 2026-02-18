@@ -2087,6 +2087,7 @@ def _render_hud_scroll_frames_png(
     *,
     frame_writer: Any,
     frame_written_cb: Any | None = None,
+    force_full_redraw: bool = False,
 ) -> None:
     """
     Rendert pro Frame die HUD-Spalte und streamt RGBA-Frames nach ffmpeg stdin.
@@ -2173,6 +2174,7 @@ def _render_hud_scroll_frames_png(
 
     table_cache_dbg = (os.environ.get("IRVC_DEBUG_TABLE_CACHE") or "0").strip().lower() in ("1", "true", "yes", "on")
     _ = hud_name
+    force_full_redraw_requested = bool(force_full_redraw)
 
     try:
         from PIL import Image, ImageDraw
@@ -2936,6 +2938,10 @@ def _render_hud_scroll_frames_png(
         i = int(cut_i0) + j
         if i < 0 or i >= len(slow_frame_to_lapdist):
             continue
+
+        force_full_redraw = bool(force_full_redraw_requested and int(j) == 0)
+        if force_full_redraw:
+            _log_print("[cut] HUD full redraw at segment start", log_file)
 
         img = Image.new("RGBA", (int(hud_stream_w), int(hud_stream_h)), (0, 0, 0, 0))
         dr = ImageDraw.Draw(img)
@@ -5462,8 +5468,28 @@ def _render_hud_scroll_frames_png(
                     state["last_delta_value"] = None
                     state["last_delta_sign"] = None
 
+                if force_full_redraw:
+                    state.clear()
+                    state["static_layer"] = None
+                    state["dynamic_layer"] = None
+                    state["scroll_pos_px"] = 0.0
+                    state["last_i"] = None
+                    state["last_right_sample"] = None
+                    state["window_frames"] = None
+                    state["tb_cols"] = []
+                    state["last_y"] = None
+                    state["last_delta_value"] = None
+                    state["last_delta_sign"] = None
+                    renderer_state.first_frame = True
+                    renderer_state.helpers.pop("tb_max_brake_states", None)
+                    renderer_state.helpers.pop("tb_max_brake_last_idx", None)
+                    renderer_state.helpers.pop("dynamic_next_scratch_pair", None)
+                    renderer_state.helpers.pop("dynamic_next_scratch_idx", None)
+
                 first_frame = bool(renderer_state.first_frame) or state.get("static_layer") is None or state.get("dynamic_layer") is None
                 reset_now = False
+                if force_full_redraw:
+                    reset_now = True
                 try:
                     last_i_state = state.get("last_i")
                     if last_i_state is not None and int(i) != (int(last_i_state) + 1):
@@ -6960,6 +6986,7 @@ def render_split_screen_sync(
                             seg_hud_ctx,
                             frame_writer=_write_frame_rgba,
                             frame_written_cb=_on_frame_written,
+                            force_full_redraw=True,
                         )
                         try:
                             stdin_pipe.flush()
