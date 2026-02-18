@@ -146,11 +146,20 @@ class HoverTooltip:
         self._tip = None
 
 
-def main() -> None:
-    root = tk.Tk()
-    root.title("iRacing Video Compare")
-    root.geometry("1200x800")
+class VideoAnalysisView(ttk.Frame):
+    def __init__(self, master: tk.Widget, root: tk.Tk) -> None:
+        super().__init__(master)
+        build_video_analysis_view(root=root, host=self)
 
+
+class SettingsView(ttk.Frame):
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master)
+        lbl = ttk.Label(self, text="Settings")
+        lbl.pack(anchor="center", expand=True, padx=20, pady=20)
+
+
+def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     project_root = find_project_root(Path(__file__))
 
     input_video_dir = project_root / "input" / "video"
@@ -214,6 +223,32 @@ def main() -> None:
     profiles_dir.mkdir(parents=True, exist_ok=True)
 
     endframes_by_name: dict[str, int] = persistence.load_endframes()
+    _view_lifecycle = {"destroyed": False}
+    _scheduled_after_ids: set[str] = set()
+    _root_bind_ids: list[tuple[str, str]] = []
+
+    def _schedule_root_after(ms: int, fn) -> str | None:
+        if bool(_view_lifecycle["destroyed"]):
+            return None
+        try:
+            aid = root.after(ms, fn)
+        except Exception:
+            return None
+        try:
+            _scheduled_after_ids.add(str(aid))
+        except Exception:
+            pass
+        return str(aid)
+
+    def _bind_root(sequence: str, callback) -> None:
+        try:
+            bind_id = root.bind(sequence, callback, add="+")
+        except Exception:
+            return
+        try:
+            _root_bind_ids.append((str(sequence), str(bind_id)))
+        except Exception:
+            pass
 
     def _normalize_video_layout(raw: object) -> str:
         try:
@@ -293,10 +328,10 @@ def main() -> None:
         except Exception:
             return None
 
-    left_column = ttk.Frame(root)
+    left_column = ttk.Frame(host)
     left_top_files_frame = ttk.LabelFrame(left_column, text="Files")
     left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Settings")
-    frame_preview = ttk.LabelFrame(root, text="Preview")
+    frame_preview = ttk.LabelFrame(host, text="Preview")
 
     left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
     left_column.columnconfigure(0, weight=1)
@@ -370,9 +405,9 @@ def main() -> None:
         except Exception:
             return None
 
-    root.bind_all("<MouseWheel>", _on_settings_mousewheel, add="+")
-    root.bind_all("<Button-4>", _on_settings_mousewheel, add="+")
-    root.bind_all("<Button-5>", _on_settings_mousewheel, add="+")
+    _bind_root("<MouseWheel>", _on_settings_mousewheel)
+    _bind_root("<Button-4>", _on_settings_mousewheel)
+    _bind_root("<Button-5>", _on_settings_mousewheel)
 
     frame_files = left_top_files_frame
     frame_settings = settings_inner
@@ -380,9 +415,9 @@ def main() -> None:
     # Vorschau soll die ganze rechte Seite füllen (ohne "Aktionen")
     frame_preview.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
     # Grid-Gewichte: rechte Seite (Vorschau) wächst mit dem Fenster
-    root.grid_columnconfigure(0, weight=0)
-    root.grid_columnconfigure(1, weight=1)
-    root.grid_rowconfigure(0, weight=1)
+    host.grid_columnconfigure(0, weight=0)
+    host.grid_columnconfigure(1, weight=1)
+    host.grid_rowconfigure(0, weight=1)
 
     # ---- Output-Format (Story 4) ----
     png_view_data: dict = persistence.load_png_view()
@@ -933,7 +968,7 @@ def main() -> None:
         if str(anchor) == "top_bottom":
             fit_reason = "radio-after-ui: top_bottom"
         try:
-            root.after(0, lambda reason=fit_reason: _run_hud_fit_if_frame_mode(reason))
+            _schedule_root_after(0, lambda reason=fit_reason: _run_hud_fit_if_frame_mode(reason))
         except Exception:
             _run_hud_fit_if_frame_mode(fit_reason)
 
@@ -1922,7 +1957,7 @@ def main() -> None:
                 _safe(video_info_inflight.discard, key, label="request_video_info.inflight_discard")
                 _safe(refresh_display, label="request_video_info.refresh_display")
 
-            _safe(root.after, 0, apply, label="request_video_info.after")
+            _safe(_schedule_root_after, 0, apply, label="request_video_info.after")
 
         try:
             threading.Thread(target=worker, daemon=True).start()
@@ -2310,7 +2345,7 @@ def main() -> None:
     def run_periodic_folder_watch() -> None:
         filesvc.periodic_folder_watch(
             sync_callback=lambda: sync_from_folders_if_needed_ui(force=False),
-            schedule_callback=lambda: root.after(1000, run_periodic_folder_watch),
+            schedule_callback=lambda: _schedule_root_after(1000, run_periodic_folder_watch),
         )
 
     run_periodic_folder_watch()
@@ -2828,7 +2863,7 @@ def main() -> None:
         set_hud_width_px=hud_width_var.set,
         open_file_dialog=open_file_dialog,
         save_file_dialog=save_file_dialog,
-        schedule_after=lambda ms, fn: root.after(ms, fn),
+        schedule_after=lambda ms, fn: _schedule_root_after(ms, fn),
         save_output_format=persistence.save_output_format,
         get_presets_for_aspect=get_presets_for_aspect,
         set_output_preset_values=lambda presets: cmb_preset.config(values=presets),
@@ -3089,7 +3124,7 @@ def main() -> None:
             return
         _apply_window_layout_policy(startup=False)
 
-    root.bind("<Configure>", _on_root_resize, add="+")
+    _bind_root("<Configure>", _on_root_resize)
 
     def _startup_initialize_png_preview() -> None:
         try:
@@ -3113,13 +3148,89 @@ def main() -> None:
 
     sync_from_folders_if_needed_ui(force=True)
     try:
-        root.after(0, lambda: _apply_window_layout_policy(startup=True))
+        _schedule_root_after(0, lambda: _apply_window_layout_policy(startup=True))
     except Exception:
         _apply_window_layout_policy(startup=True)
     try:
-        root.after(0, _startup_initialize_png_preview)
+        _schedule_root_after(0, _startup_initialize_png_preview)
     except Exception:
         _startup_initialize_png_preview()
+
+    def _teardown_view(_event=None) -> None:
+        if _event is not None and _event.widget is not host:
+            return
+        if bool(_view_lifecycle["destroyed"]):
+            return
+        _view_lifecycle["destroyed"] = True
+        for after_id in list(_scheduled_after_ids):
+            try:
+                root.after_cancel(after_id)
+            except Exception:
+                pass
+        _scheduled_after_ids.clear()
+        for seq, bind_id in list(_root_bind_ids):
+            try:
+                root.unbind(seq, bind_id)
+            except Exception:
+                pass
+        _root_bind_ids.clear()
+
+    host.bind("<Destroy>", _teardown_view, add="+")
+
+
+def main() -> None:
+    root = tk.Tk()
+    root.title("iRacing Video Compare")
+    root.geometry("1200x800")
+    root.grid_columnconfigure(0, weight=1)
+    root.grid_rowconfigure(1, weight=1)
+
+    ribbon = ttk.Frame(root, padding=(10, 10, 10, 0))
+    ribbon.grid(row=0, column=0, sticky="ew")
+    content = ttk.Frame(root, padding=(0, 6, 0, 0))
+    content.grid(row=1, column=0, sticky="nsew")
+    content.grid_columnconfigure(0, weight=1)
+    content.grid_rowconfigure(0, weight=1)
+
+    buttons: dict[str, tk.Button] = {}
+    active = {"name": ""}
+    current = {"widget": None}
+
+    def _set_active_button(name: str) -> None:
+        for key, btn in buttons.items():
+            if key == name:
+                btn.configure(relief="sunken")
+            else:
+                btn.configure(relief="raised")
+
+    def _build_view(name: str) -> ttk.Frame:
+        if name == "video_analysis":
+            return VideoAnalysisView(content, root)
+        return SettingsView(content)
+
+    def show_view(name: str) -> None:
+        if active["name"] == name:
+            return
+        old = current["widget"]
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+        view = _build_view(name)
+        view.grid(row=0, column=0, sticky="nsew")
+        current["widget"] = view
+        active["name"] = name
+        _set_active_button(name)
+
+    btn_video = tk.Button(ribbon, text="Video Analysis", command=lambda: show_view("video_analysis"), padx=12, pady=6)
+    btn_settings = tk.Button(ribbon, text="Settings", command=lambda: show_view("settings"), padx=12, pady=6)
+    btn_video.grid(row=0, column=0, sticky="w")
+    btn_settings.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    buttons["video_analysis"] = btn_video
+    buttons["settings"] = btn_settings
+
+    show_view("video_analysis")
     root.mainloop()
 
 
