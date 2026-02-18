@@ -178,7 +178,10 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
 
     def _map_variants(names: tuple[str, ...], **options: object) -> None:
         for name in names:
-            style.map(name, **options)
+            try:
+                style.map(name, **options)
+            except tk.TclError:
+                pass
 
     _configure_variants(
         ("TFrame", "App.TFrame"),
@@ -204,11 +207,15 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         ("TCheckbutton", "App.TCheckbutton"),
         background=colors.surface,
         foreground=colors.text_primary,
+        indicatorcolor=colors.border,
+        selectcolor=colors.surface,
     )
     _configure_variants(
         ("TRadiobutton", "App.TRadiobutton"),
         background=colors.surface,
         foreground=colors.text_primary,
+        indicatorcolor=colors.border,
+        selectcolor=colors.surface,
     )
     _configure_variants(
         ("TEntry", "App.TEntry"),
@@ -216,6 +223,10 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         background=colors.field_background,
         foreground=colors.text_primary,
         insertcolor=colors.text_primary,
+        selectbackground=colors.selection_background,
+        selectforeground=colors.selection_foreground,
+        bordercolor=colors.border,
+        focuscolor=colors.accent,
         relief="flat",
         borderwidth=1,
     )
@@ -224,6 +235,11 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         fieldbackground=colors.field_background,
         background=colors.field_background,
         foreground=colors.text_primary,
+        insertcolor=colors.text_primary,
+        selectbackground=colors.selection_background,
+        selectforeground=colors.selection_foreground,
+        bordercolor=colors.border,
+        focuscolor=colors.accent,
         relief="flat",
         borderwidth=1,
     )
@@ -234,6 +250,8 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         foreground=colors.text_primary,
         selectbackground=colors.selection_background,
         selectforeground=colors.selection_foreground,
+        bordercolor=colors.border,
+        focuscolor=colors.accent,
     )
     for target in ("TCombobox", "App.TCombobox"):
         try:
@@ -250,17 +268,24 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         background=colors.surface,
         foreground=colors.text_primary,
         borderwidth=1,
+        bordercolor=colors.border,
+        focuscolor=colors.accent,
         relief="flat",
     )
     _map_variants(
         ("TButton", "App.TButton"),
         background=[
             ("active", colors.hover_surface),
-            ("pressed", colors.active_surface),
+            ("pressed", colors.accent),
             ("focus", colors.accent),
         ],
         foreground=[
             ("disabled", colors.text_secondary),
+            ("pressed", colors.text_primary),
+            ("active", colors.text_primary),
+        ],
+        bordercolor=[
+            ("focus", colors.accent),
         ],
     )
     _map_variants(
@@ -272,6 +297,9 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         foreground=[
             ("disabled", colors.text_secondary),
         ],
+        bordercolor=[
+            ("focus", colors.accent),
+        ],
     )
     _map_variants(
         ("TSpinbox", "App.TSpinbox"),
@@ -282,6 +310,9 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         foreground=[
             ("disabled", colors.text_secondary),
         ],
+        bordercolor=[
+            ("focus", colors.accent),
+        ],
     )
     _map_variants(
         ("TCombobox", "App.TCombobox"),
@@ -291,10 +322,27 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
             ("focus", colors.field_background_hover),
         ],
         foreground=[
+            ("readonly", colors.text_primary),
             ("disabled", colors.text_secondary),
         ],
         background=[
             ("active", colors.field_background_hover),
+            ("pressed", colors.field_background_hover),
+        ],
+        bordercolor=[
+            ("focus", colors.accent),
+        ],
+    )
+    _map_variants(
+        ("TCombobox", "App.TCombobox"),
+        arrowcolor=[
+            ("disabled", colors.text_secondary),
+        ],
+    )
+    _map_variants(
+        ("TSpinbox", "App.TSpinbox"),
+        arrowcolor=[
+            ("disabled", colors.text_secondary),
         ],
     )
     _map_variants(
@@ -302,17 +350,27 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         foreground=[
             ("disabled", colors.text_secondary),
         ],
+        indicatorcolor=[
+            ("selected", colors.accent),
+            ("active", colors.accent),
+        ],
     )
     _map_variants(
         ("TRadiobutton", "App.TRadiobutton"),
         foreground=[
             ("disabled", colors.text_secondary),
         ],
+        indicatorcolor=[
+            ("selected", colors.accent),
+            ("active", colors.accent),
+        ],
     )
     _configure_variants(
         ("TScale", "Horizontal.TScale"),
         background=colors.surface,
         troughcolor=colors.field_background,
+        bordercolor=colors.border,
+        focuscolor=colors.accent,
     )
     _map_variants(
         ("TScale", "Horizontal.TScale"),
@@ -333,7 +391,7 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
     _configure_variants(
         ("Treeview",),
         background=colors.surface,
-        fieldbackground=colors.field_background,
+        fieldbackground=colors.surface,
         foreground=colors.text_primary,
         borderwidth=1,
         relief="flat",
@@ -347,10 +405,10 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
     _map_variants(
         ("Treeview",),
         background=[
-            ("selected", colors.active_surface),
+            ("selected", colors.selection_background),
         ],
         foreground=[
-            ("selected", colors.text_primary),
+            ("selected", colors.selection_foreground),
         ],
     )
     style.configure(
@@ -387,6 +445,11 @@ def _configure_root_tk_defaults(root: tk.Tk, colors: ThemeColors) -> None:
         "*Listbox.selectbackground": colors.selection_background,
         "*Listbox.selectforeground": colors.selection_foreground,
         "*Listbox.highlightbackground": colors.border,
+        "*TCombobox*Listbox.background": colors.surface,
+        "*TCombobox*Listbox.foreground": colors.text_primary,
+        "*TCombobox*Listbox.selectbackground": colors.selection_background,
+        "*TCombobox*Listbox.selectforeground": colors.selection_foreground,
+        "*TCombobox*Listbox.highlightbackground": colors.border,
         "*Scale.troughcolor": colors.field_background,
         "*Frame.background": colors.surface,
         "*Frame.foreground": colors.text_primary,
@@ -2232,6 +2295,8 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     )
     _apply_theme_to_tk_widget(
         sld_video_scale,
+        background=colors.surface,
+        foreground=colors.text_primary,
         troughcolor=colors.hover_surface,
         highlightbackground=colors.surface,
         highlightcolor=colors.accent,
@@ -3669,6 +3734,11 @@ def main() -> None:
     root.configure(background=colors.background)
     apply_theme_fonts(theme)
     style = ttk.Style(root)
+    try:
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+    except tk.TclError:
+        pass
     _configure_app_styles(style, theme)
     _configure_root_tk_defaults(root, colors)
 
