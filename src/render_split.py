@@ -4,7 +4,7 @@ import json
 import math
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from core.models import LayoutConfig
@@ -22,6 +22,7 @@ from encoders import (
 from ffmpeg_plan import (
     DecodeSpec,
     FilterSpec,
+    Plan,
     build_plan,
     build_split_filter_from_geometry,
     build_stream_sync_filter,
@@ -303,6 +304,56 @@ class HudContext:
     window: HudWindowParams
     settings: HudRenderSettings
     log_file: Path | None = None
+
+
+@dataclass(frozen=True)
+class CutRenderJob:
+    index: int
+    start_frame: int
+    end_frame: int
+    out_path: Path
+
+
+def _build_cut_render_jobs(
+    *,
+    frame_segments: list[Any],
+    common_start_frame: int,
+    common_end_frame_exclusive: int,
+    out_dir: Path,
+) -> list[CutRenderJob]:
+    jobs: list[CutRenderJob] = []
+    i0_common = int(common_start_frame)
+    i1_common = int(common_end_frame_exclusive)
+    for seg in frame_segments:
+        try:
+            seg_start = int(getattr(seg, "start_frame"))
+            seg_end = int(getattr(seg, "end_frame"))
+        except Exception:
+            continue
+        i0 = max(i0_common, int(seg_start))
+        i1 = min(i1_common, int(seg_end) + 1)
+        if i1 <= i0:
+            continue
+        job_idx = len(jobs)
+        jobs.append(
+            CutRenderJob(
+                index=int(job_idx),
+                start_frame=int(i0),
+                end_frame=int(i1),
+                out_path=out_dir / f"cut_seg_{job_idx:03d}.mp4",
+            )
+        )
+    return jobs
+
+
+def _escape_ffconcat_path(path: Path) -> str:
+    s = str(path).replace("\\", "/")
+    return s.replace("'", "'\\''")
+
+
+def _write_ffconcat_file(path: Path, segment_files: list[Path]) -> None:
+    lines = [f"file '{_escape_ffconcat_path(p)}'" for p in segment_files]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -6471,6 +6522,7 @@ def render_split_screen_sync(
     under_oversteer_slow_frames: list[float] = []
     under_oversteer_fast_frames: list[float] = []
     under_oversteer_y_abs = 1.0
+    cut_frame_segments: list[Any] = []
 
 
     slow_min_speed_frames = _compute_min_speed_display(slow_speed_frames, float(fps_int), str(hud_speed_units)) if slow_speed_frames else []
@@ -6492,7 +6544,19 @@ def render_split_screen_sync(
             _log_print("Cut found 0 segments → Full fallback", log_file)
             effective_video_mode = "full"
         else:
-            effective_video_mode = "cut"
+            from core.cut_events import map_time_segments_to_frames
+
+            cut_frame_segments = map_time_segments_to_frames(
+                cut_segments,
+                fps=float(fps_int),
+                num_frames=int(n_cut),
+                logger=None,
+            )
+            if len(cut_frame_segments) == 0:
+                _log_print("Cut frame mapping found 0 segments → Full fallback", log_file)
+                effective_video_mode = "full"
+            else:
+                effective_video_mode = "cut"
     else:
         effective_video_mode = "full"
 
@@ -6517,6 +6581,29 @@ def render_split_screen_sync(
         max_frames = int(round(dbg_max_s * float(fps_int)))
         cut_i1 = min(cut_i1, cut_i0 + max(1, max_frames))
         print(f"[debug] IRVC_DEBUG_MAX_S={dbg_max_s} -> cut_i1 limited to {cut_i1}")    
+
+    cut_render_jobs: list[CutRenderJob] = []
+    cut_tmp_dir: Path | None = None
+    if effective_video_mode == "cut":
+        cut_tmp_dir = outp.parent / "_tmp_cut_segments" / str(outp.stem)
+        cut_render_jobs = _build_cut_render_jobs(
+            frame_segments=cut_frame_segments,
+            common_start_frame=int(cut_i0),
+            common_end_frame_exclusive=int(cut_i1),
+            out_dir=cut_tmp_dir,
+        )
+        if len(cut_render_jobs) == 0:
+            _log_print("Cut segments are outside common sync range → Full fallback", log_file)
+            effective_video_mode = "full"
+        else:
+            cut_frames_total = 0
+            for job in cut_render_jobs:
+                cut_frames_total += max(0, int(job.end_frame) - int(job.start_frame))
+            cut_duration_s = float(cut_frames_total) / float(max(1, fps_int))
+            _log_print(
+                f"[cut] segments={len(cut_render_jobs)} frames={cut_frames_total} duration_s={cut_duration_s:.3f}",
+                log_file,
+            )
 
     dbg_dir = outp.parent.parent / "debug"
     dbg_dir.mkdir(parents=True, exist_ok=True)
@@ -6784,6 +6871,161 @@ def render_split_screen_sync(
             _log_print("[csv] OK each_source_loaded_once", log_file)
 
     specs_by_vcodec = {enc.vcodec: enc for enc in encode_candidates}
+
+    if effective_video_mode == "cut":
+        if cut_tmp_dir is None or len(cut_render_jobs) == 0:
+            raise RuntimeError("cut mode active but no cut jobs available.")
+
+        cut_tmp_dir.mkdir(parents=True, exist_ok=True)
+        cut_concat_path = cut_tmp_dir / "concat.txt"
+        keep_cut_tmp = (os.environ.get("IRVC_KEEP_CUT_SEGMENTS") or "").strip().lower() in ("1", "true", "yes", "on")
+
+        def _run_one_cut_encoder(vcodec: str) -> tuple[int, bool]:
+            enc = specs_by_vcodec[vcodec]
+            live = (os.environ.get("IRVC_FFMPEG_LIVE") or "").strip() == "1"
+            hud_stream_w, hud_stream_h, _hud_stream_x0, _hud_stream_y0 = _hud_stream_rect(geom)
+
+            for job in cut_render_jobs:
+                try:
+                    if job.out_path.exists():
+                        job.out_path.unlink()
+                except Exception:
+                    pass
+                seg_hud_ctx = (
+                    replace(hud_stream_ctx, cut_i0=int(job.start_frame), cut_i1=int(job.end_frame))
+                    if hud_stream_ctx is not None
+                    else None
+                )
+                seg_hud_label = "[0:v]" if seg_hud_ctx is not None else None
+                seg_filt, seg_audio_map = build_stream_sync_filter(
+                    geom=geom,
+                    fps=float(fps_int),
+                    view_L=render_view_l,
+                    view_R=render_view_r,
+                    fast_time_s=slow_frame_to_fast_time_s,
+                    speed_diff=slow_frame_speed_diff,
+                    cut_i0=int(job.start_frame),
+                    cut_i1=int(job.end_frame),
+                    audio_source=audio_source,
+                    hud_enabled=hud_enabled,
+                    hud_boxes=hud_boxes,
+                    hud_cmd_file=hud_cmd_file,
+                    log_file=log_file,
+                    hud_input_label=seg_hud_label,
+                )
+                plan = build_plan(
+                    decode=DecodeSpec(
+                        slow=slow,
+                        fast=fast,
+                        hud_fps=float(fps_int),
+                        hud_stdin_raw=bool(seg_hud_ctx is not None),
+                        hud_size=(int(hud_stream_w), int(hud_stream_h)),
+                        hud_pix_fmt="rgba",
+                    ),
+                    flt=FilterSpec(filter_complex=seg_filt, video_map="[vout]", audio_map=seg_audio_map),
+                    enc=enc,
+                    audio_source="none",
+                    outp=job.out_path,
+                    debug_max_s=0.0,
+                )
+
+                _log_print(
+                    f"[cut] ffmpeg segment {job.index + 1}/{len(cut_render_jobs)} "
+                    f"frames={job.start_frame}..{job.end_frame - 1} out={job.out_path.name}",
+                    log_file,
+                )
+
+                if seg_hud_ctx is not None:
+                    expected_bytes = int(hud_stream_w) * int(hud_stream_h) * 4
+                    report_every = 5
+                    report_state = {"last": 0}
+
+                    def _stdin_writer(stdin_pipe: Any) -> None:
+                        def _write_frame_rgba(frame_bytes: bytes) -> None:
+                            if len(frame_bytes) != expected_bytes:
+                                raise RuntimeError(
+                                    f"HUD stream frame size mismatch: expected {expected_bytes} bytes, got {len(frame_bytes)}"
+                                )
+                            try:
+                                stdin_pipe.write(frame_bytes)
+                            except BrokenPipeError as e:
+                                raise RuntimeError("ffmpeg stdin pipe closed while streaming HUD frames.") from e
+
+                        def _on_frame_written(written: int, total: int) -> None:
+                            if written == total or written == 1 or (written - int(report_state["last"])) >= report_every:
+                                print(f"hud_stream_frame={written}/{total}", flush=True)
+                                report_state["last"] = int(written)
+
+                        _render_hud_scroll_frames_png(
+                            seg_hud_ctx,
+                            frame_writer=_write_frame_rgba,
+                            frame_written_cb=_on_frame_written,
+                        )
+                        try:
+                            stdin_pipe.flush()
+                        except Exception:
+                            pass
+
+                    rc = run_ffmpeg(
+                        plan,
+                        tail_n=20,
+                        log_file=log_file,
+                        live_stdout=live,
+                        stdin_write_fn=_stdin_writer,
+                    )
+                else:
+                    rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
+
+                if rc != 0 or (not job.out_path.exists()):
+                    return int(rc), False
+
+            _write_ffconcat_file(cut_concat_path, [j.out_path for j in cut_render_jobs])
+            _log_print(f"[cut] ffmpeg concat segments={len(cut_render_jobs)} -> {outp.name}", log_file)
+            concat_plan = Plan(
+                cmd=[
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-y",
+                    "-nostats",
+                    "-progress",
+                    "pipe:1",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(cut_concat_path),
+                    "-c",
+                    "copy",
+                    str(outp),
+                ],
+                filter_complex="",
+                filter_script_path=None,
+            )
+            concat_rc = run_ffmpeg(concat_plan, tail_n=20, log_file=log_file, live_stdout=live)
+            return int(concat_rc), (int(concat_rc) == 0 and outp.exists())
+
+        selected_vcodec, last_rc = run_encode_with_fallback(
+            build_cmd_fn=_run_one_cut_encoder,
+            encoder_order=[enc.vcodec for enc in encode_candidates],
+            log_fn=print,
+        )
+        if selected_vcodec != "":
+            if not keep_cut_tmp:
+                for job in cut_render_jobs:
+                    try:
+                        if job.out_path.exists():
+                            job.out_path.unlink()
+                    except Exception:
+                        pass
+                try:
+                    if cut_concat_path.exists():
+                        cut_concat_path.unlink()
+                except Exception:
+                    pass
+            print(f"[sync6] sync_cache_json={sync_cache_path}")
+            return
+        raise RuntimeError(f"ffmpeg failed (rc={last_rc})")
 
     def _run_one_encoder(vcodec: str) -> tuple[int, bool]:
         enc = specs_by_vcodec[vcodec]
