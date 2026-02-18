@@ -6933,6 +6933,7 @@ def render_split_screen_sync(
 
         cut_tmp_dir.mkdir(parents=True, exist_ok=True)
         cut_concat_path = cut_tmp_dir / "concat.txt"
+        cut_black_hold_path = cut_tmp_dir / "cut_black_hold.mp4"
         keep_cut_tmp = (os.environ.get("IRVC_KEEP_CUT_SEGMENTS") or "").strip().lower() in ("1", "true", "yes", "on")
 
         def _run_one_cut_encoder(vcodec: str) -> tuple[int, bool]:
@@ -6968,6 +6969,21 @@ def render_split_screen_sync(
                     log_file=log_file,
                     hud_input_label=seg_hud_label,
                 )
+                seg_video_map = "[vout]"
+                seg_fade_ops: list[str] = []
+                seg_duration_s = max(0.0, float(int(job.end_frame) - int(job.start_frame)) / float(max(1, int(fps_int))))
+                if job.index > 0 and seg_duration_s > 0.0:
+                    seg_fade_in_d = min(0.1, seg_duration_s)
+                    if seg_fade_in_d > 0.0:
+                        seg_fade_ops.append(f"fade=t=in:st=0:d={seg_fade_in_d:.6f}")
+                if job.index < (len(cut_render_jobs) - 1) and seg_duration_s > 0.0:
+                    seg_fade_out_d = min(0.1, seg_duration_s)
+                    if seg_fade_out_d > 0.0:
+                        seg_fade_out_st = max(0.0, seg_duration_s - seg_fade_out_d)
+                        seg_fade_ops.append(f"fade=t=out:st={seg_fade_out_st:.6f}:d={seg_fade_out_d:.6f}")
+                if seg_fade_ops:
+                    seg_filt = f"{seg_filt};[vout]{','.join(seg_fade_ops)}[vout_cut]"
+                    seg_video_map = "[vout_cut]"
                 plan = build_plan(
                     decode=DecodeSpec(
                         slow=slow,
@@ -6977,7 +6993,7 @@ def render_split_screen_sync(
                         hud_size=(int(hud_stream_w), int(hud_stream_h)),
                         hud_pix_fmt="rgba",
                     ),
-                    flt=FilterSpec(filter_complex=seg_filt, video_map="[vout]", audio_map=seg_audio_map),
+                    flt=FilterSpec(filter_complex=seg_filt, video_map=seg_video_map, audio_map=seg_audio_map),
                     enc=enc,
                     audio_source="none",
                     outp=job.out_path,
@@ -7035,8 +7051,50 @@ def render_split_screen_sync(
                 if rc != 0 or (not job.out_path.exists()):
                     return int(rc), False
 
-            _write_ffconcat_file(cut_concat_path, [j.out_path for j in cut_render_jobs])
-            _log_print(f"[cut] ffmpeg concat segments={len(cut_render_jobs)} -> {outp.name}", log_file)
+            if len(cut_render_jobs) > 1:
+                try:
+                    if cut_black_hold_path.exists():
+                        cut_black_hold_path.unlink()
+                except Exception:
+                    pass
+                black_hold_s = 0.2
+                black_plan_cmd = [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-y",
+                    "-nostats",
+                    "-progress",
+                    "pipe:1",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"color=c=black:s={int(geom.W)}x{int(geom.H)}:r={int(fps_int)}:d={black_hold_s:.6f}",
+                    "-map",
+                    "0:v",
+                    "-c:v",
+                    enc.vcodec,
+                    "-pix_fmt",
+                    enc.pix_fmt,
+                ]
+                black_plan_cmd += list(enc.extra)
+                if enc.fps and enc.fps > 0.1:
+                    black_plan_cmd += ["-r", f"{enc.fps}"]
+                black_plan_cmd += [str(cut_black_hold_path)]
+                black_plan = Plan(cmd=black_plan_cmd, filter_complex="", filter_script_path=None)
+                black_rc = run_ffmpeg(black_plan, tail_n=20, log_file=log_file, live_stdout=live)
+                if black_rc != 0 or (not cut_black_hold_path.exists()):
+                    return int(black_rc), False
+
+            concat_files: list[Path] = []
+            for idx, job in enumerate(cut_render_jobs):
+                concat_files.append(job.out_path)
+                if len(cut_render_jobs) > 1 and idx < (len(cut_render_jobs) - 1):
+                    concat_files.append(cut_black_hold_path)
+            _write_ffconcat_file(cut_concat_path, concat_files)
+            _log_print(
+                f"[cut] ffmpeg concat segments={len(cut_render_jobs)} transitions={max(0, len(cut_render_jobs) - 1)} -> {outp.name}",
+                log_file,
+            )
             concat_plan = Plan(
                 cmd=[
                     "ffmpeg",
@@ -7074,6 +7132,11 @@ def render_split_screen_sync(
                             job.out_path.unlink()
                     except Exception:
                         pass
+                try:
+                    if cut_black_hold_path.exists():
+                        cut_black_hold_path.unlink()
+                except Exception:
+                    pass
                 try:
                     if cut_concat_path.exists():
                         cut_concat_path.unlink()
