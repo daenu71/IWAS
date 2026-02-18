@@ -2,7 +2,7 @@
 
 import os
 import math
-from typing import Any
+from typing import Any, Callable
 
 from huds.common import (
     COL_HUD_BG,
@@ -11,6 +11,161 @@ from huds.common import (
     draw_stripe_grid,
     value_boundaries_to_y,
 )
+
+
+def tb_max_brake_new_state() -> dict[str, Any]:
+    return {
+        "in_phase": False,
+        "armed": False,
+        "peak": 0.0,
+        "last_committed_pct": 0.0,
+        "last_zero_dist": None,
+        "rearm_block_until_dist": None,
+        "was_zero": False,
+    }
+
+
+def _tb_max_brake_forward_delta(ld_from: float, ld_to: float) -> float:
+    try:
+        a = float(ld_from)
+        b = float(ld_to)
+    except Exception:
+        return 0.0
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return 0.0
+    d = float(b - a)
+    if d >= 0.0:
+        return d
+    return float(d % 1.0)
+
+
+def tb_update_max_brake_state(
+    st_local: dict[str, Any],
+    brake_now: float,
+    lapdist_now: float,
+    delay_dist: float,
+    override_pressure_pct: float,
+    side_name: str,
+    hud_dbg: bool = False,
+    log_fn: Callable[[str], None] | None = None,
+) -> None:
+    def _dbg(msg: str) -> None:
+        if bool(hud_dbg) and callable(log_fn):
+            try:
+                log_fn(str(msg))
+            except Exception:
+                pass
+
+    try:
+        b_now = float(brake_now)
+    except Exception:
+        b_now = 0.0
+    if not math.isfinite(float(b_now)):
+        b_now = 0.0
+    if b_now < 0.0:
+        b_now = 0.0
+    if b_now > 1.0:
+        b_now = 1.0
+
+    try:
+        ld_now = float(lapdist_now)
+    except Exception:
+        ld_now = 0.0
+    if not math.isfinite(float(ld_now)):
+        ld_now = 0.0
+
+    try:
+        delay = float(delay_dist)
+    except Exception:
+        delay = 0.0
+    if (not math.isfinite(float(delay))) or float(delay) < 0.0:
+        delay = 0.0
+
+    try:
+        override_pct = float(override_pressure_pct)
+    except Exception:
+        override_pct = 35.0
+    if not math.isfinite(float(override_pct)):
+        override_pct = 35.0
+    if override_pct < 0.0:
+        override_pct = 0.0
+    if override_pct > 100.0:
+        override_pct = 100.0
+    override_brake = float(override_pct) / 100.0
+
+    in_phase = bool(st_local.get("in_phase", False))
+    was_zero = bool(st_local.get("was_zero", False))
+    is_zero_now = float(b_now) == 0.0
+
+    # Phase boundaries are strictly keyed by exact Brake == 0.
+    if is_zero_now:
+        if in_phase:
+            peak = float(st_local.get("peak", 0.0))
+            if peak < 0.0:
+                peak = 0.0
+            if peak > 1.0:
+                peak = 1.0
+            peak_pct = float(max(0.0, min(100.0, round(float(peak) * 100.0))))
+            st_local["last_committed_pct"] = float(peak_pct)
+            _dbg(f"[tb-max-brake] side={side_name} event=commit lapdist={ld_now:.6f} peak_pct={peak_pct:.0f}")
+            st_local["in_phase"] = False
+            st_local["peak"] = 0.0
+            st_local["last_zero_dist"] = float(ld_now)
+            st_local["armed"] = False
+            st_local["rearm_block_until_dist"] = float(ld_now) + float(delay)
+        elif not was_zero:
+            st_local["armed"] = False
+        st_local["was_zero"] = True
+        return
+
+    st_local["was_zero"] = False
+
+    if not in_phase:
+        if not bool(st_local.get("armed", False)):
+            allow_start = True
+            zero_ld = st_local.get("last_zero_dist")
+            if float(delay) > 0.0 and zero_ld is not None:
+                dist_since_zero = _tb_max_brake_forward_delta(float(zero_ld), float(ld_now))
+                if float(dist_since_zero) < float(delay):
+                    allow_start = False
+                    if float(b_now) >= float(override_brake):
+                        allow_start = True
+                        _dbg(
+                            f"[tb-max-brake] side={side_name} event=override lapdist={ld_now:.6f} brake_pct={float(b_now) * 100.0:.1f} threshold_pct={float(override_pct):.1f}"
+                        )
+            if allow_start:
+                st_local["in_phase"] = True
+                st_local["peak"] = float(b_now)
+                st_local["armed"] = True
+                _dbg(f"[tb-max-brake] side={side_name} event=start lapdist={ld_now:.6f}")
+            return
+        st_local["in_phase"] = True
+        st_local["peak"] = float(b_now)
+        return
+
+    st_local["peak"] = float(max(float(st_local.get("peak", 0.0)), float(b_now)))
+
+
+def tb_max_brake_debug_sequence(
+    samples: list[tuple[float, float]],
+    delay_dist: float,
+    override_pressure_pct: float,
+) -> list[float]:
+    st = tb_max_brake_new_state()
+    out: list[float] = []
+    for brake, lapdist in samples:
+        tb_update_max_brake_state(
+            st,
+            float(brake),
+            float(lapdist),
+            float(delay_dist),
+            float(override_pressure_pct),
+            side_name="debug",
+            hud_dbg=False,
+            log_fn=None,
+        )
+        out.append(float(st.get("last_committed_pct", 0.0)))
+    return out
 
 
 def render_throttle_brake(ctx: dict[str, Any], box: tuple[int, int, int, int], dr: Any) -> None:

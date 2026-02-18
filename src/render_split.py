@@ -64,7 +64,11 @@ from huds.speed import (
     render_speed_table_static,
 )
 from huds.steering import render_steering
-from huds.throttle_brake import render_throttle_brake
+from huds.throttle_brake import (
+    render_throttle_brake,
+    tb_max_brake_new_state,
+    tb_update_max_brake_state,
+)
 from huds.under_oversteer import render_under_oversteer
 
 # Orchestrator flow used by render_split_screen_sync:
@@ -2077,6 +2081,7 @@ def _render_hud_scroll_frames_png(
     hud_speed_units = str(ctx.settings.speed_units)
     hud_speed_update_hz = int(ctx.settings.speed_update_hz)
     hud_gear_rpm_update_hz = int(ctx.settings.gear_rpm_update_hz)
+    log_file = ctx.log_file
     hud_curve_points_default = int(ctx.settings.curve_points_default)
     hud_curve_points_overrides = ctx.settings.curve_points_overrides
     hud_pedals_sample_mode = str(getattr(ctx.settings, "pedals_sample_mode", "time") or "time").strip().lower()
@@ -2097,6 +2102,10 @@ def _render_hud_scroll_frames_png(
     if (not math.isfinite(float(hud_max_brake_delay_distance))) or float(hud_max_brake_delay_distance) < 0.0:
         hud_max_brake_delay_distance = 0.0
     if float(hud_max_brake_delay_distance) > 1.0:
+        _log_print(
+            f"[tb-max-brake] max_brake_delay_distance={float(hud_max_brake_delay_distance):.6f} is > 1.0; unit is LapDistPct delta. Clamping to 1.0.",
+            log_file,
+        )
         hud_max_brake_delay_distance = 1.0
 
     try:
@@ -2109,9 +2118,7 @@ def _render_hud_scroll_frames_png(
         hud_max_brake_delay_pressure = 0.0
     if float(hud_max_brake_delay_pressure) > 100.0:
         hud_max_brake_delay_pressure = 100.0
-    hud_max_brake_delay_pressure_scale = float(hud_max_brake_delay_pressure) / 100.0
 
-    log_file = ctx.log_file
     table_cache_dbg = (os.environ.get("IRVC_DEBUG_TABLE_CACHE") or "0").strip().lower() in ("1", "true", "yes", "on")
     _ = hud_name
 
@@ -3504,7 +3511,8 @@ def _render_hud_scroll_frames_png(
                                 s_ld = float(slow_frame_to_lapdist[int(idx_slow)])
                         except Exception:
                             s_ld = 0.0
-                        s_ld = float(s_ld) % 1.0
+                        if not math.isfinite(float(s_ld)):
+                            s_ld = 0.0
 
                         f_ld = float(s_ld)
                         try:
@@ -3515,7 +3523,8 @@ def _render_hud_scroll_frames_png(
                                     f_ld = float(_tb_sample_legacy(fast_lapdist_frames, int(fi_map), 1.0))
                         except Exception:
                             f_ld = float(s_ld)
-                        f_ld = float(f_ld) % 1.0
+                        if not math.isfinite(float(f_ld)):
+                            f_ld = float(s_ld)
 
                         y_s_t = int(tb_layout["y_from_01"](float(s_t)))
                         y_s_b = int(tb_layout["y_from_01"](float(s_b)))
@@ -3599,91 +3608,6 @@ def _render_hud_scroll_frames_png(
                                 return int(dr_any.textlength(str(text), font=font_obj))
                             except Exception:
                                 return int(len(str(text)) * 8)
-
-                    def _tb_max_brake_new_state() -> dict[str, Any]:
-                        return {
-                            "armed": False,
-                            "in_phase": False,
-                            "phase_peak": 0.0,
-                            "last_max_brake_percent": 0.0,
-                            "last_zero_lapdist": None,
-                            "was_zero": False,
-                        }
-
-                    def _tb_max_brake_forward_delta(ld_from: float, ld_to: float) -> float:
-                        return float((float(ld_to) - float(ld_from)) % 1.0)
-
-                    def _tb_update_max_brake_state(
-                        st_local: dict[str, Any],
-                        brake_now: float,
-                        lapdist_now: float,
-                        side_name: str,
-                    ) -> None:
-                        b_now = float(_clamp(float(brake_now), 0.0, 1.0))
-                        ld_now = float(lapdist_now) % 1.0
-                        if not math.isfinite(float(b_now)):
-                            b_now = 0.0
-                        if not math.isfinite(float(ld_now)):
-                            ld_now = 0.0
-                        in_phase = bool(st_local.get("in_phase", False))
-                        was_zero = bool(st_local.get("was_zero", False))
-                        is_zero_now = float(b_now) == 0.0
-
-                        # Strict rule: phase end/rearm is only on exact zero.
-                        if is_zero_now:
-                            if in_phase:
-                                peak = float(_clamp(float(st_local.get("phase_peak", 0.0)), 0.0, 1.0))
-                                peak_pct = float(_clamp(float(round(float(peak) * 100.0)), 0.0, 100.0))
-                                st_local["last_max_brake_percent"] = float(peak_pct)
-                                st_local["in_phase"] = False
-                                st_local["phase_peak"] = 0.0
-                                if hud_dbg:
-                                    _log_print(
-                                        f"[tb-max-brake] side={side_name} event=commit lapdist={ld_now:.6f} peak_pct={peak_pct:.0f}",
-                                        log_file,
-                                    )
-                                st_local["armed"] = True
-                                st_local["last_zero_lapdist"] = float(ld_now)
-                            elif not was_zero:
-                                st_local["armed"] = True
-                                st_local["last_zero_lapdist"] = float(ld_now)
-                            st_local["was_zero"] = True
-                            return
-
-                        st_local["was_zero"] = False
-
-                        if in_phase:
-                            st_local["phase_peak"] = float(max(float(st_local.get("phase_peak", 0.0)), float(b_now)))
-                            return
-
-                        if not bool(st_local.get("armed", False)):
-                            return
-
-                        allow_start = True
-                        zero_ld = st_local.get("last_zero_lapdist")
-                        if (
-                            float(hud_max_brake_delay_distance) > 0.0
-                            and zero_ld is not None
-                        ):
-                            dist_since_zero = _tb_max_brake_forward_delta(float(zero_ld), float(ld_now))
-                            if float(dist_since_zero) < float(hud_max_brake_delay_distance):
-                                allow_start = False
-                                if float(b_now) >= float(hud_max_brake_delay_pressure_scale):
-                                    allow_start = True
-                                    if hud_dbg:
-                                        _log_print(
-                                            f"[tb-max-brake] side={side_name} event=override lapdist={ld_now:.6f} brake_pct={float(b_now) * 100.0:.1f} threshold_pct={float(hud_max_brake_delay_pressure):.1f}",
-                                            log_file,
-                                        )
-
-                        if allow_start:
-                            st_local["in_phase"] = True
-                            st_local["phase_peak"] = float(b_now)
-                            if hud_dbg:
-                                _log_print(
-                                    f"[tb-max-brake] side={side_name} event=start lapdist={ld_now:.6f}",
-                                    log_file,
-                                )
 
                     def _tb_pct_text(v_01: float) -> str:
                         pct = int(round(float(_clamp(float(v_01), 0.0, 1.0) * 100.0)))
@@ -3933,34 +3857,42 @@ def _render_hud_scroll_frames_png(
                         tb_max_states = renderer_state.helpers.get("tb_max_brake_states")
                         if not isinstance(tb_max_states, dict):
                             tb_max_states = {
-                                "slow": _tb_max_brake_new_state(),
-                                "fast": _tb_max_brake_new_state(),
+                                "slow": tb_max_brake_new_state(),
+                                "fast": tb_max_brake_new_state(),
                             }
                             renderer_state.helpers["tb_max_brake_states"] = tb_max_states
                         if not isinstance(tb_max_states.get("slow"), dict):
-                            tb_max_states["slow"] = _tb_max_brake_new_state()
+                            tb_max_states["slow"] = tb_max_brake_new_state()
                         if not isinstance(tb_max_states.get("fast"), dict):
-                            tb_max_states["fast"] = _tb_max_brake_new_state()
+                            tb_max_states["fast"] = tb_max_brake_new_state()
 
                         idx_cur = int(cur_col.get("slow_idx", -1))
                         last_idx = renderer_state.helpers.get("tb_max_brake_last_idx")
                         if last_idx is None or int(last_idx) != int(idx_cur):
-                            _tb_update_max_brake_state(
+                            tb_update_max_brake_state(
                                 tb_max_states["slow"],
                                 float(cur_col.get("s_b", 0.0)),
                                 float(cur_col.get("s_ld", 0.0)),
+                                float(hud_max_brake_delay_distance),
+                                float(hud_max_brake_delay_pressure),
                                 "slow",
+                                hud_dbg=bool(hud_dbg),
+                                log_fn=lambda msg: _log_print(msg, log_file),
                             )
-                            _tb_update_max_brake_state(
+                            tb_update_max_brake_state(
                                 tb_max_states["fast"],
                                 float(cur_col.get("f_b", 0.0)),
                                 float(cur_col.get("f_ld", 0.0)),
+                                float(hud_max_brake_delay_distance),
+                                float(hud_max_brake_delay_pressure),
                                 "fast",
+                                hud_dbg=bool(hud_dbg),
+                                log_fn=lambda msg: _log_print(msg, log_file),
                             )
                             renderer_state.helpers["tb_max_brake_last_idx"] = int(idx_cur)
 
-                        s_max_pct = int(round(float(_clamp(float(tb_max_states["slow"].get("last_max_brake_percent", 0.0)), 0.0, 100.0))))
-                        f_max_pct = int(round(float(_clamp(float(tb_max_states["fast"].get("last_max_brake_percent", 0.0)), 0.0, 100.0))))
+                        s_max_pct = int(round(float(_clamp(float(tb_max_states["slow"].get("last_committed_pct", 0.0)), 0.0, 100.0))))
+                        f_max_pct = int(round(float(_clamp(float(tb_max_states["fast"].get("last_committed_pct", 0.0)), 0.0, 100.0))))
                         s_abs_pct = 100 if bool(cur_col.get("abs_s_raw_on", False)) else 0
                         f_abs_pct = 100 if bool(cur_col.get("abs_f_raw_on", False)) else 0
 
@@ -6400,6 +6332,10 @@ def render_split_screen_sync(
     if (not math.isfinite(float(hud_max_brake_delay_distance))) or float(hud_max_brake_delay_distance) < 0.0:
         hud_max_brake_delay_distance = 0.0
     if float(hud_max_brake_delay_distance) > 1.0:
+        _log_print(
+            f"[tb-max-brake] max_brake_delay_distance={float(hud_max_brake_delay_distance):.6f} is > 1.0; unit is LapDistPct delta. Clamping to 1.0.",
+            log_file,
+        )
         hud_max_brake_delay_distance = 1.0
 
     try:
