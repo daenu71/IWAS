@@ -78,7 +78,6 @@ class PngPreviewController:
         read_frame_as_pil: Callable[[Path, int], Image.Image | None],
         get_hud_boxes: Callable[[], list[dict]] | None = None,
         get_enabled_types: Callable[[], set[str]] | None = None,
-        get_overlay_flags: Callable[[], dict[str, bool]] | None = None,
         on_preview_geometry: Callable[[Any, int, int, float, int, int, int], None] | None = None,
         on_video_transform_changed: Callable[[], None] | None = None,
     ) -> None:
@@ -94,7 +93,6 @@ class PngPreviewController:
         self._read_frame_as_pil = read_frame_as_pil
         self._get_hud_boxes = get_hud_boxes
         self._get_enabled_types = get_enabled_types
-        self._get_overlay_flags = get_overlay_flags
         self._on_preview_geometry = on_preview_geometry
         self._on_video_transform_changed = on_video_transform_changed
 
@@ -155,21 +153,6 @@ class PngPreviewController:
         except Exception:
             return None
         return getattr(output, "layout_config", None)
-
-    def _overlay_flags(self) -> dict[str, bool]:
-        if self._get_overlay_flags is None:
-            return {"video_rects": True, "hud_boxes": True, "labels": True}
-        try:
-            flags = self._get_overlay_flags()
-        except Exception:
-            return {"video_rects": True, "hud_boxes": True, "labels": True}
-        if not isinstance(flags, dict):
-            return {"video_rects": True, "hud_boxes": True, "labels": True}
-        return {
-            "video_rects": bool(flags.get("video_rects", True)),
-            "hud_boxes": bool(flags.get("hud_boxes", True)),
-            "labels": bool(flags.get("labels", True)),
-        }
 
     def _sync_state_from_video_transform(self) -> None:
         cfg = self._layout_config()
@@ -529,7 +512,6 @@ class PngPreviewController:
 
         draw_w = max(1, x1 - x0)
         draw_h = max(1, y1 - y0)
-        overlays = self._overlay_flags()
 
         def out_rect_to_frame(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
             fx0 = int(round(float(x) * float(scale)))
@@ -649,24 +631,22 @@ class PngPreviewController:
         # Output-Frame always visible
         self.canvas.create_rectangle(x0, y0, x1, y1)
 
-        if overlays["video_rects"]:
-            self.canvas.create_rectangle(x0 + lx0, y0 + ly0, x0 + lx1, y0 + ly1)
-            self.canvas.create_rectangle(x0 + rx0, y0 + ry0, x0 + rx1, y0 + ry1)
-            for hr in hud_regions:
-                hx0, hy0, hx1, hy1 = hr
-                self.canvas.create_rectangle(x0 + hx0, y0 + hy0, x0 + hx1, y0 + hy1)
+        self.canvas.create_rectangle(x0 + lx0, y0 + ly0, x0 + lx1, y0 + ly1)
+        self.canvas.create_rectangle(x0 + rx0, y0 + ry0, x0 + rx1, y0 + ry1)
+        for hr in hud_regions:
+            hx0, hy0, hx1, hy1 = hr
+            self.canvas.create_rectangle(x0 + hx0, y0 + hy0, x0 + hx1, y0 + hy1)
 
-        if overlays["labels"]:
-            self.canvas.create_text(int(x0 + (lx0 + lx1) / 2), int(y0 + ly0 + 14), anchor="n", text="Video 1")
-            self.canvas.create_text(int(x0 + (rx0 + rx1) / 2), int(y0 + ry0 + 14), anchor="n", text="Video 2")
-            for idx, hr in enumerate(hud_regions):
-                hx0, hy0, hx1, hy1 = hr
-                self.canvas.create_text(
-                    int(x0 + (hx0 + hx1) / 2),
-                    int(y0 + (hy0 + hy1) / 2),
-                    anchor="center",
-                    text=f"HUD {idx + 1}",
-                )
+        self.canvas.create_text(int(x0 + (lx0 + lx1) / 2), int(y0 + ly0 + 14), anchor="n", text="Video 1")
+        self.canvas.create_text(int(x0 + (rx0 + rx1) / 2), int(y0 + ry0 + 14), anchor="n", text="Video 2")
+        for idx, hr in enumerate(hud_regions):
+            hx0, hy0, hx1, hy1 = hr
+            self.canvas.create_text(
+                int(x0 + (hx0 + hx1) / 2),
+                int(y0 + (hy0 + hy1) / 2),
+                anchor="center",
+                text=f"HUD {idx + 1}",
+            )
 
         hud_boxes: list[dict] = []
         if self._get_hud_boxes is not None:
@@ -683,48 +663,45 @@ class PngPreviewController:
             except Exception:
                 enabled_types = set()
 
-        if overlays["hud_boxes"] or overlays["labels"]:
-            for b in hud_boxes:
-                t = str(b.get("type") or "")
-                if t not in enabled_types:
-                    continue
-                try:
-                    bx = int(b.get("x", 0))
-                    by = int(b.get("y", 0))
-                    bw = int(b.get("w", 200))
-                    bh = int(b.get("h", 100))
-                except Exception:
-                    continue
-                cx0, cy0, cx1, cy1 = out_rect_to_frame(bx, by, bw, bh)
-                tag = f"hud_{t.replace(' ', '_').replace('/', '_')}"
-                if overlays["hud_boxes"]:
-                    self.canvas.create_rectangle(
-                        x0 + cx0,
-                        y0 + cy0,
-                        x0 + cx1,
-                        y0 + cy1,
-                        fill="white",
-                        outline="black",
-                        tags=("hud_box", tag),
-                    )
-                    hx0 = max(x0 + cx0, x0 + cx1 - 12)
-                    hy0 = max(y0 + cy0, y0 + cy1 - 12)
-                    self.canvas.create_rectangle(
-                        hx0,
-                        hy0,
-                        x0 + cx1,
-                        y0 + cy1,
-                        fill="white",
-                        outline="black",
-                        tags=("hud_handle", tag),
-                    )
-                if overlays["labels"]:
-                    self.canvas.create_text(
-                        int(x0 + (cx0 + cx1) / 2),
-                        int(y0 + (cy0 + cy1) / 2),
-                        text=t,
-                        tags=("hud_box", tag),
-                    )
+        for b in hud_boxes:
+            t = str(b.get("type") or "")
+            if t not in enabled_types:
+                continue
+            try:
+                bx = int(b.get("x", 0))
+                by = int(b.get("y", 0))
+                bw = int(b.get("w", 200))
+                bh = int(b.get("h", 100))
+            except Exception:
+                continue
+            cx0, cy0, cx1, cy1 = out_rect_to_frame(bx, by, bw, bh)
+            tag = f"hud_{t.replace(' ', '_').replace('/', '_')}"
+            self.canvas.create_rectangle(
+                x0 + cx0,
+                y0 + cy0,
+                x0 + cx1,
+                y0 + cy1,
+                fill="white",
+                outline="black",
+                tags=("hud_box", tag),
+            )
+            hx0 = max(x0 + cx0, x0 + cx1 - 12)
+            hy0 = max(y0 + cy0, y0 + cy1 - 12)
+            self.canvas.create_rectangle(
+                hx0,
+                hy0,
+                x0 + cx1,
+                y0 + cy1,
+                fill="white",
+                outline="black",
+                tags=("hud_handle", tag),
+            )
+            self.canvas.create_text(
+                int(x0 + (cx0 + cx1) / 2),
+                int(y0 + (cy0 + cy1) / 2),
+                text=t,
+                tags=("hud_box", tag),
+            )
 
         # Wichtig: Referenz halten
         self.canvas._tk_img = tk_img

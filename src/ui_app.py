@@ -2326,28 +2326,8 @@ def main() -> None:
 
     preview_mode_var = tk.StringVar(value="png")
 
-    show_video_rects_var = tk.BooleanVar(value=True)
-    show_hud_boxes_var = tk.BooleanVar(value=True)
-    show_labels_var = tk.BooleanVar(value=True)
-
     btn_png_fit = ttk.Button(preview_mode_bar, text="Video auf Rahmenh\u00f6he")
     btn_png_fit.grid(row=0, column=0, sticky="w", padx=(0, 12))
-    ttk.Checkbutton(preview_mode_bar, text="Show video rects", variable=show_video_rects_var).grid(
-        row=0, column=1, sticky="w", padx=(0, 8)
-    )
-    ttk.Checkbutton(preview_mode_bar, text="Show HUD boxes", variable=show_hud_boxes_var).grid(
-        row=0, column=2, sticky="w", padx=(0, 8)
-    )
-    ttk.Checkbutton(preview_mode_bar, text="Show labels", variable=show_labels_var).grid(
-        row=0, column=3, sticky="w"
-    )
-
-    def get_preview_overlay_flags() -> dict[str, bool]:
-        return {
-            "video_rects": bool(show_video_rects_var.get()),
-            "hud_boxes": bool(show_hud_boxes_var.get()),
-            "labels": bool(show_labels_var.get()),
-        }
 
     def update_png_fit_button_text() -> None:
         try:
@@ -2489,7 +2469,6 @@ def main() -> None:
         read_frame_as_pil=read_frame_as_pil,
         get_hud_boxes=lambda: hud_boxes,
         get_enabled_types=lambda: enabled_types(),
-        get_overlay_flags=get_preview_overlay_flags,
         on_preview_geometry=on_preview_geometry,
         on_video_transform_changed=lambda: _sync_video_transform_vars_from_model(),
     )
@@ -2608,11 +2587,10 @@ def main() -> None:
         layout_preview_ctrl.on_layout_hover(e, hud_boxes, enabled_types())
 
     def on_preview_canvas_down(e) -> None:
-        if bool(show_hud_boxes_var.get()):
-            t, _mode = layout_preview_ctrl.hit_test_box(int(e.x), int(e.y), hud_boxes, enabled_types())
-            if t is not None:
-                layout_preview_ctrl.on_layout_mouse_down(e, hud_boxes, enabled_types())
-                return
+        t, _mode = layout_preview_ctrl.hit_test_box(int(e.x), int(e.y), hud_boxes, enabled_types())
+        if t is not None:
+            layout_preview_ctrl.on_layout_mouse_down(e, hud_boxes, enabled_types())
+            return
         png_on_down(e)
 
     def on_preview_canvas_drag(e) -> None:
@@ -2634,12 +2612,6 @@ def main() -> None:
     preview_canvas.bind("<ButtonPress-1>", on_preview_canvas_down)
     preview_canvas.bind("<B1-Motion>", on_preview_canvas_drag)
     preview_canvas.bind("<ButtonRelease-1>", on_preview_canvas_up)
-
-    for _overlay_var in (show_video_rects_var, show_hud_boxes_var, show_labels_var):
-        try:
-            _overlay_var.trace_add("write", lambda *_: refresh_layout_preview())
-        except Exception:
-            pass
 
     # Default: Unified Preview sichtbar
     try:
