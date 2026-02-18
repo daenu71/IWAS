@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import bisect
 import logging
 import math
+from dataclasses import dataclass
 from typing import Any, Sequence
+
+
+@dataclass(frozen=True)
+class FrameSegment:
+    start_frame: int
+    end_frame: int
+    start_time_s: float
+    end_time_s: float
 
 
 def _log_line(logger: Any, level: str, message: str) -> None:
@@ -67,6 +77,204 @@ def _append_or_merge_segment(
         segments[-1] = (prev_start, merged_end)
         return
     segments.append((start_s, end_s))
+
+
+def _validate_time_segments_sorted(
+    segments: Sequence[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    normalized: list[tuple[float, float]] = []
+    prev_start: float | None = None
+    for idx, raw in enumerate(segments):
+        if len(raw) != 2:
+            raise ValueError(f"segment at index {idx} must contain (start_s, end_s).")
+        start_s = float(raw[0])
+        end_s = float(raw[1])
+        if not math.isfinite(start_s) or not math.isfinite(end_s):
+            raise ValueError(f"segment at index {idx} has non-finite time values.")
+        if prev_start is not None and start_s < prev_start:
+            raise ValueError(
+                "segments must be sorted by start time. "
+                f"index={idx} start_s={start_s} prev_start_s={prev_start}"
+            )
+        prev_start = start_s
+        if end_s < start_s:
+            end_s = start_s
+        normalized.append((start_s, end_s))
+    return normalized
+
+
+def _append_or_merge_frame_segment(
+    mapped: list[FrameSegment],
+    candidate: FrameSegment,
+) -> None:
+    if not mapped:
+        mapped.append(candidate)
+        return
+
+    prev = mapped[-1]
+    if candidate.start_frame < prev.start_frame:
+        raise ValueError(
+            "mapped segments became non-monotonic by start_frame. "
+            f"candidate={candidate.start_frame} prev={prev.start_frame}"
+        )
+
+    if candidate.start_frame <= prev.end_frame:
+        merged = FrameSegment(
+            start_frame=prev.start_frame,
+            end_frame=max(prev.end_frame, candidate.end_frame),
+            start_time_s=prev.start_time_s,
+            end_time_s=max(prev.end_time_s, candidate.end_time_s),
+        )
+        mapped[-1] = merged
+        return
+
+    mapped.append(candidate)
+
+
+def map_time_segments_to_frame_indices(
+    segments: Sequence[tuple[float, float]],
+    frame_time_s: Sequence[float],
+    logger: Any = None,
+) -> list[FrameSegment]:
+    """
+    Mappt Zeitsegmente deterministisch auf Frame-Indizes (end_frame inklusiv).
+
+    Konvention (entspricht floor/ceil-1 auf Zeitbasis):
+    - start_frame = letzter Frame mit frame_time <= t_start
+    - end_frame   = letzter Frame mit frame_time <  t_end
+    - falls durch Rundung leer: end_frame = start_frame
+    """
+    if not frame_time_s:
+        return []
+
+    frame_times: list[float] = []
+    prev_t: float | None = None
+    for idx, raw_t in enumerate(frame_time_s):
+        t = float(raw_t)
+        if not math.isfinite(t):
+            raise ValueError(f"frame_time_s at index {idx} is non-finite.")
+        if prev_t is not None and t < prev_t:
+            raise ValueError(
+                "frame_time_s must be sorted ascending. "
+                f"index={idx} time_s={t} prev_time_s={prev_t}"
+            )
+        prev_t = t
+        frame_times.append(t)
+
+    n_frames = len(frame_times)
+    max_frame = n_frames - 1
+    normalized = _validate_time_segments_sorted(segments)
+    mapped: list[FrameSegment] = []
+
+    for start_s, end_s in normalized:
+        start_frame = bisect.bisect_right(frame_times, start_s) - 1
+        if start_frame < 0:
+            start_frame = 0
+        if start_frame > max_frame:
+            start_frame = max_frame
+
+        end_frame = bisect.bisect_left(frame_times, end_s) - 1
+        if end_frame < start_frame:
+            end_frame = start_frame
+        if end_frame > max_frame:
+            end_frame = max_frame
+
+        if end_frame < start_frame:
+            end_frame = start_frame
+
+        _append_or_merge_frame_segment(
+            mapped,
+            FrameSegment(
+                start_frame=int(start_frame),
+                end_frame=int(end_frame),
+                start_time_s=float(start_s),
+                end_time_s=float(end_s),
+            ),
+        )
+
+    _log_line(
+        logger,
+        "debug",
+        f"cut_events: mapped_segments={len(mapped)} (time->frame via frame_time_s)",
+    )
+    for idx, seg in enumerate(mapped[:3]):
+        _log_line(
+            logger,
+            "debug",
+            (
+                f"cut_events: mapped #{idx}: frames={seg.start_frame}..{seg.end_frame} "
+                f"time={seg.start_time_s:.3f}s..{seg.end_time_s:.3f}s"
+            ),
+        )
+    return mapped
+
+
+def map_time_segments_to_frames(
+    segments: Sequence[tuple[float, float]],
+    fps: float,
+    num_frames: int | None = None,
+    logger: Any = None,
+) -> list[FrameSegment]:
+    """
+    Mappt Zeitsegmente deterministisch auf Frame-Indizes (end_frame inklusiv).
+
+    Konvention:
+    - start_frame = floor(t_start * fps)
+    - end_frame   = ceil(t_end * fps) - 1
+    - falls durch Rundung leer: end_frame = start_frame
+    """
+    fps_safe = float(fps)
+    if not math.isfinite(fps_safe) or fps_safe <= 0.0:
+        raise ValueError("fps must be finite and > 0.")
+
+    max_frame: int | None = None
+    if num_frames is not None:
+        n_frames = int(num_frames)
+        if n_frames <= 0:
+            return []
+        max_frame = n_frames - 1
+
+    normalized = _validate_time_segments_sorted(segments)
+    mapped: list[FrameSegment] = []
+
+    for start_s, end_s in normalized:
+        start_frame = max(0, int(math.floor(float(start_s) * fps_safe)))
+        end_frame = max(start_frame, int(math.ceil(float(end_s) * fps_safe)) - 1)
+
+        if max_frame is not None:
+            if start_frame > max_frame:
+                start_frame = max_frame
+            if end_frame > max_frame:
+                end_frame = max_frame
+
+        if end_frame < start_frame:
+            end_frame = start_frame
+
+        _append_or_merge_frame_segment(
+            mapped,
+            FrameSegment(
+                start_frame=int(start_frame),
+                end_frame=int(end_frame),
+                start_time_s=float(start_s),
+                end_time_s=float(end_s),
+            ),
+        )
+
+    _log_line(
+        logger,
+        "debug",
+        f"cut_events: mapped_segments={len(mapped)} (time->frame via fps={fps_safe:.6f})",
+    )
+    for idx, seg in enumerate(mapped[:3]):
+        _log_line(
+            logger,
+            "debug",
+            (
+                f"cut_events: mapped #{idx}: frames={seg.start_frame}..{seg.end_frame} "
+                f"time={seg.start_time_s:.3f}s..{seg.end_time_s:.3f}s"
+            ),
+        )
+    return mapped
 
 
 def detect_curve_segments(
@@ -202,6 +410,30 @@ def _selftest() -> None:
         min_between_curves_s=1.0,
     )
     assert seg3 == [], f"unexpected seg3: {seg3}"
+
+    mapped1 = map_time_segments_to_frames([(2.0, 6.0)], fps=60.0)
+    assert mapped1 == [
+        FrameSegment(start_frame=120, end_frame=359, start_time_s=2.0, end_time_s=6.0)
+    ], f"unexpected mapped1: {mapped1}"
+
+    mapped2 = map_time_segments_to_frames([(2.0, 2.0)], fps=60.0)
+    assert mapped2 == [
+        FrameSegment(start_frame=120, end_frame=120, start_time_s=2.0, end_time_s=2.0)
+    ], f"unexpected mapped2: {mapped2}"
+
+    mapped3 = map_time_segments_to_frames(
+        [(0.0, 1.01), (1.011, 1.02)],
+        fps=60.0,
+    )
+    assert mapped3 == [
+        FrameSegment(start_frame=0, end_frame=61, start_time_s=0.0, end_time_s=1.02)
+    ], f"unexpected mapped3: {mapped3}"
+
+    time_axis = [float(i) / 60.0 for i in range(600)]
+    mapped4 = map_time_segments_to_frame_indices([(2.0, 6.0)], frame_time_s=time_axis)
+    assert mapped4 == [
+        FrameSegment(start_frame=120, end_frame=359, start_time_s=2.0, end_time_s=6.0)
+    ], f"unexpected mapped4: {mapped4}"
 
     print("cut_events selftest: OK")
 
