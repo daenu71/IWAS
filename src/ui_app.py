@@ -88,6 +88,32 @@ def apply_theme_fonts(theme: Theme) -> None:
             pass
 
 
+def _configure_widget(widget: tk.Widget, **options: object) -> None:
+    for option, value in options.items():
+        try:
+            widget.configure(**{option: value})
+        except tk.TclError:
+            pass
+
+
+def _apply_theme_to_tk_widget(widget: tk.Widget, *, theme: Theme | None = None, **overrides: object) -> None:
+    theme = theme or CURRENT_THEME
+    colors = theme.colors
+    base_options = {
+        "bg": colors.surface,
+        "fg": colors.text_primary,
+        "highlightbackground": colors.surface,
+        "highlightcolor": colors.hover_surface,
+        "insertbackground": colors.text_primary,
+        "selectbackground": colors.hover_surface,
+        "selectforeground": colors.text_primary,
+        "activebackground": colors.hover_surface,
+        "activeforeground": colors.text_primary,
+    }
+    base_options.update(overrides)
+    _configure_widget(widget, **base_options)
+
+
 def _color_from_source(source: dict[str, str], key: str, fallback: str) -> str:
     value = source.get(key)
     if isinstance(value, str) and value.strip():
@@ -264,6 +290,8 @@ VIEW_REGISTRY: dict[str, ViewEntry] = {
 
 def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     project_root = find_project_root(Path(__file__))
+    theme = CURRENT_THEME
+    colors = theme.colors
 
     input_video_dir = project_root / "input" / "video"
     
@@ -449,6 +477,12 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     settings_canvas = tk.Canvas(left_scroll_settings_frame, highlightthickness=0, borderwidth=0)
     settings_vscroll = ttk.Scrollbar(left_scroll_settings_frame, orient="vertical", command=settings_canvas.yview)
     settings_canvas.configure(yscrollcommand=settings_vscroll.set)
+    _apply_theme_to_tk_widget(
+        settings_canvas,
+        bg=colors.surface,
+        highlightbackground=colors.surface,
+        highlightcolor=colors.accent,
+    )
     settings_canvas.grid(row=0, column=0, sticky="nsew")
     settings_vscroll.grid(row=0, column=1, sticky="ns")
 
@@ -1878,6 +1912,14 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         showvalue=False,
         variable=video_scale_pct_var,
     )
+    _apply_theme_to_tk_widget(
+        sld_video_scale,
+        troughcolor=colors.hover_surface,
+        highlightbackground=colors.surface,
+        highlightcolor=colors.accent,
+        borderwidth=0,
+        relief="flat",
+    )
     sld_video_scale.grid(row=video_place_row + 2, column=1, sticky="ew", padx=10, pady=2)
     spn_video_scale = ttk.Spinbox(
         frame_settings,
@@ -2528,6 +2570,12 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     preview_label.grid(row=0, column=0, sticky="nsew")
 
     preview_canvas = tk.Canvas(preview_area, highlightthickness=0)
+    _apply_theme_to_tk_widget(
+        preview_canvas,
+        bg=colors.background,
+        highlightbackground=colors.surface,
+        highlightcolor=colors.accent,
+    )
     preview_canvas.grid(row=0, column=0, sticky="nsew")
 
     def choose_slow_fast_paths() -> tuple[Path | None, Path | None]:
@@ -2797,6 +2845,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     def show_progress_with_cancel(title: str, text: str):
         win = tk.Toplevel(root)
+        _apply_theme_to_tk_widget(win, background=colors.background)
         win.title(title)
         win.transient(root)
         win.grab_set()
@@ -3120,6 +3169,15 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
             item = csvs[index]
 
         menu = tk.Menu(root, tearoff=0)
+        _apply_theme_to_tk_widget(
+            menu,
+            background=colors.surface,
+            foreground=colors.text_primary,
+            activebackground=colors.hover_surface,
+            activeforeground=colors.text_primary,
+            borderwidth=0,
+            relief="flat",
+        )
 
         if kind == "video":
             menu.add_command(label="Cut", command=lambda p=item: start_crop_for_video(p))
@@ -3289,56 +3347,111 @@ def main() -> None:
     root.grid_rowconfigure(1, weight=1)
 
     theme = CURRENT_THEME
-    root.configure(background=theme.colors.background)
+    colors = theme.colors
+    root.configure(background=colors.background)
     apply_theme_fonts(theme)
     style = ttk.Style(root)
     style.configure(
         "TFrame",
-        background=theme.colors.surface,
+        background=colors.surface,
+    )
+    style.configure(
+        "TLabelframe",
+        background=colors.surface,
+        borderwidth=1,
+        relief="solid",
+    )
+    style.configure(
+        "TLabelframe.Label",
+        background=colors.surface,
+        foreground=colors.text_primary,
     )
     style.configure(
         "TLabel",
-        background=theme.colors.surface,
-        foreground=theme.colors.text_primary,
+        background=colors.surface,
+        foreground=colors.text_primary,
     )
     style.configure(
         "TCheckbutton",
-        background=theme.colors.surface,
-        foreground=theme.colors.text_primary,
+        background=colors.surface,
+        foreground=colors.text_primary,
     )
     style.configure(
         "TRadiobutton",
-        background=theme.colors.surface,
-        foreground=theme.colors.text_primary,
+        background=colors.surface,
+        foreground=colors.text_primary,
     )
     style.configure(
         "TEntry",
-        fieldbackground=theme.colors.surface,
-        foreground=theme.colors.text_primary,
+        fieldbackground=colors.surface,
+        foreground=colors.text_primary,
+    )
+    style.configure(
+        "TSpinbox",
+        fieldbackground=colors.surface,
+        foreground=colors.text_primary,
+        background=colors.surface,
     )
     style.configure(
         "TCombobox",
-        fieldbackground=theme.colors.surface,
-        foreground=theme.colors.text_primary,
+        fieldbackground=colors.surface,
+        background=colors.surface,
+        foreground=colors.text_primary,
+    )
+    style.configure(
+        "TScrollbar",
+        background=colors.surface,
+        troughcolor=colors.background,
+        relief="flat",
+    )
+    style.configure(
+        "TSeparator",
+        background=colors.hover_surface,
+    )
+    style.configure(
+        "Treeview",
+        background=colors.surface,
+        fieldbackground=colors.surface,
+        foreground=colors.text_primary,
+    )
+    style.map(
+        "Treeview",
+        background=[
+            ("selected", colors.active_surface),
+        ],
+        foreground=[
+            ("selected", colors.text_primary),
+        ],
+    )
+    style.configure(
+        "Treeview.Heading",
+        background=colors.surface,
+        foreground=colors.text_primary,
+        relief="flat",
     )
     style.configure(
         "Horizontal.TScale",
-        background=theme.colors.surface,
+        background=colors.surface,
+    )
+    style.configure(
+        "Horizontal.TProgressbar",
+        troughcolor=colors.surface,
+        background=colors.accent,
     )
     style.configure(
         "TButton",
-        background=theme.colors.surface,
-        foreground=theme.colors.text_primary,
+        background=colors.surface,
+        foreground=colors.text_primary,
         borderwidth=0,
     )
     style.map(
         "TButton",
         background=[
-            ("active", theme.colors.hover_surface),
-            ("pressed", theme.colors.active_surface),
+            ("active", colors.hover_surface),
+            ("pressed", colors.active_surface),
         ],
         foreground=[
-            ("disabled", theme.colors.text_secondary),
+            ("disabled", colors.text_secondary),
         ],
     )
 
@@ -3353,17 +3466,17 @@ def main() -> None:
     active = {"name": ""}
     current = {"widget": None}
     nav_font = tkfont.nametofont("TkDefaultFont")
-    nav_bg = theme.colors.surface
-    nav_hover_bg = theme.colors.hover_surface
-    nav_active_bg = theme.colors.accent
-    nav_text = theme.colors.text_primary
+    nav_bg = colors.surface
+    nav_hover_bg = colors.hover_surface
+    nav_active_bg = colors.accent
+    nav_text = colors.text_primary
 
     def _style_nav_button(btn: tk.Button, name: str) -> None:
         btn.configure(
             font=nav_font,
             background=nav_bg,
             foreground=nav_text,
-            activebackground=theme.colors.active_surface,
+            activebackground=nav_active_bg,
             activeforeground=nav_text,
             relief="raised",
             bd=1,
