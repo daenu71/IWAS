@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,6 +56,111 @@ def _merge_known_keys(existing: Any, known: dict[str, Any]) -> tuple[dict[str, A
             out[k] = v
             changed = True
     return out, changed
+
+
+PROFILE_SCHEMA_VERSION = 2
+VIDEO_CUT_DEFAULTS: dict[str, float] = {
+    "video_before_brake": 1.0,
+    "video_after_full_throttle": 1.0,
+    "video_minimum_between_two_curves": 2.0,
+}
+
+
+def _normalize_video_mode_value(raw: Any) -> str:
+    if isinstance(raw, bool):
+        return "cut" if raw else "full"
+    if isinstance(raw, (int, float)):
+        try:
+            if float(raw) == 1.0:
+                return "cut"
+            if float(raw) == 0.0:
+                return "full"
+        except Exception:
+            pass
+    try:
+        mode = str(raw or "full").strip().lower()
+    except Exception:
+        mode = "full"
+    if mode in ("1", "true", "yes", "on"):
+        return "cut"
+    if mode in ("0", "false", "no", "off"):
+        return "full"
+    if mode not in ("full", "cut"):
+        mode = "full"
+    return str(mode)
+
+
+def _normalize_video_cut_seconds_value(raw: Any, default: float) -> float:
+    try:
+        value = float(raw)
+    except Exception:
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    if value < 0.0:
+        return float(default)
+    return float(value)
+
+
+def _coerce_legacy_bool(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return bool(raw)
+    if isinstance(raw, (int, float)):
+        return float(raw) != 0.0
+    try:
+        text = str(raw).strip().lower()
+    except Exception:
+        return False
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return bool(text)
+
+
+def migrate_video_state_contract_dict(data: dict[str, Any], *, allow_video_cut_fallback: bool = False) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    migrated = False
+    raw_mode = data.get("video_mode")
+    if raw_mode is None and "video_cut_enabled" in data:
+        raw_mode = "cut" if _coerce_legacy_bool(data.get("video_cut_enabled")) else "full"
+    migrated = _set_if_changed(data, "video_mode", _normalize_video_mode_value(raw_mode)) or migrated
+
+    fallback_cut = data.get("video_cut") if allow_video_cut_fallback and isinstance(data.get("video_cut"), dict) else {}
+    for key, default in VIDEO_CUT_DEFAULTS.items():
+        if key in data:
+            raw_value = data.get(key)
+        elif isinstance(fallback_cut, dict):
+            raw_value = fallback_cut.get(key, default)
+        else:
+            raw_value = default
+        normalized = _normalize_video_cut_seconds_value(raw_value, default)
+        migrated = _set_if_changed(data, key, float(normalized)) or migrated
+
+    return migrated
+
+
+def migrate_profile_contract_dict(data: dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    migrated = False
+    version_raw = _to_int(data.get("version", PROFILE_SCHEMA_VERSION), PROFILE_SCHEMA_VERSION)
+    version = int(max(PROFILE_SCHEMA_VERSION, version_raw))
+    migrated = _set_if_changed(data, "version", version) or migrated
+    migrated = migrate_layout_contract_dict(data) or migrated
+    migrated = migrate_video_state_contract_dict(data, allow_video_cut_fallback=True) or migrated
+    return migrated
+
+
+def migrate_ui_last_run_contract_dict(data: dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return False
+    migrated = migrate_layout_contract_dict(data)
+    migrated = migrate_video_state_contract_dict(data, allow_video_cut_fallback=True) or migrated
+    return migrated
 
 
 @dataclass
@@ -414,7 +520,7 @@ class PngViewState:
 
 @dataclass
 class Profile:
-    version: int | str = 1
+    version: int | str = PROFILE_SCHEMA_VERSION
     videos: list[str] = field(default_factory=list)
     csvs: list[str] = field(default_factory=list)
     startframes: dict[str, int] = field(default_factory=dict)
@@ -423,10 +529,14 @@ class Profile:
     hud_layout_data: dict[str, Any] = field(default_factory=dict)
     png_view_data: dict[str, Any] = field(default_factory=dict)
     layout_config: LayoutConfig = field(default_factory=LayoutConfig)
+    video_mode: str = "full"
+    video_before_brake: float = VIDEO_CUT_DEFAULTS["video_before_brake"]
+    video_after_full_throttle: float = VIDEO_CUT_DEFAULTS["video_after_full_throttle"]
+    video_minimum_between_two_curves: float = VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]
 
     def to_dict(self) -> dict[str, Any]:
         out = {
-            "version": self.version,
+            "version": int(_to_int(self.version, PROFILE_SCHEMA_VERSION)),
             "videos": [str(v) for v in self.videos],
             "csvs": [str(v) for v in self.csvs],
             "startframes": {str(k): _to_int(v, 0) for k, v in self.startframes.items()},
@@ -439,20 +549,32 @@ class Profile:
             },
             "hud_layout_data": self.hud_layout_data,
             "png_view_data": self.png_view_data,
+            "video_mode": _normalize_video_mode_value(self.video_mode),
+            "video_before_brake": _normalize_video_cut_seconds_value(
+                self.video_before_brake, VIDEO_CUT_DEFAULTS["video_before_brake"]
+            ),
+            "video_after_full_throttle": _normalize_video_cut_seconds_value(
+                self.video_after_full_throttle, VIDEO_CUT_DEFAULTS["video_after_full_throttle"]
+            ),
+            "video_minimum_between_two_curves": _normalize_video_cut_seconds_value(
+                self.video_minimum_between_two_curves,
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            ),
         }
         out.update(self.layout_config.to_dict())
         return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "Profile":
-        data = d if isinstance(d, dict) else {}
+        data = dict(d) if isinstance(d, dict) else {}
+        migrate_profile_contract_dict(data)
         videos_raw = data.get("videos")
         csvs_raw = data.get("csvs")
         starts_raw = data.get("startframes")
         ends_raw = data.get("endframes")
         layout = LayoutConfig.from_dict(data)
         return cls(
-            version=data.get("version", 1),
+            version=_to_int(data.get("version", PROFILE_SCHEMA_VERSION), PROFILE_SCHEMA_VERSION),
             videos=[str(v) for v in (videos_raw if isinstance(videos_raw, list) else [])],
             csvs=[str(v) for v in (csvs_raw if isinstance(csvs_raw, list) else [])],
             startframes={str(k): _to_int(v, 0) for k, v in (starts_raw.items() if isinstance(starts_raw, dict) else [])},
@@ -461,6 +583,19 @@ class Profile:
             hud_layout_data=data.get("hud_layout_data") if isinstance(data.get("hud_layout_data"), dict) else {},
             png_view_data=data.get("png_view_data") if isinstance(data.get("png_view_data"), dict) else {},
             layout_config=layout,
+            video_mode=_normalize_video_mode_value(data.get("video_mode", "full")),
+            video_before_brake=_normalize_video_cut_seconds_value(
+                data.get("video_before_brake"),
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            ),
+            video_after_full_throttle=_normalize_video_cut_seconds_value(
+                data.get("video_after_full_throttle"),
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            ),
+            video_minimum_between_two_curves=_normalize_video_cut_seconds_value(
+                data.get("video_minimum_between_two_curves"),
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            ),
         )
 
 
@@ -471,6 +606,9 @@ class AppModel:
     png_view: PngViewState = field(default_factory=PngViewState)
     layout_config: LayoutConfig = field(default_factory=LayoutConfig)
     video_mode: str = "full"
+    video_before_brake: float = VIDEO_CUT_DEFAULTS["video_before_brake"]
+    video_after_full_throttle: float = VIDEO_CUT_DEFAULTS["video_after_full_throttle"]
+    video_minimum_between_two_curves: float = VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]
 
 
 @dataclass

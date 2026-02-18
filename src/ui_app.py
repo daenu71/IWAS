@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
+import math
 import re
 from pathlib import Path
 import json
@@ -13,8 +14,11 @@ from core.models import (
     LayoutConfig,
     OutputFormat,
     PngViewState,
+    PROFILE_SCHEMA_VERSION,
     Profile,
-    migrate_layout_contract_dict,
+    VIDEO_CUT_DEFAULTS,
+    migrate_profile_contract_dict,
+    migrate_ui_last_run_contract_dict,
 )
 from core import persistence, filesvc, profile_service, render_service
 from core.output_geometry import (
@@ -229,22 +233,65 @@ def main() -> None:
             mode = "full"
         return str(mode)
 
-    def _load_layout_config_from_ui_last_run() -> LayoutConfig:
+    def _normalize_video_cut_seconds(raw: object, default: float) -> float:
+        try:
+            value = float(raw)
+        except Exception:
+            return float(default)
+        if not math.isfinite(value):
+            return float(default)
+        if value < 0.0:
+            return float(default)
+        return float(value)
+
+    def _load_ui_last_run_payload() -> dict:
         try:
             if not ui_last_run_file.exists():
-                return LayoutConfig()
+                return {}
             data = json.loads(ui_last_run_file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                return LayoutConfig()
-            migrated = migrate_layout_contract_dict(data)
+                return {}
+            migrated = migrate_ui_last_run_contract_dict(data)
             if migrated:
                 try:
                     ui_last_run_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 except Exception:
                     pass
+            return data
+        except Exception:
+            return {}
+
+    def _load_layout_config_from_ui_last_run() -> LayoutConfig:
+        try:
+            data = _load_ui_last_run_payload()
+            if not isinstance(data, dict) or not data:
+                return LayoutConfig()
             return LayoutConfig.from_dict(data)
         except Exception:
             return LayoutConfig()
+
+    def _load_video_state_from_ui_last_run() -> dict | None:
+        try:
+            data = _load_ui_last_run_payload()
+            if not isinstance(data, dict) or not data:
+                return None
+            return {
+                "video_mode": _normalize_video_mode(data.get("video_mode", "full")),
+                "video_before_brake": _normalize_video_cut_seconds(
+                    data.get("video_before_brake", VIDEO_CUT_DEFAULTS["video_before_brake"]),
+                    VIDEO_CUT_DEFAULTS["video_before_brake"],
+                ),
+                "video_after_full_throttle": _normalize_video_cut_seconds(
+                    data.get("video_after_full_throttle", VIDEO_CUT_DEFAULTS["video_after_full_throttle"]),
+                    VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+                ),
+                "video_minimum_between_two_curves": _normalize_video_cut_seconds(
+                    data.get("video_minimum_between_two_curves", VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]),
+                    VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+                ),
+            }
+        except Exception:
+            return None
 
     left_column = ttk.Frame(root)
     left_top_files_frame = ttk.LabelFrame(left_column, text="Dateibereich")
@@ -539,6 +586,10 @@ def main() -> None:
             app_model.video_mode = mode
         except Exception:
             pass
+        try:
+            _save_layout_to_ui_last_run()
+        except Exception:
+            pass
 
     ttk.Radiobutton(
         frame_video_mode,
@@ -590,9 +641,52 @@ def main() -> None:
     except Exception:
         pass
     try:
+        loaded_video_state = _load_video_state_from_ui_last_run()
+        if isinstance(loaded_video_state, dict):
+            app_model.video_mode = _normalize_video_mode(loaded_video_state.get("video_mode", "full"))
+            app_model.video_before_brake = _normalize_video_cut_seconds(
+                loaded_video_state.get("video_before_brake", VIDEO_CUT_DEFAULTS["video_before_brake"]),
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            )
+            app_model.video_after_full_throttle = _normalize_video_cut_seconds(
+                loaded_video_state.get("video_after_full_throttle", VIDEO_CUT_DEFAULTS["video_after_full_throttle"]),
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            )
+            app_model.video_minimum_between_two_curves = _normalize_video_cut_seconds(
+                loaded_video_state.get("video_minimum_between_two_curves", VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]),
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            )
+    except Exception:
+        pass
+    try:
         app_model.video_mode = _normalize_video_mode(getattr(app_model, "video_mode", "full"))
     except Exception:
         app_model.video_mode = "full"
+    try:
+        app_model.video_before_brake = _normalize_video_cut_seconds(
+            getattr(app_model, "video_before_brake", VIDEO_CUT_DEFAULTS["video_before_brake"]),
+            VIDEO_CUT_DEFAULTS["video_before_brake"],
+        )
+    except Exception:
+        app_model.video_before_brake = VIDEO_CUT_DEFAULTS["video_before_brake"]
+    try:
+        app_model.video_after_full_throttle = _normalize_video_cut_seconds(
+            getattr(app_model, "video_after_full_throttle", VIDEO_CUT_DEFAULTS["video_after_full_throttle"]),
+            VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+        )
+    except Exception:
+        app_model.video_after_full_throttle = VIDEO_CUT_DEFAULTS["video_after_full_throttle"]
+    try:
+        app_model.video_minimum_between_two_curves = _normalize_video_cut_seconds(
+            getattr(app_model, "video_minimum_between_two_curves", VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]),
+            VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+        )
+    except Exception:
+        app_model.video_minimum_between_two_curves = VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]
+    try:
+        video_mode_var.set(_normalize_video_mode(getattr(app_model, "video_mode", "full")))
+    except Exception:
+        pass
     hud_free_mode_var = tk.BooleanVar(value=False)
     hud_bg_alpha_var = tk.DoubleVar(value=255.0)
     hud_frame_orientation_var = tk.StringVar(value="vertical")
@@ -675,8 +769,29 @@ def main() -> None:
                 old_data = json.loads(ui_last_run_file.read_text(encoding="utf-8"))
                 if isinstance(old_data, dict):
                     payload = old_data
-            migrate_layout_contract_dict(payload)
+            migrate_ui_last_run_contract_dict(payload)
             payload.update(cfg.to_dict())
+            mode = _normalize_video_mode(getattr(app_model, "video_mode", "full"))
+            before_s = _normalize_video_cut_seconds(
+                getattr(app_model, "video_before_brake", VIDEO_CUT_DEFAULTS["video_before_brake"]),
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            )
+            after_s = _normalize_video_cut_seconds(
+                getattr(app_model, "video_after_full_throttle", VIDEO_CUT_DEFAULTS["video_after_full_throttle"]),
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            )
+            between_s = _normalize_video_cut_seconds(
+                getattr(app_model, "video_minimum_between_two_curves", VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]),
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            )
+            app_model.video_mode = str(mode)
+            app_model.video_before_brake = float(before_s)
+            app_model.video_after_full_throttle = float(after_s)
+            app_model.video_minimum_between_two_curves = float(between_s)
+            payload["video_mode"] = str(mode)
+            payload["video_before_brake"] = float(before_s)
+            payload["video_after_full_throttle"] = float(after_s)
+            payload["video_minimum_between_two_curves"] = float(between_s)
             ui_last_run_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -700,6 +815,29 @@ def main() -> None:
             video_mode_var.set(mode)
         except Exception:
             pass
+
+    def _sync_video_cut_values_from_model() -> None:
+        try:
+            app_model.video_before_brake = _normalize_video_cut_seconds(
+                getattr(app_model, "video_before_brake", VIDEO_CUT_DEFAULTS["video_before_brake"]),
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            )
+        except Exception:
+            app_model.video_before_brake = VIDEO_CUT_DEFAULTS["video_before_brake"]
+        try:
+            app_model.video_after_full_throttle = _normalize_video_cut_seconds(
+                getattr(app_model, "video_after_full_throttle", VIDEO_CUT_DEFAULTS["video_after_full_throttle"]),
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            )
+        except Exception:
+            app_model.video_after_full_throttle = VIDEO_CUT_DEFAULTS["video_after_full_throttle"]
+        try:
+            app_model.video_minimum_between_two_curves = _normalize_video_cut_seconds(
+                getattr(app_model, "video_minimum_between_two_curves", VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]),
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            )
+        except Exception:
+            app_model.video_minimum_between_two_curves = VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]
 
     def _apply_video_layout_from_var(refresh_preview: bool = True) -> None:
         cfg = _layout_cfg()
@@ -975,6 +1113,18 @@ def main() -> None:
             png_view=PngViewState(png_view_data=png_view_data),
             layout_config=app_model.layout_config if isinstance(app_model.layout_config, LayoutConfig) else LayoutConfig(),
             video_mode=_normalize_video_mode(video_mode_var.get()),
+            video_before_brake=_normalize_video_cut_seconds(
+                getattr(app_model, "video_before_brake", VIDEO_CUT_DEFAULTS["video_before_brake"]),
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            ),
+            video_after_full_throttle=_normalize_video_cut_seconds(
+                getattr(app_model, "video_after_full_throttle", VIDEO_CUT_DEFAULTS["video_after_full_throttle"]),
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            ),
+            video_minimum_between_two_curves=_normalize_video_cut_seconds(
+                getattr(app_model, "video_minimum_between_two_curves", VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]),
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            ),
         )
 
     def apply_model_to_ui_state(model: AppModel) -> None:
@@ -1010,6 +1160,7 @@ def main() -> None:
         _sync_hud_frame_vars_from_model()
         _sync_hud_bg_alpha_var_from_model()
         _sync_video_mode_var_from_model()
+        _sync_video_cut_values_from_model()
         _sync_video_layout_var_from_model()
         _sync_video_transform_vars_from_model()
 
@@ -1020,6 +1171,7 @@ def main() -> None:
             app_model.video_mode = _normalize_video_mode(getattr(app_model, "video_mode", video_mode_var.get()))
         except Exception:
             app_model.video_mode = _normalize_video_mode(video_mode_var.get())
+        _sync_video_cut_values_from_model()
 
     def profile_model_from_ui_state(
         videos_names: list[str],
@@ -1029,7 +1181,7 @@ def main() -> None:
     ) -> Profile:
         m = model_from_ui_state()
         return Profile(
-            version=1,
+            version=int(PROFILE_SCHEMA_VERSION),
             videos=videos_names,
             csvs=csv_names,
             startframes=starts,
@@ -1038,6 +1190,19 @@ def main() -> None:
             hud_layout_data=m.hud_layout.hud_layout_data,
             png_view_data=m.png_view.png_view_data,
             layout_config=m.layout_config,
+            video_mode=_normalize_video_mode(m.video_mode),
+            video_before_brake=_normalize_video_cut_seconds(
+                m.video_before_brake,
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            ),
+            video_after_full_throttle=_normalize_video_cut_seconds(
+                m.video_after_full_throttle,
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            ),
+            video_minimum_between_two_curves=_normalize_video_cut_seconds(
+                m.video_minimum_between_two_curves,
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            ),
         )
 
     apply_model_to_ui_state(model_from_ui_state())
@@ -1893,6 +2058,7 @@ def main() -> None:
                 app_model.video_mode = _normalize_video_mode(video_mode_var.get())
             except Exception:
                 app_model.video_mode = "full"
+            _sync_video_cut_values_from_model()
 
         return profile_service.build_profile_dict(
             videos=videos,
@@ -1908,12 +2074,27 @@ def main() -> None:
 
         try:
             if isinstance(d, dict):
-                migrate_layout_contract_dict(d)
+                migrate_profile_contract_dict(d)
             loaded = Profile.from_dict(d if isinstance(d, dict) else {})
             app_model.layout_config = loaded.layout_config
+            app_model.video_mode = _normalize_video_mode(loaded.video_mode)
+            app_model.video_before_brake = _normalize_video_cut_seconds(
+                loaded.video_before_brake,
+                VIDEO_CUT_DEFAULTS["video_before_brake"],
+            )
+            app_model.video_after_full_throttle = _normalize_video_cut_seconds(
+                loaded.video_after_full_throttle,
+                VIDEO_CUT_DEFAULTS["video_after_full_throttle"],
+            )
+            app_model.video_minimum_between_two_curves = _normalize_video_cut_seconds(
+                loaded.video_minimum_between_two_curves,
+                VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"],
+            )
             _sync_hud_mode_var_from_model()
             _sync_hud_frame_vars_from_model()
             _sync_hud_bg_alpha_var_from_model()
+            _sync_video_mode_var_from_model()
+            _sync_video_cut_values_from_model()
             _sync_video_layout_var_from_model()
             _sync_video_transform_vars_from_model()
             _save_layout_to_ui_last_run()
@@ -1981,6 +2162,8 @@ def main() -> None:
             _sync_hud_mode_var_from_model()
             _sync_hud_frame_vars_from_model()
             _sync_hud_bg_alpha_var_from_model()
+            _sync_video_mode_var_from_model()
+            _sync_video_cut_values_from_model()
             _sync_video_layout_var_from_model()
             _sync_video_transform_vars_from_model()
             _save_layout_to_ui_last_run()

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import subprocess
@@ -28,7 +29,7 @@ from ffmpeg_plan import (
     build_stream_sync_filter,
     run_ffmpeg,
 )
-from core.cut_events import detect_curve_segments
+from core.cut_events import detect_curve_segments_with_stats, map_time_segments_to_frames_with_stats
 from huds.common import (
     COL_FAST_BRIGHTBLUE,
     COL_FAST_DARKBLUE,
@@ -6549,6 +6550,10 @@ def render_split_screen_sync(
     under_oversteer_fast_frames: list[float] = []
     under_oversteer_y_abs = 1.0
     cut_frame_segments: list[Any] = []
+    cut_segments_time: list[tuple[float, float]] = []
+    cut_full_duration_s = 0.0
+    cut_duration_s = 0.0
+    cut_merge_count_total = 0
 
 
     slow_min_speed_frames = _compute_min_speed_display(slow_speed_frames, float(fps_int), str(hud_speed_units)) if slow_speed_frames else []
@@ -6557,7 +6562,7 @@ def render_split_screen_sync(
     if requested_video_mode == "cut":
         n_cut = min(len(slow_throttle_frames), len(slow_brake_frames))
         cut_time_s = [float(i) / float(fps_int) for i in range(max(0, int(n_cut)))]
-        cut_segments = detect_curve_segments(
+        cut_segments, cut_detect_stats = detect_curve_segments_with_stats(
             time_s=cut_time_s,
             throttle=slow_throttle_frames[:n_cut],
             brake=slow_brake_frames[:n_cut],
@@ -6566,18 +6571,25 @@ def render_split_screen_sync(
             min_between_curves_s=float(video_cut_minimum_between_two_curves_s),
             logger=None,
         )
+        cut_segments_time = list(cut_segments)
+        if len(cut_time_s) >= 2:
+            cut_full_duration_s = max(0.0, float(cut_time_s[-1]) - float(cut_time_s[0]))
+        else:
+            cut_full_duration_s = 0.0
+        cut_duration_s = 0.0
+        for seg_start, seg_end in cut_segments_time:
+            cut_duration_s += max(0.0, float(seg_end) - float(seg_start))
         if len(cut_segments) == 0:
             _log_print("Cut found 0 segments → Full fallback", log_file)
             effective_video_mode = "full"
         else:
-            from core.cut_events import map_time_segments_to_frames
-
-            cut_frame_segments = map_time_segments_to_frames(
+            cut_frame_segments, cut_map_stats = map_time_segments_to_frames_with_stats(
                 cut_segments,
                 fps=float(fps_int),
                 num_frames=int(n_cut),
                 logger=None,
             )
+            cut_merge_count_total = int(cut_detect_stats.merge_count) + int(cut_map_stats.merge_count)
             if len(cut_frame_segments) == 0:
                 _log_print("Cut frame mapping found 0 segments → Full fallback", log_file)
                 effective_video_mode = "full"
@@ -6622,14 +6634,31 @@ def render_split_screen_sync(
             _log_print("Cut segments are outside common sync range → Full fallback", log_file)
             effective_video_mode = "full"
         else:
-            cut_frames_total = 0
-            for job in cut_render_jobs:
-                cut_frames_total += max(0, int(job.end_frame) - int(job.start_frame))
-            cut_duration_s = float(cut_frames_total) / float(max(1, fps_int))
+            cut_ratio_pct = 0.0
+            if cut_full_duration_s > 0.0:
+                cut_ratio_pct = (cut_duration_s / cut_full_duration_s) * 100.0
             _log_print(
-                f"[cut] segments={len(cut_render_jobs)} frames={cut_frames_total} duration_s={cut_duration_s:.3f}",
+                (
+                    f"Cut segments: n={len(cut_frame_segments)} merges={int(cut_merge_count_total)} "
+                    f"full={cut_full_duration_s:.2f}s cut={cut_duration_s:.2f}s ({cut_ratio_pct:.1f}%)"
+                ),
                 log_file,
             )
+            cut_logger = logging.getLogger(__name__)
+            if cut_logger.isEnabledFor(logging.DEBUG):
+                preview_limit = min(3, len(cut_frame_segments))
+                for idx in range(preview_limit):
+                    seg = cut_frame_segments[idx]
+                    _log_print(
+                        (
+                            f"Cut seg[{idx}]: t={float(seg.start_time_s):.2f}..{float(seg.end_time_s):.2f}s "
+                            f"f={int(seg.start_frame)}..{int(seg.end_frame)}"
+                        ),
+                        log_file,
+                    )
+                remaining = len(cut_frame_segments) - preview_limit
+                if remaining > 0:
+                    _log_print(f"... +{remaining} more", log_file)
 
     dbg_dir = outp.parent.parent / "debug"
     dbg_dir.mkdir(parents=True, exist_ok=True)

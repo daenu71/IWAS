@@ -15,6 +15,16 @@ class FrameSegment:
     end_time_s: float
 
 
+@dataclass(frozen=True)
+class CurveSegmentStats:
+    merge_count: int = 0
+
+
+@dataclass(frozen=True)
+class FrameMappingStats:
+    merge_count: int = 0
+
+
 def _log_line(logger: Any, level: str, message: str) -> None:
     if logger is not None:
         try:
@@ -63,20 +73,21 @@ def _append_or_merge_segment(
     start_s: float,
     end_s: float,
     min_between_curves_s: float,
-) -> None:
+) -> bool:
     if end_s < start_s:
         end_s = start_s
     if not segments:
         segments.append((start_s, end_s))
-        return
+        return False
     prev_start, prev_end = segments[-1]
     if (start_s - prev_end) <= min_between_curves_s:
         merged_end = end_s if end_s > prev_end else prev_end
         if merged_end < prev_start:
             merged_end = prev_start
         segments[-1] = (prev_start, merged_end)
-        return
+        return True
     segments.append((start_s, end_s))
+    return False
 
 
 def _validate_time_segments_sorted(
@@ -106,10 +117,10 @@ def _validate_time_segments_sorted(
 def _append_or_merge_frame_segment(
     mapped: list[FrameSegment],
     candidate: FrameSegment,
-) -> None:
+) -> bool:
     if not mapped:
         mapped.append(candidate)
-        return
+        return False
 
     prev = mapped[-1]
     if candidate.start_frame < prev.start_frame:
@@ -126,9 +137,10 @@ def _append_or_merge_frame_segment(
             end_time_s=max(prev.end_time_s, candidate.end_time_s),
         )
         mapped[-1] = merged
-        return
+        return True
 
     mapped.append(candidate)
+    return False
 
 
 def map_time_segments_to_frame_indices(
@@ -136,6 +148,19 @@ def map_time_segments_to_frame_indices(
     frame_time_s: Sequence[float],
     logger: Any = None,
 ) -> list[FrameSegment]:
+    mapped, _stats = map_time_segments_to_frame_indices_with_stats(
+        segments=segments,
+        frame_time_s=frame_time_s,
+        logger=logger,
+    )
+    return mapped
+
+
+def map_time_segments_to_frame_indices_with_stats(
+    segments: Sequence[tuple[float, float]],
+    frame_time_s: Sequence[float],
+    logger: Any = None,
+) -> tuple[list[FrameSegment], FrameMappingStats]:
     """
     Mappt Zeitsegmente deterministisch auf Frame-Indizes (end_frame inklusiv).
 
@@ -145,7 +170,7 @@ def map_time_segments_to_frame_indices(
     - falls durch Rundung leer: end_frame = start_frame
     """
     if not frame_time_s:
-        return []
+        return [], FrameMappingStats(merge_count=0)
 
     frame_times: list[float] = []
     prev_t: float | None = None
@@ -165,6 +190,7 @@ def map_time_segments_to_frame_indices(
     max_frame = n_frames - 1
     normalized = _validate_time_segments_sorted(segments)
     mapped: list[FrameSegment] = []
+    merge_count = 0
 
     for start_s, end_s in normalized:
         start_frame = bisect.bisect_right(frame_times, start_s) - 1
@@ -182,7 +208,7 @@ def map_time_segments_to_frame_indices(
         if end_frame < start_frame:
             end_frame = start_frame
 
-        _append_or_merge_frame_segment(
+        if _append_or_merge_frame_segment(
             mapped,
             FrameSegment(
                 start_frame=int(start_frame),
@@ -190,7 +216,8 @@ def map_time_segments_to_frame_indices(
                 start_time_s=float(start_s),
                 end_time_s=float(end_s),
             ),
-        )
+        ):
+            merge_count += 1
 
     _log_line(
         logger,
@@ -206,7 +233,7 @@ def map_time_segments_to_frame_indices(
                 f"time={seg.start_time_s:.3f}s..{seg.end_time_s:.3f}s"
             ),
         )
-    return mapped
+    return mapped, FrameMappingStats(merge_count=merge_count)
 
 
 def map_time_segments_to_frames(
@@ -215,6 +242,21 @@ def map_time_segments_to_frames(
     num_frames: int | None = None,
     logger: Any = None,
 ) -> list[FrameSegment]:
+    mapped, _stats = map_time_segments_to_frames_with_stats(
+        segments=segments,
+        fps=fps,
+        num_frames=num_frames,
+        logger=logger,
+    )
+    return mapped
+
+
+def map_time_segments_to_frames_with_stats(
+    segments: Sequence[tuple[float, float]],
+    fps: float,
+    num_frames: int | None = None,
+    logger: Any = None,
+) -> tuple[list[FrameSegment], FrameMappingStats]:
     """
     Mappt Zeitsegmente deterministisch auf Frame-Indizes (end_frame inklusiv).
 
@@ -231,11 +273,12 @@ def map_time_segments_to_frames(
     if num_frames is not None:
         n_frames = int(num_frames)
         if n_frames <= 0:
-            return []
+            return [], FrameMappingStats(merge_count=0)
         max_frame = n_frames - 1
 
     normalized = _validate_time_segments_sorted(segments)
     mapped: list[FrameSegment] = []
+    merge_count = 0
 
     for start_s, end_s in normalized:
         start_frame = max(0, int(math.floor(float(start_s) * fps_safe)))
@@ -250,7 +293,7 @@ def map_time_segments_to_frames(
         if end_frame < start_frame:
             end_frame = start_frame
 
-        _append_or_merge_frame_segment(
+        if _append_or_merge_frame_segment(
             mapped,
             FrameSegment(
                 start_frame=int(start_frame),
@@ -258,7 +301,8 @@ def map_time_segments_to_frames(
                 start_time_s=float(start_s),
                 end_time_s=float(end_s),
             ),
-        )
+        ):
+            merge_count += 1
 
     _log_line(
         logger,
@@ -274,7 +318,7 @@ def map_time_segments_to_frames(
                 f"time={seg.start_time_s:.3f}s..{seg.end_time_s:.3f}s"
             ),
         )
-    return mapped
+    return mapped, FrameMappingStats(merge_count=merge_count)
 
 
 def detect_curve_segments(
@@ -286,12 +330,33 @@ def detect_curve_segments(
     min_between_curves_s: float,
     logger: Any = None,
 ) -> list[tuple[float, float]]:
+    segments, _stats = detect_curve_segments_with_stats(
+        time_s=time_s,
+        throttle=throttle,
+        brake=brake,
+        before_brake_s=before_brake_s,
+        after_full_throttle_s=after_full_throttle_s,
+        min_between_curves_s=min_between_curves_s,
+        logger=logger,
+    )
+    return segments
+
+
+def detect_curve_segments_with_stats(
+    time_s: Sequence[float],
+    throttle: Sequence[float],
+    brake: Sequence[float],
+    before_brake_s: float,
+    after_full_throttle_s: float,
+    min_between_curves_s: float,
+    logger: Any = None,
+) -> tuple[list[tuple[float, float]], CurveSegmentStats]:
     n = len(time_s)
     if len(throttle) != n or len(brake) != n:
         raise ValueError("time_s, throttle und brake muessen gleich lang sein.")
     if n <= 0:
         _log_line(logger, "info", "cut_events: Cut hat nichts gefunden (0 Segmente)")
-        return []
+        return [], CurveSegmentStats(merge_count=0)
 
     first_t = float(time_s[0])
     last_t = float(time_s[-1])
@@ -301,6 +366,7 @@ def detect_curve_segments(
     full_threshold = _detect_full_throttle_threshold(throttle)
 
     segments: list[tuple[float, float]] = []
+    merge_count = 0
     seen_full_throttle_section = False
     armed_for_brake = False
     in_curve = False
@@ -325,12 +391,13 @@ def detect_curve_segments(
                 t_end = t_now + after_s
                 if t_end > last_t:
                     t_end = last_t
-                _append_or_merge_segment(
+                if _append_or_merge_segment(
                     segments=segments,
                     start_s=pending_start,
                     end_s=t_end,
                     min_between_curves_s=min_between_s,
-                )
+                ):
+                    merge_count += 1
                 in_curve = False
                 brake_start_idx = -1
                 seen_full_throttle_section = True
@@ -347,12 +414,13 @@ def detect_curve_segments(
             armed_for_brake = False
 
     if in_curve:
-        _append_or_merge_segment(
+        if _append_or_merge_segment(
             segments=segments,
             start_s=pending_start,
             end_s=last_t,
             min_between_curves_s=min_between_s,
-        )
+        ):
+            merge_count += 1
 
     full_duration = max(0.0, last_t - first_t)
     total_cut_duration = 0.0
@@ -364,6 +432,7 @@ def detect_curve_segments(
         "debug",
         (
             f"cut_events: n_segments={len(segments)} "
+            f"merges={merge_count} "
             f"full_duration={full_duration:.3f}s "
             f"total_cut_duration={total_cut_duration:.3f}s"
         ),
@@ -377,7 +446,7 @@ def detect_curve_segments(
     if not segments:
         _log_line(logger, "info", "cut_events: Cut hat nichts gefunden (0 Segmente)")
 
-    return segments
+    return segments, CurveSegmentStats(merge_count=merge_count)
 
 
 def _selftest() -> None:

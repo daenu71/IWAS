@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from core.models import AppModel, HudLayoutState, PngViewState, Profile, migrate_layout_contract_dict
+from core.models import AppModel, HudLayoutState, PngViewState, Profile, migrate_profile_contract_dict
 
 
 def build_profile_dict(
@@ -50,6 +50,10 @@ def build_profile_dict(
             hud_layout=HudLayoutState(hud_layout_data=profile.hud_layout_data),
             png_view=PngViewState(png_view_data=profile.png_view_data),
             layout_config=profile.layout_config,
+            video_mode=str(profile.video_mode),
+            video_before_brake=float(profile.video_before_brake),
+            video_after_full_throttle=float(profile.video_after_full_throttle),
+            video_minimum_between_two_curves=float(profile.video_minimum_between_two_curves),
         )
     )
     return profile.to_dict()
@@ -90,7 +94,7 @@ def apply_profile_dict(
 ) -> None:
     if not isinstance(profile, dict):
         return
-    migrate_layout_contract_dict(profile)
+    migrate_profile_contract_dict(profile)
 
     out = profile.get("output")
     if isinstance(out, dict):
