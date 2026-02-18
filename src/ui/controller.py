@@ -321,6 +321,9 @@ class Controller:
         if self.ui.model_from_ui_state is None:
             return
         app_model = self.ui.model_from_ui_state()
+        requested_video_mode = str(getattr(app_model, "video_mode", "full") or "full").strip().lower()
+        if requested_video_mode not in ("full", "cut"):
+            requested_video_mode = "full"
         if self.ui.set_app_model is not None:
             try:
                 self.ui.set_app_model(app_model)
@@ -375,7 +378,11 @@ class Controller:
 
                 def finish_ok() -> None:
                     close()
-                    if out_path.exists() and out_path.stat().st_size > 0:
+                    cut_zero_segments_fallback = bool(result.get("cut_zero_segments_fallback"))
+                    out_ok = out_path.exists() and out_path.stat().st_size > 0
+                    if requested_video_mode == "cut" and cut_zero_segments_fallback and out_ok:
+                        self.ui.set_status("Cut: 0 Segmente → Full gerendert")
+                    elif out_ok:
                         self.ui.set_status(f"Video: Fertig ({out_path.name})")
                     else:
                         self.ui.set_status("Video: Render fehlgeschlagen (0 KB)")

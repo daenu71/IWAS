@@ -611,6 +611,27 @@ def main() -> None:
     log.kv("hud_max_brake_delay_distance", str(hud_max_brake_delay_distance))
     log.kv("hud_max_brake_delay_pressure", str(hud_max_brake_delay_pressure))
 
+    video_mode = str(ui.get("video_mode", "full") if isinstance(ui, dict) else "full").strip().lower()
+    if video_mode not in ("full", "cut"):
+        video_mode = "full"
+    video_cut = ui.get("video_cut") if isinstance(ui, dict) else None
+    if not isinstance(video_cut, dict):
+        video_cut = {}
+
+    def _video_cut_float(key: str, default: float) -> float:
+        try:
+            v = float(video_cut.get(key, default))
+        except Exception:
+            v = float(default)
+        if v < 0.0:
+            v = 0.0
+        return float(v)
+
+    video_cut_before_brake_s = _video_cut_float("video_before_brake", 1.0)
+    video_cut_after_full_throttle_s = _video_cut_float("video_after_full_throttle", 1.0)
+    video_cut_min_between_curves_s = _video_cut_float("video_minimum_between_two_curves", 2.0)
+    log.kv("video_mode", video_mode)
+
     if slow_csv and fast_csv:
         render_split_screen_sync(
             slow=slow_video,
@@ -641,6 +662,10 @@ def main() -> None:
             hud_max_brake_delay_distance=float(hud_max_brake_delay_distance),
             hud_max_brake_delay_pressure=float(hud_max_brake_delay_pressure),
             under_oversteer_curve_center=float(under_oversteer_curve_center),
+            video_mode=str(video_mode),
+            video_cut_before_brake_s=float(video_cut_before_brake_s),
+            video_cut_after_full_throttle_s=float(video_cut_after_full_throttle_s),
+            video_cut_minimum_between_two_curves_s=float(video_cut_min_between_curves_s),
             layout_config=layout_config,
             log_file=log.log_file,
         )

@@ -294,7 +294,9 @@ def build_payload(
     _add_pts_override("Under-/Oversteer", "under_oversteer")
 
     video_mode = str(getattr(app_model, "video_mode", "full") or "full").strip().lower()
-    persistence.load_video_cut_settings(video_mode=video_mode, log_file=log_file)
+    if video_mode not in ("full", "cut"):
+        video_mode = "full"
+    video_cut = persistence.load_video_cut_settings(video_mode=video_mode, log_file=log_file)
 
     payload = {
         "version": 1,
@@ -334,6 +336,8 @@ def build_payload(
             "max_brake_delay_distance": float(max_brake_delay_distance),
             "max_brake_delay_pressure": float(max_brake_delay_pressure),
         },
+        "video_mode": str(video_mode),
+        "video_cut": dict(video_cut),
         "png_view_key": "",
         "png_view_state": {"L": {}, "R": {}},
         "hud_layout_data": app_model.hud_layout.hud_layout_data,
@@ -543,6 +547,7 @@ def start_render(
         out_time_ms_re = re.compile(r"out_time_ms=(\d+)")
         out_time_re = re.compile(r"out_time=(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
         hud_stream_re = re.compile(r"hud_stream_frame=(\d+)(?:/(\d+))?")
+        cut_fallback_zero_segments = False
 
         show_live = (os.environ.get("IRVC_UI_SHOW_LOG") or "").strip() == "1"
 
@@ -580,6 +585,8 @@ def start_render(
                 line = ""
 
             if line:
+                if ("Cut found 0 segments → Full fallback" in line) or ("Cut found 0 segments â†’ Full fallback" in line):
+                    cut_fallback_zero_segments = True
                 if show_live:
                     try:
                         print(line, end="", flush=True)
@@ -684,12 +691,19 @@ def start_render(
         except Exception:
             pass
 
+        if not cut_fallback_zero_segments and log_file_path is not None and log_file_path.exists():
+            try:
+                log_txt = log_file_path.read_text(encoding="utf-8", errors="ignore")
+                cut_fallback_zero_segments = "Cut found 0 segments → Full fallback" in log_txt
+            except Exception:
+                pass
+
         if cancelled:
-            return {"status": "cancelled"}
+            return {"status": "cancelled", "cut_zero_segments_fallback": bool(cut_fallback_zero_segments)}
 
         final_end = time.time()
         _emit_progress(on_progress, PROGRESS_FINAL_END, DONE_TEXT)
-        return {"status": "ok"}
+        return {"status": "ok", "cut_zero_segments_fallback": bool(cut_fallback_zero_segments)}
     except Exception:
         return {"status": "error", "error": "render_failed"}
     finally:

@@ -27,6 +27,7 @@ from ffmpeg_plan import (
     build_stream_sync_filter,
     run_ffmpeg,
 )
+from core.cut_events import detect_curve_segments
 from huds.common import (
     COL_FAST_BRIGHTBLUE,
     COL_FAST_DARKBLUE,
@@ -6296,6 +6297,10 @@ def render_split_screen_sync(
     hud_max_brake_delay_distance: float = 0.003,
     hud_max_brake_delay_pressure: float = 35.0,
     under_oversteer_curve_center: float = 0.0,
+    video_mode: str = "full",
+    video_cut_before_brake_s: float = 1.0,
+    video_cut_after_full_throttle_s: float = 1.0,
+    video_cut_minimum_between_two_curves_s: float = 2.0,
     layout_config: LayoutConfig | None = None,
     log_file: "Path | None" = None,
 ) -> None:
@@ -6387,6 +6392,11 @@ def render_split_screen_sync(
     if hud_bg_alpha > 255:
         hud_bg_alpha = 255
 
+    requested_video_mode = str(video_mode or "full").strip().lower()
+    if requested_video_mode not in ("full", "cut"):
+        requested_video_mode = "full"
+    effective_video_mode = "full"
+
     preset = f"{ms.width}x{ms.height}"
     if preset_w > 0 and preset_h > 0:
         preset = f"{int(preset_w)}x{int(preset_h)}"
@@ -6466,6 +6476,26 @@ def render_split_screen_sync(
     slow_min_speed_frames = _compute_min_speed_display(slow_speed_frames, float(fps_int), str(hud_speed_units)) if slow_speed_frames else []
     fast_min_speed_frames = _compute_min_speed_display(fast_speed_frames, float(fps_int), str(hud_speed_units)) if fast_speed_frames else []
 
+    if requested_video_mode == "cut":
+        n_cut = min(len(slow_throttle_frames), len(slow_brake_frames))
+        cut_time_s = [float(i) / float(fps_int) for i in range(max(0, int(n_cut)))]
+        cut_segments = detect_curve_segments(
+            time_s=cut_time_s,
+            throttle=slow_throttle_frames[:n_cut],
+            brake=slow_brake_frames[:n_cut],
+            before_brake_s=float(video_cut_before_brake_s),
+            after_full_throttle_s=float(video_cut_after_full_throttle_s),
+            min_between_curves_s=float(video_cut_minimum_between_two_curves_s),
+            logger=None,
+        )
+        if len(cut_segments) == 0:
+            _log_print("Cut found 0 segments → Full fallback", log_file)
+            effective_video_mode = "full"
+        else:
+            effective_video_mode = "cut"
+    else:
+        effective_video_mode = "full"
+
 
     cut_i0, cut_i1 = _compute_common_cut_by_fast_time(
         fast_time_s=slow_frame_to_fast_time_s,
@@ -6499,6 +6529,8 @@ def render_split_screen_sync(
 
     sync_cache = {
         "mode": "stream",
+        "video_mode_requested": str(requested_video_mode),
+        "video_mode_effective": str(effective_video_mode),
         "fps": fps_int,
         "frame_count": len(frame_map),
         "cut_i0": int(cut_i0),

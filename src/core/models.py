@@ -496,6 +496,8 @@ class RenderPayload:
             "max_brake_delay_pressure": 35.0,
         }
     )
+    video_mode: str = "full"
+    video_cut: dict[str, Any] = field(default_factory=dict)
     png_view_key: str = ""
     png_view_state: dict[str, Any] = field(default_factory=lambda: {"L": {}, "R": {}})
     hud_layout_data: dict[str, Any] = field(default_factory=dict)
@@ -523,6 +525,8 @@ class RenderPayload:
             "hud_curve_points": self.hud_curve_points,
             "hud_gear_rpm": self.hud_gear_rpm,
             "hud_pedals": self.hud_pedals,
+            "video_mode": self.video_mode,
+            "video_cut": self.video_cut,
             "png_view_key": self.png_view_key,
             "png_view_state": self.png_view_state,
             "hud_layout_data": self.hud_layout_data,
@@ -549,6 +553,8 @@ class RenderPayload:
             hud_curve_points=data.get("hud_curve_points") if isinstance(data.get("hud_curve_points"), dict) else {},
             hud_gear_rpm=data.get("hud_gear_rpm") if isinstance(data.get("hud_gear_rpm"), dict) else {},
             hud_pedals=data.get("hud_pedals") if isinstance(data.get("hud_pedals"), dict) else {},
+            video_mode=str(data.get("video_mode") or "full"),
+            video_cut=data.get("video_cut") if isinstance(data.get("video_cut"), dict) else {},
             png_view_key=str(data.get("png_view_key") or ""),
             png_view_state=data.get("png_view_state") if isinstance(data.get("png_view_state"), dict) else {"L": {}, "R": {}},
             hud_layout_data=data.get("hud_layout_data") if isinstance(data.get("hud_layout_data"), dict) else {},
