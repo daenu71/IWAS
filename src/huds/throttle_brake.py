@@ -22,6 +22,10 @@ def tb_max_brake_new_state() -> dict[str, Any]:
         "last_zero_dist": None,
         "rearm_block_until_dist": None,
         "was_zero": False,
+        "throttle_full_timer": 0.0,
+        "steering_opposite_timer": 0.0,
+        "steering_last_nonzero_sign": 0,
+        "steering_opposite_sign": 0,
     }
 
 
@@ -46,6 +50,9 @@ def tb_update_max_brake_state(
     delay_dist: float,
     override_pressure_pct: float,
     side_name: str,
+    throttle_now: float = 0.0,
+    steering_now: float = 0.0,
+    dt_s: float = 0.0,
     hud_dbg: bool = False,
     log_fn: Callable[[str], None] | None = None,
 ) -> None:
@@ -93,6 +100,82 @@ def tb_update_max_brake_state(
         override_pct = 100.0
     override_brake = float(override_pct) / 100.0
 
+    try:
+        t_now = float(throttle_now)
+    except Exception:
+        t_now = 0.0
+    if not math.isfinite(float(t_now)):
+        t_now = 0.0
+    if t_now < 0.0:
+        t_now = 0.0
+    if t_now > 1.0:
+        t_now = 1.0
+
+    try:
+        st_now = float(steering_now)
+    except Exception:
+        st_now = 0.0
+    if not math.isfinite(float(st_now)):
+        st_now = 0.0
+
+    try:
+        dt_now = float(dt_s)
+    except Exception:
+        dt_now = 0.0
+    if (not math.isfinite(float(dt_now))) or float(dt_now) < 0.0:
+        dt_now = 0.0
+
+    # Reset override timers (>=0.3s): full throttle or sustained opposite steering side.
+    throttle_full_timer = float(st_local.get("throttle_full_timer", 0.0))
+    if float(t_now) >= 0.999:
+        throttle_full_timer = float(throttle_full_timer + float(dt_now))
+    else:
+        throttle_full_timer = 0.0
+    st_local["throttle_full_timer"] = float(throttle_full_timer)
+
+    steer_deadzone = 0.02
+    steer_sign = 0
+    if float(abs(st_now)) >= float(steer_deadzone):
+        steer_sign = 1 if float(st_now) > 0.0 else -1
+    steer_last_sign = int(st_local.get("steering_last_nonzero_sign", 0) or 0)
+    steer_opp_sign = int(st_local.get("steering_opposite_sign", 0) or 0)
+    steer_opp_timer = float(st_local.get("steering_opposite_timer", 0.0))
+    if int(steer_sign) == 0:
+        steer_opp_timer = 0.0
+        steer_opp_sign = 0
+    elif int(steer_opp_sign) != 0:
+        if int(steer_sign) == int(steer_opp_sign) and int(steer_last_sign) != 0 and int(steer_sign) != int(steer_last_sign):
+            steer_opp_timer = float(steer_opp_timer + float(dt_now))
+        else:
+            steer_opp_timer = 0.0
+            steer_opp_sign = 0
+            if int(steer_last_sign) == 0:
+                steer_last_sign = int(steer_sign)
+    else:
+        if int(steer_last_sign) == 0:
+            steer_last_sign = int(steer_sign)
+            steer_opp_timer = 0.0
+        elif int(steer_sign) == int(steer_last_sign):
+            steer_opp_timer = 0.0
+        else:
+            steer_opp_sign = int(steer_sign)
+            steer_opp_timer = float(dt_now)
+
+    steering_opposite_ready = float(steer_opp_timer) >= 0.3
+    if bool(steering_opposite_ready) and int(steer_sign) != 0:
+        steer_last_sign = int(steer_sign)
+        steer_opp_sign = 0
+        steer_opp_timer = 0.0
+
+    st_local["steering_last_nonzero_sign"] = int(steer_last_sign)
+    st_local["steering_opposite_sign"] = int(steer_opp_sign)
+    st_local["steering_opposite_timer"] = float(steer_opp_timer)
+
+    override_reset = (float(throttle_full_timer) >= 0.3) or bool(steering_opposite_ready)
+    if bool(override_reset):
+        st_local["armed"] = True
+        st_local["rearm_block_until_dist"] = float(ld_now)
+
     in_phase = bool(st_local.get("in_phase", False))
     was_zero = bool(st_local.get("was_zero", False))
     is_zero_now = float(b_now) == 0.0
@@ -113,7 +196,7 @@ def tb_update_max_brake_state(
             st_local["last_zero_dist"] = float(ld_now)
             st_local["armed"] = False
             st_local["rearm_block_until_dist"] = float(ld_now) + float(delay)
-        elif not was_zero:
+        elif (not was_zero) and (not bool(override_reset)):
             st_local["armed"] = False
         st_local["was_zero"] = True
         return

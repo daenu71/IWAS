@@ -3156,6 +3156,8 @@ def _render_hud_scroll_frames_png(
                 tb_b_fast_scale = 1.0
                 tb_a_slow_scale = 1.0
                 tb_a_fast_scale = 1.0
+                tb_st_slow_scale = 1.0
+                tb_st_fast_scale = 1.0
                 tb_slow_abs_prefix: list[int] = [0]
                 tb_fast_abs_prefix: list[int] = [0]
                 use_cached_tb = False
@@ -3196,6 +3198,10 @@ def _render_hud_scroll_frames_png(
                             tb_a_slow_scale = float(len(slow_abs_frames) - 1) / n_frames_tb
                         if fast_abs_frames and len(fast_abs_frames) >= 2:
                             tb_a_fast_scale = float(len(fast_abs_frames) - 1) / n_frames_tb
+                        if slow_steer_frames and len(slow_steer_frames) >= 2:
+                            tb_st_slow_scale = float(len(slow_steer_frames) - 1) / n_frames_tb
+                        if fast_steer_frames and len(fast_steer_frames) >= 2:
+                            tb_st_fast_scale = float(len(fast_steer_frames) - 1) / n_frames_tb
                     except Exception:
                         pass
 
@@ -3231,6 +3237,10 @@ def _render_hud_scroll_frames_png(
                             tb_a_slow_scale = float(len(slow_abs_frames) - 1) / n_frames_tb
                         if fast_abs_frames and len(fast_abs_frames) >= 2:
                             tb_a_fast_scale = float(len(fast_abs_frames) - 1) / n_frames_tb
+                        if slow_steer_frames and len(slow_steer_frames) >= 2:
+                            tb_st_slow_scale = float(len(slow_steer_frames) - 1) / n_frames_tb
+                        if fast_steer_frames and len(fast_steer_frames) >= 2:
+                            tb_st_fast_scale = float(len(fast_steer_frames) - 1) / n_frames_tb
                     except Exception:
                         pass
 
@@ -3495,6 +3505,8 @@ def _render_hud_scroll_frames_png(
                             s_b = _tb_sample_linear_time(slow_brake_frames, float(t_slow))
                             f_t = _tb_sample_linear_time(fast_throttle_frames, float(t_fast))
                             f_b = _tb_sample_linear_time(fast_brake_frames, float(t_fast))
+                            s_st = _tb_sample_linear_time(slow_steer_frames, float(t_slow))
+                            f_st = _tb_sample_linear_time(fast_steer_frames, float(t_fast))
                             abs_s_raw = _tb_abs_on_majority_time(slow_abs_frames, tb_slow_abs_prefix, float(t_slow))
                             abs_f_raw = _tb_abs_on_majority_time(fast_abs_frames, tb_fast_abs_prefix, float(t_fast))
                         else:
@@ -3502,6 +3514,8 @@ def _render_hud_scroll_frames_png(
                             s_b = _tb_sample_legacy(slow_brake_frames, int(idx_slow), float(tb_b_slow_scale))
                             f_t = _tb_sample_legacy(fast_throttle_frames, int(fi_map), float(tb_t_fast_scale))
                             f_b = _tb_sample_legacy(fast_brake_frames, int(fi_map), float(tb_b_fast_scale))
+                            s_st = _tb_sample_legacy(slow_steer_frames, int(idx_slow), float(tb_st_slow_scale))
+                            f_st = _tb_sample_legacy(fast_steer_frames, int(fi_map), float(tb_st_fast_scale))
                             abs_s_raw = _tb_sample_legacy(slow_abs_frames, int(idx_slow), float(tb_a_slow_scale))
                             abs_f_raw = _tb_sample_legacy(fast_abs_frames, int(fi_map), float(tb_a_fast_scale))
 
@@ -3538,8 +3552,10 @@ def _render_hud_scroll_frames_png(
                             "f_ld": float(f_ld),
                             "s_t": float(s_t),
                             "s_b": float(s_b),
+                            "s_st": float(s_st),
                             "f_t": float(f_t),
                             "f_b": float(f_b),
+                            "f_st": float(f_st),
                             "y_s_t": int(y_s_t),
                             "y_s_b": int(y_s_b),
                             "y_f_t": int(y_f_t),
@@ -3869,6 +3885,12 @@ def _render_hud_scroll_frames_png(
                         idx_cur = int(cur_col.get("slow_idx", -1))
                         last_idx = renderer_state.helpers.get("tb_max_brake_last_idx")
                         if last_idx is None or int(last_idx) != int(idx_cur):
+                            dt_update = 1.0 / max(1e-6, float(tb_fps_safe))
+                            if last_idx is not None:
+                                idx_delta = int(idx_cur) - int(last_idx)
+                                if idx_delta <= 0:
+                                    idx_delta = 1
+                                dt_update = float(idx_delta) / max(1e-6, float(tb_fps_safe))
                             tb_update_max_brake_state(
                                 tb_max_states["slow"],
                                 float(cur_col.get("s_b", 0.0)),
@@ -3876,6 +3898,9 @@ def _render_hud_scroll_frames_png(
                                 float(hud_max_brake_delay_distance),
                                 float(hud_max_brake_delay_pressure),
                                 "slow",
+                                throttle_now=float(cur_col.get("s_t", 0.0)),
+                                steering_now=float(cur_col.get("s_st", 0.0)),
+                                dt_s=float(dt_update),
                                 hud_dbg=bool(hud_dbg),
                                 log_fn=lambda msg: _log_print(msg, log_file),
                             )
@@ -3886,6 +3911,9 @@ def _render_hud_scroll_frames_png(
                                 float(hud_max_brake_delay_distance),
                                 float(hud_max_brake_delay_pressure),
                                 "fast",
+                                throttle_now=float(cur_col.get("f_t", 0.0)),
+                                steering_now=float(cur_col.get("f_st", 0.0)),
+                                dt_s=float(dt_update),
                                 hud_dbg=bool(hud_dbg),
                                 log_fn=lambda msg: _log_print(msg, log_file),
                             )
