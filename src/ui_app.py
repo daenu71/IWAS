@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, font as tkfont
 import math
 import re
 from pathlib import Path
@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+from dataclasses import dataclass
 from typing import Callable
 
 from core.models import (
@@ -37,6 +38,94 @@ from ui.controller import Controller, UIContext
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
+
+
+@dataclass(frozen=True)
+class ThemeColors:
+    background: str
+    surface: str
+    accent: str
+    text_primary: str
+    text_secondary: str
+    hover_surface: str
+    active_surface: str
+
+
+@dataclass(frozen=True)
+class Theme:
+    colors: ThemeColors
+    font_family: str
+    font_size: int
+
+
+def build_default_dark_theme() -> Theme:
+    colors = ThemeColors(
+        background="#050609",
+        surface="#171c29",
+        accent="#3da2ff",
+        text_primary="#f8fbff",
+        text_secondary="#9aa5bf",
+        hover_surface="#1f2330",
+        active_surface="#2556d4",
+    )
+    return Theme(colors=colors, font_family="Segoe UI", font_size=10)
+
+
+CURRENT_THEME: Theme = build_default_dark_theme()
+
+
+_THEME_FONT_NAMES = ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont")
+
+
+def apply_theme_fonts(theme: Theme) -> None:
+    for font_name in _THEME_FONT_NAMES:
+        try:
+            tkfont.nametofont(font_name).configure(
+                family=theme.font_family,
+                size=theme.font_size,
+            )
+        except tk.TclError:
+            pass
+
+
+def _color_from_source(source: dict[str, str], key: str, fallback: str) -> str:
+    value = source.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback
+
+
+def theme_from_dict(data: dict | None) -> Theme:
+    if not isinstance(data, dict):
+        return CURRENT_THEME
+    colors_source = data.get("colors")
+    if not isinstance(colors_source, dict):
+        colors_source = data
+    colors = ThemeColors(
+        background=_color_from_source(colors_source, "background", CURRENT_THEME.colors.background),
+        surface=_color_from_source(colors_source, "surface", CURRENT_THEME.colors.surface),
+        accent=_color_from_source(colors_source, "accent", CURRENT_THEME.colors.accent),
+        text_primary=_color_from_source(colors_source, "text_primary", CURRENT_THEME.colors.text_primary),
+        text_secondary=_color_from_source(colors_source, "text_secondary", CURRENT_THEME.colors.text_secondary),
+        hover_surface=_color_from_source(colors_source, "hover_surface", CURRENT_THEME.colors.hover_surface),
+        active_surface=_color_from_source(colors_source, "active_surface", CURRENT_THEME.colors.active_surface),
+    )
+    font_family = str(data.get("font_family") or CURRENT_THEME.font_family)
+    font_size = CURRENT_THEME.font_size
+    try:
+        font_size = int(data.get("font_size", font_size))
+    except (TypeError, ValueError):
+        pass
+    return Theme(colors=colors, font_family=font_family, font_size=font_size)
+
+
+def load_theme_from_json(path: Path) -> Theme:
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        return theme_from_dict(payload)
+    except Exception:
+        return CURRENT_THEME
 
 
 def _debug_swallowed_enabled() -> bool:
@@ -3199,6 +3288,60 @@ def main() -> None:
     root.grid_columnconfigure(0, weight=1)
     root.grid_rowconfigure(1, weight=1)
 
+    theme = CURRENT_THEME
+    root.configure(background=theme.colors.background)
+    apply_theme_fonts(theme)
+    style = ttk.Style(root)
+    style.configure(
+        "TFrame",
+        background=theme.colors.surface,
+    )
+    style.configure(
+        "TLabel",
+        background=theme.colors.surface,
+        foreground=theme.colors.text_primary,
+    )
+    style.configure(
+        "TCheckbutton",
+        background=theme.colors.surface,
+        foreground=theme.colors.text_primary,
+    )
+    style.configure(
+        "TRadiobutton",
+        background=theme.colors.surface,
+        foreground=theme.colors.text_primary,
+    )
+    style.configure(
+        "TEntry",
+        fieldbackground=theme.colors.surface,
+        foreground=theme.colors.text_primary,
+    )
+    style.configure(
+        "TCombobox",
+        fieldbackground=theme.colors.surface,
+        foreground=theme.colors.text_primary,
+    )
+    style.configure(
+        "Horizontal.TScale",
+        background=theme.colors.surface,
+    )
+    style.configure(
+        "TButton",
+        background=theme.colors.surface,
+        foreground=theme.colors.text_primary,
+        borderwidth=0,
+    )
+    style.map(
+        "TButton",
+        background=[
+            ("active", theme.colors.hover_surface),
+            ("pressed", theme.colors.active_surface),
+        ],
+        foreground=[
+            ("disabled", theme.colors.text_secondary),
+        ],
+    )
+
     ribbon = ttk.Frame(root, padding=(10, 10, 10, 0))
     ribbon.grid(row=0, column=0, sticky="ew")
     content = ttk.Frame(root, padding=(0, 6, 0, 0))
@@ -3209,13 +3352,47 @@ def main() -> None:
     buttons: dict[str, tk.Button] = {}
     active = {"name": ""}
     current = {"widget": None}
+    nav_font = tkfont.nametofont("TkDefaultFont")
+    nav_bg = theme.colors.surface
+    nav_hover_bg = theme.colors.hover_surface
+    nav_active_bg = theme.colors.accent
+    nav_text = theme.colors.text_primary
+
+    def _style_nav_button(btn: tk.Button, name: str) -> None:
+        btn.configure(
+            font=nav_font,
+            background=nav_bg,
+            foreground=nav_text,
+            activebackground=theme.colors.active_surface,
+            activeforeground=nav_text,
+            relief="raised",
+            bd=1,
+            highlightthickness=0,
+            borderwidth=1,
+        )
+
+        def _on_enter(_event=None) -> None:
+            if active["name"] == name:
+                return
+            btn.configure(background=nav_hover_bg)
+
+        def _on_leave(_event=None) -> None:
+            if active["name"] == name:
+                btn.configure(background=nav_active_bg)
+            else:
+                btn.configure(background=nav_bg)
+
+        btn.bind("<Enter>", _on_enter, add="+")
+        btn.bind("<Leave>", _on_leave, add="+")
 
     def _set_active_button(name: str) -> None:
         for key, btn in buttons.items():
-            if key == name:
-                btn.configure(relief="sunken")
-            else:
-                btn.configure(relief="raised")
+            is_active = key == name
+            btn.configure(
+                relief="sunken" if is_active else "raised",
+                background=nav_active_bg if is_active else nav_bg,
+                foreground=nav_text,
+            )
 
     def _build_view(name: str) -> ttk.Frame:
         entry = VIEW_REGISTRY.get(name)
@@ -3251,6 +3428,7 @@ def main() -> None:
             padx=12,
             pady=6,
         )
+        _style_nav_button(btn, label)
         padx = (8, 0) if index > 0 else 0
         btn.grid(row=0, column=index, sticky="w", padx=padx)
         buttons[label] = btn
