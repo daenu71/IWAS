@@ -470,6 +470,7 @@ class AppModel:
     hud_layout: HudLayoutState = field(default_factory=HudLayoutState)
     png_view: PngViewState = field(default_factory=PngViewState)
     layout_config: LayoutConfig = field(default_factory=LayoutConfig)
+    video_mode: str = "full"
 
 
 @dataclass

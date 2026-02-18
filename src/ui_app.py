@@ -220,6 +220,15 @@ def main() -> None:
             layout = "LR"
         return str(layout)
 
+    def _normalize_video_mode(raw: object) -> str:
+        try:
+            mode = str(raw or "full").strip().lower()
+        except Exception:
+            mode = "full"
+        if mode not in ("full", "cut"):
+            mode = "full"
+        return str(mode)
+
     def _load_layout_config_from_ui_last_run() -> LayoutConfig:
         try:
             if not ui_last_run_file.exists():
@@ -507,6 +516,7 @@ def main() -> None:
     sel = persistence.load_output_format()
     out_aspect_var = tk.StringVar(value=sel.get("aspect", "32:9"))
     out_preset_var = tk.StringVar(value=sel.get("preset", get_presets_for_aspect(sel.get("aspect", "32:9"))[0]))
+    video_mode_var = tk.StringVar(value="full")
 
     # UI im Einstellungen-Block
     frame_settings.columnconfigure(0, weight=0)
@@ -514,8 +524,36 @@ def main() -> None:
     frame_settings.columnconfigure(2, weight=0)
 
     ttk.Label(frame_settings, text="Output-Format", font=("Segoe UI", 10, "bold")).grid(
-        row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 6)
+        row=0, column=0, sticky="w", padx=10, pady=(10, 6)
     )
+    frame_video_mode = ttk.Frame(frame_settings)
+    frame_video_mode.grid(row=0, column=1, columnspan=2, sticky="w", padx=10, pady=(10, 6))
+
+    def on_video_mode_changed() -> None:
+        mode = _normalize_video_mode(video_mode_var.get())
+        try:
+            video_mode_var.set(mode)
+        except Exception:
+            pass
+        try:
+            app_model.video_mode = mode
+        except Exception:
+            pass
+
+    ttk.Radiobutton(
+        frame_video_mode,
+        text="Full",
+        variable=video_mode_var,
+        value="full",
+        command=on_video_mode_changed,
+    ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    ttk.Radiobutton(
+        frame_video_mode,
+        text="Cut",
+        variable=video_mode_var,
+        value="cut",
+        command=on_video_mode_changed,
+    ).grid(row=0, column=1, sticky="w")
 
     ttk.Label(frame_settings, text="Seitenverhältnis:").grid(row=1, column=0, sticky="w", padx=10, pady=2)
     cmb_aspect = ttk.Combobox(frame_settings, values=ASPECTS, textvariable=out_aspect_var, state="readonly", width=10)
@@ -551,6 +589,10 @@ def main() -> None:
         app_model.layout_config = _load_layout_config_from_ui_last_run()
     except Exception:
         pass
+    try:
+        app_model.video_mode = _normalize_video_mode(getattr(app_model, "video_mode", "full"))
+    except Exception:
+        app_model.video_mode = "full"
     hud_free_mode_var = tk.BooleanVar(value=False)
     hud_bg_alpha_var = tk.DoubleVar(value=255.0)
     hud_frame_orientation_var = tk.StringVar(value="vertical")
@@ -645,6 +687,17 @@ def main() -> None:
         cfg.video_layout = str(layout_value)
         try:
             video_layout_var.set(str(layout_value))
+        except Exception:
+            pass
+
+    def _sync_video_mode_var_from_model() -> None:
+        mode = _normalize_video_mode(getattr(app_model, "video_mode", "full"))
+        try:
+            app_model.video_mode = mode
+        except Exception:
+            pass
+        try:
+            video_mode_var.set(mode)
         except Exception:
             pass
 
@@ -921,6 +974,7 @@ def main() -> None:
             hud_layout=HudLayoutState(hud_layout_data=hud_layout_data),
             png_view=PngViewState(png_view_data=png_view_data),
             layout_config=app_model.layout_config if isinstance(app_model.layout_config, LayoutConfig) else LayoutConfig(),
+            video_mode=_normalize_video_mode(video_mode_var.get()),
         )
 
     def apply_model_to_ui_state(model: AppModel) -> None:
@@ -941,6 +995,10 @@ def main() -> None:
         except Exception:
             pass
         try:
+            video_mode_var.set(_normalize_video_mode(getattr(model, "video_mode", "full")))
+        except Exception:
+            pass
+        try:
             hud_width_var.set(max(0, int(model.output.hud_width_px)))
         except Exception:
             pass
@@ -951,12 +1009,17 @@ def main() -> None:
         _sync_hud_mode_var_from_model()
         _sync_hud_frame_vars_from_model()
         _sync_hud_bg_alpha_var_from_model()
+        _sync_video_mode_var_from_model()
         _sync_video_layout_var_from_model()
         _sync_video_transform_vars_from_model()
 
     def set_app_model(model: AppModel) -> None:
         nonlocal app_model
         app_model = model
+        try:
+            app_model.video_mode = _normalize_video_mode(getattr(app_model, "video_mode", video_mode_var.get()))
+        except Exception:
+            app_model.video_mode = _normalize_video_mode(video_mode_var.get())
 
     def profile_model_from_ui_state(
         videos_names: list[str],
@@ -1826,6 +1889,10 @@ def main() -> None:
         def _set_app_model(model: AppModel) -> None:
             nonlocal app_model
             app_model = model
+            try:
+                app_model.video_mode = _normalize_video_mode(video_mode_var.get())
+            except Exception:
+                app_model.video_mode = "full"
 
         return profile_service.build_profile_dict(
             videos=videos,
