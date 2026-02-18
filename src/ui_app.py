@@ -168,6 +168,8 @@ def _apply_theme_to_tk_widget(widget: tk.Widget, *, theme: Theme | None = None, 
 
 def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
     colors = theme.colors
+    button_light = _mix_hex_colors(colors.surface, "#ffffff", 0.72)
+    button_dark = _mix_hex_colors(colors.surface, "#000000", 0.45)
 
     def _configure_variants(names: tuple[str, ...], **options: object) -> None:
         for name in names:
@@ -269,8 +271,10 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
         foreground=colors.text_primary,
         borderwidth=1,
         bordercolor=colors.border,
+        lightcolor=button_light,
+        darkcolor=button_dark,
         focuscolor=colors.accent,
-        relief="flat",
+        relief="raised",
     )
     _map_variants(
         ("TButton", "App.TButton"),
@@ -284,8 +288,20 @@ def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
             ("pressed", colors.text_primary),
             ("active", colors.text_primary),
         ],
+        relief=[
+            ("pressed", "sunken"),
+            ("!pressed", "raised"),
+        ],
         bordercolor=[
             ("focus", colors.accent),
+        ],
+        lightcolor=[
+            ("pressed", _mix_hex_colors(colors.accent, "#ffffff", 0.40)),
+            ("active", button_light),
+        ],
+        darkcolor=[
+            ("pressed", _mix_hex_colors(colors.accent, "#000000", 0.35)),
+            ("active", button_dark),
         ],
     )
     _map_variants(
