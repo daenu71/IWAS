@@ -49,6 +49,11 @@ class ThemeColors:
     text_secondary: str
     hover_surface: str
     active_surface: str
+    border: str
+    field_background: str
+    field_background_hover: str
+    selection_background: str
+    selection_foreground: str
 
 
 @dataclass(frozen=True)
@@ -58,15 +63,60 @@ class Theme:
     font_size: int
 
 
+_HEX_COLOR_RE = re.compile(r"^#([0-9a-fA-F]{6})$")
+
+
+def _normalize_hex_color(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not _HEX_COLOR_RE.match(candidate):
+        return None
+    return candidate.lower()
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    return (
+        int(hex_color[1:3], 16),
+        int(hex_color[3:5], 16),
+        int(hex_color[5:7], 16),
+    )
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#" + "".join(f"{component:02x}" for component in rgb)
+
+
+def _mix_hex_colors(base: str, target: str, ratio: float) -> str:
+    base_color = _normalize_hex_color(base)
+    target_color = _normalize_hex_color(target)
+    if base_color is None:
+        return base
+    if target_color is None:
+        return base_color
+    ratio = max(0.0, min(1.0, ratio))
+    mixed = tuple(
+        round(base_val * (1 - ratio) + target_val * ratio)
+        for base_val, target_val in zip(_hex_to_rgb(base_color), _hex_to_rgb(target_color))
+    )
+    return _rgb_to_hex(mixed)
+
+
 def build_default_dark_theme() -> Theme:
+    surface = "#171c29"
     colors = ThemeColors(
         background="#050609",
-        surface="#171c29",
+        surface=surface,
         accent="#3da2ff",
         text_primary="#f8fbff",
         text_secondary="#9aa5bf",
         hover_surface="#1f2330",
         active_surface="#2556d4",
+        border=_mix_hex_colors(surface, "#9aa5bf", 0.35),
+        field_background=_mix_hex_colors(surface, "#ffffff", 0.08),
+        field_background_hover=_mix_hex_colors(surface, "#1f2330", 0.25),
+        selection_background="#3da2ff",
+        selection_foreground="#f8fbff",
     )
     return Theme(colors=colors, font_family="Segoe UI", font_size=10)
 
@@ -100,18 +150,249 @@ def _apply_theme_to_tk_widget(widget: tk.Widget, *, theme: Theme | None = None, 
     theme = theme or CURRENT_THEME
     colors = theme.colors
     base_options = {
-        "bg": colors.surface,
+        "bg": colors.field_background,
         "fg": colors.text_primary,
-        "highlightbackground": colors.surface,
-        "highlightcolor": colors.hover_surface,
+        "background": colors.field_background,
+        "foreground": colors.text_primary,
+        "highlightbackground": colors.border,
+        "highlightcolor": colors.accent,
         "insertbackground": colors.text_primary,
-        "selectbackground": colors.hover_surface,
-        "selectforeground": colors.text_primary,
+        "selectbackground": colors.selection_background,
+        "selectforeground": colors.selection_foreground,
         "activebackground": colors.hover_surface,
         "activeforeground": colors.text_primary,
     }
     base_options.update(overrides)
     _configure_widget(widget, **base_options)
+
+
+def _configure_app_styles(style: ttk.Style, theme: Theme) -> None:
+    colors = theme.colors
+
+    def _configure_variants(names: tuple[str, ...], **options: object) -> None:
+        for name in names:
+            try:
+                style.configure(name, **options)
+            except tk.TclError:
+                pass
+
+    def _map_variants(names: tuple[str, ...], **options: object) -> None:
+        for name in names:
+            style.map(name, **options)
+
+    _configure_variants(
+        ("TFrame", "App.TFrame"),
+        background=colors.surface,
+    )
+    _configure_variants(
+        ("TLabelframe", "App.TLabelframe"),
+        background=colors.surface,
+        borderwidth=1,
+        relief="solid",
+    )
+    _configure_variants(
+        ("TLabelframe.Label", "App.TLabelframe.Label"),
+        background=colors.surface,
+        foreground=colors.text_primary,
+    )
+    _configure_variants(
+        ("TLabel", "App.TLabel"),
+        background=colors.surface,
+        foreground=colors.text_primary,
+    )
+    _configure_variants(
+        ("TCheckbutton", "App.TCheckbutton"),
+        background=colors.surface,
+        foreground=colors.text_primary,
+    )
+    _configure_variants(
+        ("TRadiobutton", "App.TRadiobutton"),
+        background=colors.surface,
+        foreground=colors.text_primary,
+    )
+    _configure_variants(
+        ("TEntry", "App.TEntry"),
+        fieldbackground=colors.field_background,
+        background=colors.field_background,
+        foreground=colors.text_primary,
+        insertcolor=colors.text_primary,
+        relief="flat",
+        borderwidth=1,
+    )
+    _configure_variants(
+        ("TSpinbox", "App.TSpinbox"),
+        fieldbackground=colors.field_background,
+        background=colors.field_background,
+        foreground=colors.text_primary,
+        relief="flat",
+        borderwidth=1,
+    )
+    _configure_variants(
+        ("TCombobox", "App.TCombobox"),
+        fieldbackground=colors.field_background,
+        background=colors.field_background,
+        foreground=colors.text_primary,
+        selectbackground=colors.selection_background,
+        selectforeground=colors.selection_foreground,
+    )
+    for target in ("TCombobox", "App.TCombobox"):
+        try:
+            style.configure(target, arrowcolor=colors.text_primary)
+        except tk.TclError:
+            pass
+    for target in ("TSpinbox", "App.TSpinbox"):
+        try:
+            style.configure(target, arrowcolor=colors.text_primary)
+        except tk.TclError:
+            pass
+    _configure_variants(
+        ("TButton", "App.TButton"),
+        background=colors.surface,
+        foreground=colors.text_primary,
+        borderwidth=1,
+        relief="flat",
+    )
+    _map_variants(
+        ("TButton", "App.TButton"),
+        background=[
+            ("active", colors.hover_surface),
+            ("pressed", colors.active_surface),
+            ("focus", colors.accent),
+        ],
+        foreground=[
+            ("disabled", colors.text_secondary),
+        ],
+    )
+    _map_variants(
+        ("TEntry", "App.TEntry"),
+        fieldbackground=[
+            ("disabled", colors.field_background),
+            ("focus", colors.field_background_hover),
+        ],
+        foreground=[
+            ("disabled", colors.text_secondary),
+        ],
+    )
+    _map_variants(
+        ("TSpinbox", "App.TSpinbox"),
+        fieldbackground=[
+            ("disabled", colors.field_background),
+            ("focus", colors.field_background_hover),
+        ],
+        foreground=[
+            ("disabled", colors.text_secondary),
+        ],
+    )
+    _map_variants(
+        ("TCombobox", "App.TCombobox"),
+        fieldbackground=[
+            ("readonly", colors.field_background),
+            ("disabled", colors.field_background),
+            ("focus", colors.field_background_hover),
+        ],
+        foreground=[
+            ("disabled", colors.text_secondary),
+        ],
+        background=[
+            ("active", colors.field_background_hover),
+        ],
+    )
+    _map_variants(
+        ("TCheckbutton", "App.TCheckbutton"),
+        foreground=[
+            ("disabled", colors.text_secondary),
+        ],
+    )
+    _map_variants(
+        ("TRadiobutton", "App.TRadiobutton"),
+        foreground=[
+            ("disabled", colors.text_secondary),
+        ],
+    )
+    _configure_variants(
+        ("TScale", "Horizontal.TScale"),
+        background=colors.surface,
+        troughcolor=colors.field_background,
+    )
+    _map_variants(
+        ("TScale", "Horizontal.TScale"),
+        troughcolor=[
+            ("active", colors.field_background_hover),
+        ],
+    )
+    _configure_variants(
+        ("TScrollbar",),
+        background=colors.surface,
+        troughcolor=colors.background,
+        relief="flat",
+    )
+    _configure_variants(
+        ("TSeparator",),
+        background=colors.border,
+    )
+    _configure_variants(
+        ("Treeview",),
+        background=colors.surface,
+        fieldbackground=colors.field_background,
+        foreground=colors.text_primary,
+        borderwidth=1,
+        relief="flat",
+    )
+    style.configure(
+        "Treeview.Heading",
+        background=colors.surface,
+        foreground=colors.text_primary,
+        relief="flat",
+    )
+    _map_variants(
+        ("Treeview",),
+        background=[
+            ("selected", colors.active_surface),
+        ],
+        foreground=[
+            ("selected", colors.text_primary),
+        ],
+    )
+    style.configure(
+        "Horizontal.TScale",
+        sliderlength=12,
+        background=colors.surface,
+        troughcolor=colors.field_background,
+    )
+    style.configure(
+        "Horizontal.TProgressbar",
+        troughcolor=colors.surface,
+        background=colors.accent,
+    )
+
+
+def _configure_root_tk_defaults(root: tk.Tk, colors: ThemeColors) -> None:
+    option_defaults = {
+        "*Entry.background": colors.field_background,
+        "*Entry.foreground": colors.text_primary,
+        "*Entry.insertbackground": colors.text_primary,
+        "*Entry.selectbackground": colors.selection_background,
+        "*Entry.selectforeground": colors.selection_foreground,
+        "*Entry.disabledbackground": colors.field_background,
+        "*Entry.disabledforeground": colors.text_secondary,
+        "*Entry.highlightbackground": colors.border,
+        "*Entry.highlightcolor": colors.accent,
+        "*Text.background": colors.surface,
+        "*Text.foreground": colors.text_primary,
+        "*Text.insertbackground": colors.text_primary,
+        "*Text.selectbackground": colors.selection_background,
+        "*Text.selectforeground": colors.selection_foreground,
+        "*Listbox.background": colors.surface,
+        "*Listbox.foreground": colors.text_primary,
+        "*Listbox.selectbackground": colors.selection_background,
+        "*Listbox.selectforeground": colors.selection_foreground,
+        "*Listbox.highlightbackground": colors.border,
+        "*Scale.troughcolor": colors.field_background,
+        "*Frame.background": colors.surface,
+        "*Frame.foreground": colors.text_primary,
+    }
+    for option, value in option_defaults.items():
+        root.option_add(option, value)
 
 
 def _color_from_source(source: dict[str, str], key: str, fallback: str) -> str:
@@ -127,14 +408,51 @@ def theme_from_dict(data: dict | None) -> Theme:
     colors_source = data.get("colors")
     if not isinstance(colors_source, dict):
         colors_source = data
+    background = _color_from_source(colors_source, "background", CURRENT_THEME.colors.background)
+    surface = _color_from_source(colors_source, "surface", CURRENT_THEME.colors.surface)
+    accent = _color_from_source(colors_source, "accent", CURRENT_THEME.colors.accent)
+    text_primary = _color_from_source(colors_source, "text_primary", CURRENT_THEME.colors.text_primary)
+    text_secondary = _color_from_source(colors_source, "text_secondary", CURRENT_THEME.colors.text_secondary)
+    hover_surface = _color_from_source(colors_source, "hover_surface", CURRENT_THEME.colors.hover_surface)
+    active_surface = _color_from_source(colors_source, "active_surface", CURRENT_THEME.colors.active_surface)
+    border = _color_from_source(
+        colors_source,
+        "border",
+        _mix_hex_colors(surface, text_secondary, 0.35),
+    )
+    field_background = _color_from_source(
+        colors_source,
+        "field_background",
+        _mix_hex_colors(surface, "#ffffff", 0.08),
+    )
+    field_background_hover = _color_from_source(
+        colors_source,
+        "field_background_hover",
+        _mix_hex_colors(surface, hover_surface, 0.25),
+    )
+    selection_background = _color_from_source(
+        colors_source,
+        "selection_background",
+        accent,
+    )
+    selection_foreground = _color_from_source(
+        colors_source,
+        "selection_foreground",
+        text_primary,
+    )
     colors = ThemeColors(
-        background=_color_from_source(colors_source, "background", CURRENT_THEME.colors.background),
-        surface=_color_from_source(colors_source, "surface", CURRENT_THEME.colors.surface),
-        accent=_color_from_source(colors_source, "accent", CURRENT_THEME.colors.accent),
-        text_primary=_color_from_source(colors_source, "text_primary", CURRENT_THEME.colors.text_primary),
-        text_secondary=_color_from_source(colors_source, "text_secondary", CURRENT_THEME.colors.text_secondary),
-        hover_surface=_color_from_source(colors_source, "hover_surface", CURRENT_THEME.colors.hover_surface),
-        active_surface=_color_from_source(colors_source, "active_surface", CURRENT_THEME.colors.active_surface),
+        background=background,
+        surface=surface,
+        accent=accent,
+        text_primary=text_primary,
+        text_secondary=text_secondary,
+        hover_surface=hover_surface,
+        active_surface=active_surface,
+        border=border,
+        field_background=field_background,
+        field_background_hover=field_background_hover,
+        selection_background=selection_background,
+        selection_foreground=selection_foreground,
     )
     font_family = str(data.get("font_family") or CURRENT_THEME.font_family)
     font_size = CURRENT_THEME.font_size
@@ -3351,113 +3669,12 @@ def main() -> None:
     root.configure(background=colors.background)
     apply_theme_fonts(theme)
     style = ttk.Style(root)
-    style.configure(
-        "TFrame",
-        background=colors.surface,
-    )
-    style.configure(
-        "TLabelframe",
-        background=colors.surface,
-        borderwidth=1,
-        relief="solid",
-    )
-    style.configure(
-        "TLabelframe.Label",
-        background=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.configure(
-        "TLabel",
-        background=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.configure(
-        "TCheckbutton",
-        background=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.configure(
-        "TRadiobutton",
-        background=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.configure(
-        "TEntry",
-        fieldbackground=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.configure(
-        "TSpinbox",
-        fieldbackground=colors.surface,
-        foreground=colors.text_primary,
-        background=colors.surface,
-    )
-    style.configure(
-        "TCombobox",
-        fieldbackground=colors.surface,
-        background=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.configure(
-        "TScrollbar",
-        background=colors.surface,
-        troughcolor=colors.background,
-        relief="flat",
-    )
-    style.configure(
-        "TSeparator",
-        background=colors.hover_surface,
-    )
-    style.configure(
-        "Treeview",
-        background=colors.surface,
-        fieldbackground=colors.surface,
-        foreground=colors.text_primary,
-    )
-    style.map(
-        "Treeview",
-        background=[
-            ("selected", colors.active_surface),
-        ],
-        foreground=[
-            ("selected", colors.text_primary),
-        ],
-    )
-    style.configure(
-        "Treeview.Heading",
-        background=colors.surface,
-        foreground=colors.text_primary,
-        relief="flat",
-    )
-    style.configure(
-        "Horizontal.TScale",
-        background=colors.surface,
-    )
-    style.configure(
-        "Horizontal.TProgressbar",
-        troughcolor=colors.surface,
-        background=colors.accent,
-    )
-    style.configure(
-        "TButton",
-        background=colors.surface,
-        foreground=colors.text_primary,
-        borderwidth=0,
-    )
-    style.map(
-        "TButton",
-        background=[
-            ("active", colors.hover_surface),
-            ("pressed", colors.active_surface),
-        ],
-        foreground=[
-            ("disabled", colors.text_secondary),
-        ],
-    )
+    _configure_app_styles(style, theme)
+    _configure_root_tk_defaults(root, colors)
 
-    ribbon = ttk.Frame(root, padding=(10, 10, 10, 0))
+    ribbon = ttk.Frame(root, padding=(10, 10, 10, 0), style="App.TFrame")
     ribbon.grid(row=0, column=0, sticky="ew")
-    content = ttk.Frame(root, padding=(0, 6, 0, 0))
+    content = ttk.Frame(root, padding=(0, 6, 0, 0), style="App.TFrame")
     content.grid(row=1, column=0, sticky="nsew")
     content.grid_columnconfigure(0, weight=1)
     content.grid_rowconfigure(0, weight=1)
