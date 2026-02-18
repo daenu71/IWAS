@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any, Callable, TYPE_CHECKING
@@ -115,6 +116,112 @@ class Controller:
         except Exception:
             pass
 
+    @staticmethod
+    def _extract_time_ms_from_name(path: Path) -> int | None:
+        m = re.search(r"(\d{2})\.(\d{2})\.(\d{3})", path.name)
+        if not m:
+            return None
+        mm, ss, ms = m.groups()
+        return int(mm) * 60_000 + int(ss) * 1_000 + int(ms)
+
+    @staticmethod
+    def _parse_g61_csv_basename(path: Path) -> tuple[str, str, str, str] | None:
+        name = str(path.name or "")
+        if not name.lower().endswith(".csv"):
+            return None
+
+        stem = name[:-4]
+        prefix = "Garage 61 - "
+        if not stem.startswith(prefix):
+            return None
+
+        rest = stem[len(prefix):]
+        try:
+            left, track, lap_time, _run_id = rest.rsplit(" - ", 3)
+            driver, car = left.split(" - ", 1)
+        except ValueError:
+            return None
+
+        driver = driver.strip()
+        car = car.strip()
+        track = track.strip()
+        lap_time = lap_time.strip()
+        if not driver or not car or not track:
+            return None
+        if re.fullmatch(r"\d{2}\.\d{2}\.\d{3}", lap_time) is None:
+            return None
+        return driver, car, track, lap_time
+
+    @staticmethod
+    def _sanitize_windows_filename_base(name: str) -> str:
+        s = re.sub(r'[\\/:*?"<>|]+', "-", str(name or ""))
+        s = re.sub(r"\s+", " ", s).strip()
+        s = s.rstrip(" .")
+        return s
+
+    @staticmethod
+    def _unique_output_path(out_dir: Path, base_name: str, ext: str) -> Path:
+        candidate = out_dir / f"{base_name}{ext}"
+        if not candidate.exists():
+            return candidate
+        n = 1
+        while True:
+            candidate_n = out_dir / f"{base_name} ({n}){ext}"
+            if not candidate_n.exists():
+                return candidate_n
+            n += 1
+
+    def _build_output_name_from_csvs(
+        self,
+        *,
+        csvs: list[Path],
+        fast_p: Path,
+        slow_p: Path,
+        fallback_base: str,
+    ) -> str:
+        if len(csvs) < 2:
+            return fallback_base
+
+        parsed: list[tuple[Path, str, str, str, str, int]] = []
+        for c in csvs[:2]:
+            row = self._parse_g61_csv_basename(c)
+            if row is None:
+                return fallback_base
+            driver, car, track, lap_time = row
+            tms = self._extract_time_ms_from_name(c)
+            if tms is None:
+                return fallback_base
+            parsed.append((c, driver, car, track, lap_time, tms))
+
+        fast_ms = self._extract_time_ms_from_name(fast_p)
+        slow_ms = self._extract_time_ms_from_name(slow_p)
+
+        fast_row: tuple[Path, str, str, str, str, int] | None = None
+        slow_row: tuple[Path, str, str, str, str, int] | None = None
+
+        if fast_ms is not None and slow_ms is not None:
+            for row in parsed:
+                if row[5] == fast_ms and fast_row is None:
+                    fast_row = row
+                elif row[5] == slow_ms and slow_row is None:
+                    slow_row = row
+
+        if fast_row is None or slow_row is None:
+            rows = sorted(parsed, key=lambda x: x[5])
+            if len(rows) < 2:
+                return fallback_base
+            fast_row, slow_row = rows[0], rows[1]
+
+        track = fast_row[3]
+        fast_driver, fast_car, fast_time = fast_row[1], fast_row[2], fast_row[4]
+        slow_driver, slow_car, slow_time = slow_row[1], slow_row[2], slow_row[4]
+
+        base = f"{track} - {fast_driver} - {fast_car} - {fast_time} - vs - {slow_driver} - {slow_car} - {slow_time}"
+        base = self._sanitize_windows_filename_base(base)
+        if not base:
+            return fallback_base
+        return base
+
     def on_select_files(self) -> None:
         if self.ui.open_file_dialog is None:
             return
@@ -184,9 +291,17 @@ class Controller:
 
         if self.ui.get_output_video_dir is None:
             return
+        out_dir = self.ui.get_output_video_dir()
         ts = time.strftime("%Y%m%d-%H%M%S")
-        out_name = f"compare_{ts}_{out_w}x{out_h}_hud{hud_w}.mp4"
-        out_path = self.ui.get_output_video_dir() / out_name
+        fallback_base = f"compare_{ts}_{out_w}x{out_h}_hud{hud_w}"
+        base_name = self._build_output_name_from_csvs(
+            csvs=list(csvs),
+            fast_p=fast_p,
+            slow_p=slow_p,
+            fallback_base=fallback_base,
+        )
+        base_name = self._sanitize_windows_filename_base(base_name) or fallback_base
+        out_path = self._unique_output_path(out_dir, base_name, ".mp4")
 
         hud_enabled: dict[str, bool] = {}
         if self.ui.get_hud_enabled is not None:
