@@ -1,5 +1,6 @@
 import configparser
 import json
+import math
 from pathlib import Path
 
 
@@ -16,15 +17,28 @@ config_dir = project_root / "config"
 startframes_file = config_dir / "startframes.json"
 endframes_file = config_dir / "endframes.json"
 defaults_ini = config_dir / "defaults.ini"
+user_ini = config_dir / "user.ini"
 cfg = configparser.ConfigParser()
 try:
+    ini_layers: list[Path] = []
     if defaults_ini.exists():
-        cfg.read(defaults_ini, encoding="utf-8")
+        ini_layers.append(defaults_ini)
+    if user_ini.exists():
+        ini_layers.append(user_ini)
+    if ini_layers:
+        cfg.read([str(p) for p in ini_layers], encoding="utf-8")
 except Exception:
     pass
 output_format_file = config_dir / "output_format.json"
 hud_layout_file = config_dir / "hud_layout.json"
 png_view_file = config_dir / "png_view.json"
+
+_VIDEO_CUT_DEFAULTS: dict[str, float] = {
+    "video_before_brake": 1.0,
+    "video_after_full_throttle": 1.0,
+    "video_minimum_between_two_curves": 2.0,
+}
+_VIDEO_CUT_LOGGED_ONCE = False
 
 
 def load_startframes() -> dict[str, int]:
@@ -197,3 +211,71 @@ def _cfg_int_opt(section: str, key: str) -> int | None:
         return int(float(v)) if v else None
     except Exception:
         return None
+
+
+def _append_log_line(log_file: Path | None, line: str) -> None:
+    if log_file is None:
+        return
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(str(line).rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
+def _parse_non_negative_finite_float(raw: str) -> tuple[float | None, str | None]:
+    s = str(raw).strip()
+    try:
+        value = float(s)
+    except Exception:
+        return None, "must be a finite float >= 0"
+    if not math.isfinite(value):
+        return None, "must be a finite float >= 0"
+    if value < 0.0:
+        return None, "must be >= 0"
+    return float(value), None
+
+
+def _log_video_cut_once(values: dict[str, float], log_file: Path | None = None) -> None:
+    global _VIDEO_CUT_LOGGED_ONCE
+    if _VIDEO_CUT_LOGGED_ONCE:
+        return
+    _VIDEO_CUT_LOGGED_ONCE = True
+    _append_log_line(
+        log_file,
+        "video_cut: "
+        f"before_brake={values['video_before_brake']}, "
+        f"after_full_throttle={values['video_after_full_throttle']}, "
+        f"minimum_between_two_curves={values['video_minimum_between_two_curves']}",
+    )
+
+
+def load_video_cut_settings(*, video_mode: str, log_file: Path | None = None) -> dict[str, float]:
+    mode = str(video_mode or "full").strip().lower()
+    if mode not in ("full", "cut"):
+        mode = "full"
+
+    values: dict[str, float] = {}
+    invalid: list[str] = []
+    for key, default in _VIDEO_CUT_DEFAULTS.items():
+        raw = cfg_get("video_cut", key, str(default))
+        parsed, err = _parse_non_negative_finite_float(raw)
+        if err is None and parsed is not None:
+            values[key] = float(parsed)
+            continue
+        invalid.append(f"{key}={raw!r} (expected {err})")
+
+    if invalid:
+        msg = "invalid [video_cut] config: " + "; ".join(invalid)
+        if mode == "cut":
+            _append_log_line(log_file, f"ERROR: {msg}")
+            raise ValueError(msg)
+        _append_log_line(
+            log_file,
+            f"WARNING: {msg}; video_mode=full -> ignoring video_cut values and falling back to defaults.",
+        )
+        values = dict(_VIDEO_CUT_DEFAULTS)
+
+    _log_video_cut_once(values, log_file=log_file)
+    return values

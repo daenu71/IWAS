@@ -219,6 +219,7 @@ def build_payload(
     hud_w: int,
     hud_enabled: dict[str, bool],
     app_model: AppModel,
+    log_file: Path | None,
     get_hud_boxes_for_current: Callable[[], list[dict]],
     png_save_state_for_current: Callable[[], None],
     png_view_key: Callable[[], str],
@@ -291,6 +292,9 @@ def build_payload(
     _add_pts_override("Delta", "delta")
     _add_pts_override("Line Delta", "line_delta")
     _add_pts_override("Under-/Oversteer", "under_oversteer")
+
+    video_mode = str(getattr(app_model, "video_mode", "full") or "full").strip().lower()
+    persistence.load_video_cut_settings(video_mode=video_mode, log_file=log_file)
 
     payload = {
         "version": 1,
@@ -474,6 +478,7 @@ def start_render(
         hud_w=hud_w,
         hud_enabled=hud_enabled,
         app_model=app_model,
+        log_file=log_file_path,
         get_hud_boxes_for_current=get_hud_boxes_for_current,
         png_save_state_for_current=png_save_state_for_current,
         png_view_key=png_view_key,
