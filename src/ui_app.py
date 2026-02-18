@@ -1230,7 +1230,7 @@ def main() -> None:
     # ---- HUD Platzhalter (Story 6) ----
     ttk.Separator(frame_settings, orient="horizontal").grid(row=7, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 8))
 
-    ttk.Label(frame_settings, text="HUD Placeholders", font=("Segoe UI", 10, "bold")).grid(
+    ttk.Label(frame_settings, text="HUD", font=("Segoe UI", 10, "bold")).grid(
         row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6)
     )
 
