@@ -26,3 +26,4 @@ config/ui_last_run.json
 /.idea/.gitignore
 /.idea/iracing-vc.iml
 /.idea/vcs.xml
+assets/
