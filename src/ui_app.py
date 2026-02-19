@@ -580,7 +580,7 @@ def find_project_root(script_path: Path) -> Path:
 
 def _resolve_logo_path(project_root: Path) -> Path | None:
     logo_dir = project_root / "assets" / "logo"
-    for name in ("iwas_logo_dark.png", "iwas_logo_256.png", "iwas_logo_512.png"):
+    for name in ("iwas_logo_112.png", "iwas_logo_dark.png", "iwas_logo_256.png", "iwas_logo_512.png"):
         candidate = logo_dir / name
         if candidate.exists():
             return candidate
@@ -3802,16 +3802,6 @@ def main() -> None:
     if logo_path is not None:
         try:
             logo_image = tk.PhotoImage(file=str(logo_path))
-            target_logo_h = 112
-            logo_h = max(1, int(logo_image.height()))
-            if logo_h < target_logo_h:
-                zoom_factor = max(1, int(round(float(target_logo_h) / float(logo_h))))
-                if zoom_factor > 1:
-                    logo_image = logo_image.zoom(zoom_factor, zoom_factor)
-            logo_h = max(1, int(logo_image.height()))
-            if logo_h > target_logo_h:
-                factor = max(1, int(math.ceil(float(logo_h) / float(target_logo_h))))
-                logo_image = logo_image.subsample(factor, factor)
             logo_label = tk.Label(
                 ribbon,
                 image=logo_image,
