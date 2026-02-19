@@ -1211,7 +1211,14 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         frame_settings, values=get_presets_for_aspect(out_aspect_var.get()), textvariable=out_preset_var, state="readonly", width=12
     )
     cmb_preset.grid(row=4, column=1, sticky="w", padx=10, pady=2)
-    
+    output_profile_buttons = ttk.Frame(frame_settings)
+    output_profile_buttons.grid(row=5, column=1, columnspan=2, sticky="w", padx=10, pady=(6, 2))
+
+    btn_profile_save = ttk.Button(output_profile_buttons, text="Save Profile")
+    btn_profile_save.pack(side="left", padx=(0, 10))
+
+    btn_profile_load = ttk.Button(output_profile_buttons, text="Load Profile")
+    btn_profile_load.pack(side="left")
 
     # HUD-Breite (Mitte)
     try:
@@ -2593,12 +2600,6 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     btn_generate = ttk.Button(top_buttons, text="Generate Video")
     btn_generate.pack(side="left", padx=(0, 10))
 
-    btn_profile_save = ttk.Button(top_buttons, text="Save Profile")
-    btn_profile_save.pack(side="left", padx=(0, 10))
-
-    btn_profile_load = ttk.Button(top_buttons, text="Load Profile")
-    btn_profile_load.pack(side="left")
-
     videos: list[Path] = []
     csvs: list[Path] = []
 
@@ -3789,7 +3790,7 @@ def main() -> None:
     _configure_app_styles(style, theme)
     _configure_root_tk_defaults(root, colors)
 
-    ribbon = ttk.Frame(root, padding=(10, 10, 10, 0), style="App.TFrame")
+    ribbon = ttk.Frame(root, padding=(8, 4, 10, 0), style="App.TFrame")
     ribbon.grid(row=0, column=0, sticky="ew")
     content = ttk.Frame(root, padding=(0, 6, 0, 0), style="App.TFrame")
     content.grid(row=1, column=0, sticky="nsew")
@@ -3801,8 +3802,13 @@ def main() -> None:
     if logo_path is not None:
         try:
             logo_image = tk.PhotoImage(file=str(logo_path))
+            target_logo_h = 84
             logo_h = max(1, int(logo_image.height()))
-            target_logo_h = 28
+            if logo_h < target_logo_h:
+                zoom_factor = max(1, int(round(float(target_logo_h) / float(logo_h))))
+                if zoom_factor > 1:
+                    logo_image = logo_image.zoom(zoom_factor, zoom_factor)
+            logo_h = max(1, int(logo_image.height()))
             if logo_h > target_logo_h:
                 factor = max(1, int(math.ceil(float(logo_h) / float(target_logo_h))))
                 logo_image = logo_image.subsample(factor, factor)
@@ -3813,7 +3819,7 @@ def main() -> None:
                 borderwidth=0,
                 highlightthickness=0,
             )
-            logo_label.grid(row=0, column=0, sticky="w", padx=(0, 12), pady=(2, 2))
+            logo_label.grid(row=0, column=0, sticky="nw", padx=(4, 20), pady=(0, 0))
             brand_assets["logo_image"] = logo_image
             brand_assets["logo_label"] = logo_label
         except Exception:
@@ -3891,10 +3897,14 @@ def main() -> None:
 
     DEFAULT_VIEW_LABEL = "Video Analysis"
     nav_start_column = 1 if "logo_image" in brand_assets else 0
+    nav_parent = ribbon
+    if nav_start_column > 0:
+        nav_parent = ttk.Frame(ribbon, style="App.TFrame")
+        nav_parent.grid(row=0, column=nav_start_column, sticky="nw", padx=(0, 0), pady=(6, 0))
 
     for index, label in enumerate(VIEW_REGISTRY):
         btn = tk.Button(
-            ribbon,
+            nav_parent,
             text=label,
             command=lambda name=label: show_view(name),
             padx=12,
@@ -3902,7 +3912,7 @@ def main() -> None:
         )
         _style_nav_button(btn, label)
         padx = (8, 0) if index > 0 else 0
-        btn.grid(row=0, column=nav_start_column + index, sticky="w", padx=padx)
+        btn.grid(row=0, column=index, sticky="w", padx=padx)
         buttons[label] = btn
 
     show_view(DEFAULT_VIEW_LABEL)
