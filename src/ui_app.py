@@ -878,7 +878,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Settings")
     frame_preview = ttk.LabelFrame(host, text="Preview")
 
-    left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+    left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=(2, 10))
     left_column.columnconfigure(0, weight=1)
     left_column.rowconfigure(0, weight=0)
     left_column.rowconfigure(1, weight=1)
@@ -964,7 +964,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     frame_settings = settings_inner
 
     # Vorschau soll die ganze rechte Seite füllen (ohne "Aktionen")
-    frame_preview.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
+    frame_preview.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=(2, 10))
     # Grid-Gewichte: rechte Seite (Vorschau) wächst mit dem Fenster
     host.grid_columnconfigure(0, weight=0)
     host.grid_columnconfigure(1, weight=1)
@@ -3790,9 +3790,9 @@ def main() -> None:
     _configure_app_styles(style, theme)
     _configure_root_tk_defaults(root, colors)
 
-    ribbon = ttk.Frame(root, padding=(8, 4, 10, 0), style="App.TFrame")
+    ribbon = ttk.Frame(root, padding=(8, 2, 10, 0), style="App.TFrame")
     ribbon.grid(row=0, column=0, sticky="ew")
-    content = ttk.Frame(root, padding=(0, 6, 0, 0), style="App.TFrame")
+    content = ttk.Frame(root, padding=(0, 0, 0, 0), style="App.TFrame")
     content.grid(row=1, column=0, sticky="nsew")
     content.grid_columnconfigure(0, weight=1)
     content.grid_rowconfigure(0, weight=1)
@@ -3802,7 +3802,7 @@ def main() -> None:
     if logo_path is not None:
         try:
             logo_image = tk.PhotoImage(file=str(logo_path))
-            target_logo_h = 84
+            target_logo_h = 112
             logo_h = max(1, int(logo_image.height()))
             if logo_h < target_logo_h:
                 zoom_factor = max(1, int(round(float(target_logo_h) / float(logo_h))))
