@@ -22,6 +22,7 @@ from core.models import (
     migrate_profile_contract_dict,
     migrate_ui_last_run_contract_dict,
 )
+from cfg import APP_NAME
 from core import persistence, filesvc, profile_service, render_service
 from core.output_geometry import (
     Rect,
@@ -575,6 +576,22 @@ def find_project_root(script_path: Path) -> Path:
         if (parent / "requirements.txt").exists():
             return parent
     return p.parent
+
+
+def _resolve_logo_path(project_root: Path) -> Path | None:
+    logo_dir = project_root / "assets" / "logo"
+    for name in ("iwas_logo_dark.png", "iwas_logo_256.png", "iwas_logo_512.png"):
+        candidate = logo_dir / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_icon_path(project_root: Path) -> Path | None:
+    candidate = project_root / "assets" / "logo" / "iwas_icon.ico"
+    if candidate.exists():
+        return candidate
+    return None
 
 
 def extract_time_ms(path: Path) -> int | None:
@@ -3740,7 +3757,21 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
 def main() -> None:
     root = tk.Tk()
-    root.title("iRacing Video Compare")
+    project_root = find_project_root(Path(__file__))
+    icon_path = _resolve_icon_path(project_root)
+    if icon_path is not None:
+        try:
+            root.iconbitmap(str(icon_path))
+        except Exception:
+            pass
+
+    def _window_title_for_view(view_name: str | None = None) -> str:
+        label = str(view_name or "").strip()
+        if label:
+            return f"{APP_NAME} - {label}"
+        return APP_NAME
+
+    root.title(_window_title_for_view())
     root.geometry("1200x800")
     root.grid_columnconfigure(0, weight=1)
     root.grid_rowconfigure(1, weight=1)
@@ -3764,6 +3795,29 @@ def main() -> None:
     content.grid(row=1, column=0, sticky="nsew")
     content.grid_columnconfigure(0, weight=1)
     content.grid_rowconfigure(0, weight=1)
+
+    brand_assets: dict[str, object] = {}
+    logo_path = _resolve_logo_path(project_root)
+    if logo_path is not None:
+        try:
+            logo_image = tk.PhotoImage(file=str(logo_path))
+            logo_h = max(1, int(logo_image.height()))
+            target_logo_h = 28
+            if logo_h > target_logo_h:
+                factor = max(1, int(math.ceil(float(logo_h) / float(target_logo_h))))
+                logo_image = logo_image.subsample(factor, factor)
+            logo_label = tk.Label(
+                ribbon,
+                image=logo_image,
+                background=colors.surface,
+                borderwidth=0,
+                highlightthickness=0,
+            )
+            logo_label.grid(row=0, column=0, sticky="w", padx=(0, 12), pady=(2, 2))
+            brand_assets["logo_image"] = logo_image
+            brand_assets["logo_label"] = logo_label
+        except Exception:
+            pass
 
     buttons: dict[str, tk.Button] = {}
     active = {"name": ""}
@@ -3832,9 +3886,11 @@ def main() -> None:
         view.grid(row=0, column=0, sticky="nsew")
         current["widget"] = view
         active["name"] = name
+        root.title(_window_title_for_view(name))
         _set_active_button(name)
 
     DEFAULT_VIEW_LABEL = "Video Analysis"
+    nav_start_column = 1 if "logo_image" in brand_assets else 0
 
     for index, label in enumerate(VIEW_REGISTRY):
         btn = tk.Button(
@@ -3846,7 +3902,7 @@ def main() -> None:
         )
         _style_nav_button(btn, label)
         padx = (8, 0) if index > 0 else 0
-        btn.grid(row=0, column=index, sticky="w", padx=padx)
+        btn.grid(row=0, column=nav_start_column + index, sticky="w", padx=padx)
         buttons[label] = btn
 
     show_view(DEFAULT_VIEW_LABEL)

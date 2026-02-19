@@ -4,6 +4,8 @@ import configparser
 from dataclasses import dataclass
 from pathlib import Path
 
+APP_NAME = "IRVC – iRacing Video Compare"
+
 
 @dataclass(frozen=True)
 class Cfg:
