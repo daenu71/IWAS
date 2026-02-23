@@ -11,6 +11,7 @@ from typing import Tuple
 from core.cfg import load_cfg
 from core.log import make_logger
 from core.models import LayoutConfig, migrate_layout_contract_dict
+from core.resources import get_resource_path
 from features.huds.common import configure_hud_text_style
 from features.render_split import render_split_screen, render_split_screen_sync
 from core.csv_g61 import get_float_col, load_g61_csv
@@ -50,7 +51,7 @@ def main() -> None:
     ap.add_argument("--ui-json", default="", help="UI Ãœbergabe (JSON)")
     args = ap.parse_args()
 
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = get_resource_path()
 
     cfg = load_cfg(project_root)
     log = make_logger(project_root, name="video_compare")

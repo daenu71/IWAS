@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 from typing import Any, Callable, TYPE_CHECKING
@@ -314,10 +315,11 @@ class Controller:
         if self.ui.get_project_root is None:
             return
         project_root_local = self.ui.get_project_root()
-        main_py = project_root_local / "src" / "main.py"
-        if not main_py.exists():
-            self.ui.set_status("Video: main.py not found")
-            return
+        if not bool(getattr(sys, "frozen", False)):
+            main_py = project_root_local / "src" / "main.py"
+            if not main_py.exists():
+                self.ui.set_status("Video: main.py not found")
+                return
 
         if self.ui.model_from_ui_state is None:
             return

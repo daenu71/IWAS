@@ -72,6 +72,18 @@ def _map_render_progress(pct: float, preparing_pct: float) -> float:
     return mapped
 
 
+def _build_render_cmd(project_root: Path, run_json_path: Path) -> list[str] | None:
+    import sys as _sys
+
+    if bool(getattr(_sys, "frozen", False)):
+        return [str(_sys.executable), "--ui-json", str(run_json_path)]
+
+    main_py = project_root / "src" / "main.py"
+    if not main_py.exists():
+        return None
+    return [str(_sys.executable), "-u", str(main_py), "--ui-json", str(run_json_path)]
+
+
 class _HudPreparingMonitor:
     POLL_INTERVAL = 0.35
     STEP_COUNT = 20
@@ -497,8 +509,8 @@ def start_render(
     except Exception:
         return {"status": "error", "error": "ui_json_write_failed"}
 
-    main_py = project_root / "src" / "main.py"
-    if not main_py.exists():
+    cmd = _build_render_cmd(project_root, run_json_path)
+    if cmd is None:
         return {"status": "error", "error": "main_py_not_found"}
 
     env = os.environ.copy()
@@ -513,9 +525,6 @@ def start_render(
         total_ms = int(max(total_ms_a, total_ms_b))
         total_sec = float(total_ms) / 1000.0 if total_ms > 0 else 0.0
 
-        import sys as _sys
-
-        cmd = [_sys.executable, "-u", str(main_py), "--ui-json", str(run_json_path)]
         p = subprocess.Popen(
             cmd,
             cwd=str(project_root),

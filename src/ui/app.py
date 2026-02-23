@@ -24,6 +24,7 @@ from core.models import (
 )
 from core.cfg import APP_NAME
 from core import persistence, filesvc, profile_service, render_service
+from core.resources import get_resource_path
 from core.output_geometry import (
     Rect,
     build_output_geometry_for_size,
@@ -624,11 +625,14 @@ def _safe(fn, *args, default=None, label: str | None = None, **kwargs):
 
 
 def find_project_root(script_path: Path) -> Path:
-    p = script_path.resolve()
-    for parent in [p.parent] + list(p.parents):
-        if (parent / "requirements.txt").exists():
-            return parent
-    return p.parent
+    try:
+        return get_resource_path()
+    except Exception:
+        p = script_path.resolve()
+        for parent in [p.parent] + list(p.parents):
+            if (parent / "requirements.txt").exists():
+                return parent
+        return p.parent
 
 
 def _resolve_logo_path(project_root: Path) -> Path | None:

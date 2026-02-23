@@ -3,13 +3,18 @@ import json
 import math
 from pathlib import Path
 
+from core.resources import get_resource_path
+
 
 def _find_project_root(script_path: Path) -> Path:
-    p = script_path.resolve()
-    for parent in [p.parent] + list(p.parents):
-        if (parent / "requirements.txt").exists():
-            return parent
-    return p.parent
+    try:
+        return get_resource_path()
+    except Exception:
+        p = script_path.resolve()
+        for parent in [p.parent] + list(p.parents):
+            if (parent / "requirements.txt").exists():
+                return parent
+        return p.parent
 
 
 project_root = _find_project_root(Path(__file__))
