@@ -520,6 +520,7 @@ def start_render(
     p = None
     try:
         cancelled = False
+        tail_lines: list[str] = []
         total_ms_a = _extract_time_ms(slow_p) or 0
         total_ms_b = _extract_time_ms(fast_p) or 0
         total_ms = int(max(total_ms_a, total_ms_b))
@@ -594,6 +595,14 @@ def start_render(
                 line = ""
 
             if line:
+                try:
+                    sline = str(line).rstrip("\r\n")
+                    if sline:
+                        tail_lines.append(sline)
+                        if len(tail_lines) > 50:
+                            del tail_lines[:-50]
+                except Exception:
+                    pass
                 if ("Cut found 0 segments â†’ Full fallback" in line) or ("Cut found 0 segments Ã¢â€ â€™ Full fallback" in line):
                     cut_fallback_zero_segments = True
                 if show_live:
@@ -699,6 +708,12 @@ def start_render(
                 p.wait(timeout=5)
         except Exception:
             pass
+        rc = 0
+        try:
+            if p is not None and p.returncode is not None:
+                rc = int(p.returncode)
+        except Exception:
+            rc = 0
 
         if not cut_fallback_zero_segments and log_file_path is not None and log_file_path.exists():
             try:
@@ -709,6 +724,31 @@ def start_render(
 
         if cancelled:
             return {"status": "cancelled", "cut_zero_segments_fallback": bool(cut_fallback_zero_segments)}
+
+        if rc != 0:
+            msg = ""
+            for raw in reversed(tail_lines):
+                txt = str(raw).strip()
+                if txt:
+                    msg = txt
+                    break
+            if not msg and log_file_path is not None and log_file_path.exists():
+                try:
+                    lines = log_file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    for raw in reversed(lines):
+                        txt = str(raw).strip()
+                        if txt:
+                            msg = txt
+                            break
+                except Exception:
+                    pass
+            return {
+                "status": "error",
+                "error": "render_process_failed",
+                "returncode": int(rc),
+                "message": str(msg or ""),
+                "cut_zero_segments_fallback": bool(cut_fallback_zero_segments),
+            }
 
         final_end = time.time()
         _emit_progress(on_progress, PROGRESS_FINAL_END, DONE_TEXT)

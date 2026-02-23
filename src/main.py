@@ -5,6 +5,7 @@ import configparser
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -44,6 +45,157 @@ def _load_ui_json(p: Path) -> tuple[dict, bool]:
         return data, migrated
     except Exception:
         return {}, False
+
+
+def _add_unique_path(items: list[Path], p: Path | None) -> None:
+    if p is None:
+        return
+    try:
+        pp = Path(p).resolve()
+    except Exception:
+        return
+    key = str(pp).lower()
+    for cur in items:
+        try:
+            if str(cur.resolve()).lower() == key:
+                return
+        except Exception:
+            continue
+    items.append(pp)
+
+
+def _build_csv_search_dirs(project_root: Path, slow_video: Path | None, fast_video: Path | None) -> list[Path]:
+    out: list[Path] = []
+    _add_unique_path(out, project_root / "input" / "csv")
+
+    if bool(getattr(sys, "frozen", False)):
+        try:
+            exe_dir = Path(sys.executable).resolve().parent
+            _add_unique_path(out, exe_dir / "input" / "csv")
+        except Exception:
+            pass
+
+    for v in (slow_video, fast_video):
+        if v is None:
+            continue
+        try:
+            vp = Path(v).resolve().parent
+        except Exception:
+            continue
+        _add_unique_path(out, vp)
+        try:
+            _add_unique_path(out, vp.parent / "csv")
+        except Exception:
+            pass
+
+    return out
+
+
+def _resolve_csv_candidate(raw: str, csv_search_dirs: list[Path]) -> Path | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+
+    pp = Path(s)
+    try:
+        if pp.is_absolute():
+            rp = pp.resolve()
+            return rp if rp.exists() else rp
+    except Exception:
+        pass
+
+    for base in csv_search_dirs:
+        try:
+            cand = (base / pp.name).resolve()
+        except Exception:
+            continue
+        if cand.exists():
+            return cand
+
+    try:
+        cand = pp.resolve()
+        if cand.exists():
+            return cand
+    except Exception:
+        pass
+    return None
+
+
+def _choose_best_csv_match(video_path: Path, csv_candidates: list[Path]) -> tuple[Path | None, str]:
+    target_stem = str(video_path.stem or "").strip().lower()
+    if not target_stem:
+        return None, "none"
+
+    target_compact = re.sub(r"[^a-z0-9]+", "", target_stem)
+    best: tuple[int, int, int, str, Path, str] | None = None
+
+    for c in csv_candidates:
+        try:
+            cp = Path(c).resolve()
+        except Exception:
+            continue
+        if cp.suffix.lower() != ".csv":
+            continue
+        stem = str(cp.stem or "").strip().lower()
+        if not stem:
+            continue
+
+        mode = "none"
+        score = -1
+        if stem == target_stem:
+            score = 300
+            mode = "exact"
+        elif target_stem in stem:
+            score = 200
+            mode = "contains"
+        else:
+            stem_compact = re.sub(r"[^a-z0-9]+", "", stem)
+            if target_compact and stem_compact and target_compact in stem_compact:
+                score = 100
+                mode = "contains_compact"
+
+        if score < 0:
+            continue
+
+        rank = (
+            -score,
+            abs(len(stem) - len(target_stem)),
+            len(stem),
+            cp.name.lower(),
+            cp,
+            mode,
+        )
+        if best is None or rank < best:
+            best = rank
+
+    if best is None:
+        return None, "none"
+    return best[4], best[5]
+
+
+def _show_error_messagebox(title: str, text: str) -> None:
+    if str(os.environ.get("IRVC_NO_MSGBOX", "") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return
+    root = None
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        messagebox.showerror(str(title), str(text), parent=root)
+    except Exception:
+        pass
+    finally:
+        try:
+            if root is not None:
+                root.destroy()
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -249,42 +401,54 @@ def main() -> None:
     log.kv("slow_video", slow_video.name)
     log.kv("fast_video", fast_video.name)
     
-    # CSVs zuordnen (UI bevorzugt, sonst aus Auto-Matching, sonst aus ui["csvs"])
+    # CSVs zuordnen (UI bevorzugt, sonst aus Auto-Matching, robust inkl. EXE/portable Pfade)
+    csv_search_dirs = _build_csv_search_dirs(project_root, slow_video, fast_video)
     try:
-        csv_dir = project_root / "input" / "csv"
-
-        def _resolve_csv(p: str) -> Path:
-            s = (p or "").strip()
-            if not s:
-                return Path()
-            pp = Path(s)
-            if pp.is_absolute():
-                return pp.resolve()
-            return (csv_dir / pp.name).resolve()
+        log.kv("csv_search_dirs", ";".join(str(p) for p in csv_search_dirs))
+    except Exception:
+        pass
+    try:
+        csv_candidates: list[Path] = []
 
         # 1) Direkte Keys (falls vorhanden)
         sc = (ui.get("slow_csv") or "").strip() if isinstance(ui, dict) else ""
         fc = (ui.get("fast_csv") or "").strip() if isinstance(ui, dict) else ""
-        if sc and fc:
-            slow_csv = _resolve_csv(sc)
-            fast_csv = _resolve_csv(fc)
+        if sc:
+            slow_csv = _resolve_csv_candidate(sc, csv_search_dirs)
+        if fc:
+            fast_csv = _resolve_csv_candidate(fc, csv_search_dirs)
 
-        # 2) Fallback: ui["csvs"] Liste -> Matching per Dateiname (stem)
-        if (slow_csv is None or fast_csv is None) and isinstance(ui, dict):
+        # 2) Kandidaten aus ui["csvs"] (Dateinamen) auflösen
+        if isinstance(ui, dict):
             csvs = ui.get("csvs")
             if isinstance(csvs, list):
-                by_stem: dict[str, Path] = {}
                 for item in csvs:
                     if isinstance(item, str) and item.strip():
-                        p = _resolve_csv(item)
-                        by_stem[p.stem] = p
+                        p = _resolve_csv_candidate(item, csv_search_dirs)
+                        _add_unique_path(csv_candidates, p)
 
-                if slow_video is not None and slow_video.stem in by_stem:
-                    slow_csv = by_stem[slow_video.stem]
-                if fast_video is not None and fast_video.stem in by_stem:
-                    fast_csv = by_stem[fast_video.stem]
-    except Exception:
-        pass
+        # 3) Kandidaten aus bekannten CSV-Ordnern einsammeln (_internal + portable + neben Videos)
+        for d in csv_search_dirs:
+            try:
+                if not d.exists():
+                    continue
+                for p in sorted(d.glob("*.csv")):
+                    _add_unique_path(csv_candidates, p)
+            except Exception:
+                continue
+
+        # 4) Auto-Matching per Video-Dateiname (exakt bevorzugt, sonst contains)
+        if slow_csv is None and slow_video is not None:
+            slow_csv, slow_mode = _choose_best_csv_match(slow_video, csv_candidates)
+            if slow_csv is not None:
+                log.kv("slow_csv_match_mode", slow_mode)
+        if fast_csv is None and fast_video is not None:
+            fast_pool = [p for p in csv_candidates if slow_csv is None or str(p).lower() != str(slow_csv).lower()]
+            fast_csv, fast_mode = _choose_best_csv_match(fast_video, fast_pool)
+            if fast_csv is not None:
+                log.kv("fast_csv_match_mode", fast_mode)
+    except Exception as e:
+        log.kv("csv_match_error", str(e))
 
     # Wenn Auto-Matching aktiv war, sind slow_csv/fast_csv schon gesetzt
     if slow_csv is not None:
@@ -303,6 +467,7 @@ def main() -> None:
 
         run_s = load_g61_csv(slow_csv)
         run_f = load_g61_csv(fast_csv)
+        log.msg(f"HUD telemetry rows slow={int(getattr(run_s, 'row_count', 0))}, fast={int(getattr(run_f, 'row_count', 0))}")
 
         ld_s = get_float_col(run_s, "LapDistPct")
         ld_f = get_float_col(run_f, "LapDistPct")
@@ -418,6 +583,26 @@ def main() -> None:
 
     hud_enabled = ui.get("hud_enabled") if isinstance(ui, dict) else None
     hud_boxes = ui.get("hud_boxes") if isinstance(ui, dict) else None
+    hud_enabled_on_names: list[str] = []
+    if isinstance(hud_enabled, dict):
+        try:
+            hud_enabled_on_names = [str(k) for k, v in hud_enabled.items() if bool(v)]
+        except Exception:
+            hud_enabled_on_names = []
+    log.msg(f"HUD enabled: {','.join(hud_enabled_on_names) if hud_enabled_on_names else '(none)'}")
+    if hud_enabled_on_names:
+        missing_csv_parts: list[str] = []
+        if slow_csv is None or (not slow_csv.exists()):
+            missing_csv_parts.append("slow_csv")
+        if fast_csv is None or (not fast_csv.exists()):
+            missing_csv_parts.append("fast_csv")
+        if missing_csv_parts:
+            err_msg = "HUDs aktiv, aber CSV fehlt. Bitte CSV wählen oder in input/csv ablegen."
+            log.kv("hud_csv_validation_error", err_msg)
+            log.kv("hud_csv_validation_missing", ",".join(missing_csv_parts))
+            print(err_msg, flush=True)
+            _show_error_messagebox("iWAS - CSV fehlt", err_msg)
+            raise RuntimeError(err_msg)
     layout_config = LayoutConfig.from_dict(ui if isinstance(ui, dict) else {})
     try:
         hud_mode = str(layout_config.hud_mode or "frame").strip().lower()
