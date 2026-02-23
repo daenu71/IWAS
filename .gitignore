@@ -1,6 +1,4 @@
-﻿.idea/
-.idea/iracing-vc.iml
-cache/
+﻿cache/
 # Python
 .venv/
 __pycache__/
@@ -26,6 +24,6 @@ config/ui_last_run.json
 /docs
 /input
 /.idea/.gitignore
-/.idea/iracing-vc.iml
+/.idea/*.iml
 /.idea/vcs.xml
 assets/

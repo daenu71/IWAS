@@ -356,6 +356,19 @@ def _enable_windows_dpi_awareness_best_effort() -> None:
             pass
 
 
+def _set_windows_app_user_model_id_best_effort(app_id: str) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+    except Exception:
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(str(app_id))
+    except Exception:
+        pass
+
+
 _THEME_FONT_NAMES = ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont")
 
 
@@ -825,6 +838,15 @@ def _resolve_icon_path(project_root: Path) -> Path | None:
     candidate = project_root / "assets" / "logo" / "iwas_icon.ico"
     if candidate.exists():
         return candidate
+    return None
+
+
+def _resolve_icon_photo_path(project_root: Path) -> Path | None:
+    logo_dir = project_root / "assets" / "logo"
+    for name in ("iwas_logo_256.png", "iwas_logo_112.png", "iwas_logo_512.png", "iWAS_Logo_Original.png"):
+        candidate = logo_dir / name
+        if candidate.exists():
+            return candidate
     return None
 
 
@@ -4105,12 +4127,21 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
 def main() -> None:
     _enable_windows_dpi_awareness_best_effort()
+    _set_windows_app_user_model_id_best_effort("iWAS")
     root = tk.Tk()
     project_root = find_project_root(Path(__file__))
     icon_path = _resolve_icon_path(project_root)
     if icon_path is not None:
         try:
             root.iconbitmap(str(icon_path))
+        except Exception:
+            pass
+    icon_photo_path = _resolve_icon_photo_path(project_root)
+    if icon_photo_path is not None:
+        try:
+            icon_photo = tk.PhotoImage(file=str(icon_photo_path))
+            root.iconphoto(True, icon_photo)
+            root._iwas_icon_photo = icon_photo
         except Exception:
             pass
 

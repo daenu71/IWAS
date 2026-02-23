@@ -6,7 +6,7 @@ from pathlib import Path
 
 APP_VERSION = "0.1.0"
 
-APP_NAME = "IRVC – iRacing Video Compare"
+APP_NAME = "iWAS"
 
 
 @dataclass(frozen=True)

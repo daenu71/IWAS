@@ -1,4 +1,4 @@
-# Windows EXE Build (One-folder)
+# iWAS Windows EXE Build (One-folder)
 
 ## Build Commands
 
@@ -7,7 +7,7 @@ Repo `.venv` (recommended):
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m pip install pyinstaller
-.venv\Scripts\python.exe -m PyInstaller packaging\iracing_vc_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
+.venv\Scripts\python.exe -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
 ```
 
 Generic `python`:
@@ -15,7 +15,7 @@ Generic `python`:
 ```powershell
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller
-python -m PyInstaller packaging\iracing_vc_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
+python -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
 ```
 
 Optional runner:
@@ -28,8 +28,8 @@ powershell -ExecutionPolicy Bypass -File packaging\build_onefolder.ps1
 
 Prerequisite for render test: `ffmpeg` and `ffprobe` available in `PATH`.
 
-1. Copy the complete folder `dist\iracing-vc\` to the test machine (do not copy only the `.exe`).
-2. Start `dist\iracing-vc\iracing-vc.exe` with double-click.
+1. Copy the complete folder `dist\iWAS\` to the test machine (do not copy only the `.exe`).
+2. Start `dist\iWAS\iWAS.exe` with double-click.
 3. Verify minimal app startup:
    - Main window opens.
    - Top logo/icon is visible (asset bundle check).

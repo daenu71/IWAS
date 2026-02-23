@@ -10,4 +10,4 @@ if (-not (Test-Path $PythonExe)) {
 
 & $PythonExe -m pip install -r requirements.txt
 & $PythonExe -m pip install pyinstaller
-& $PythonExe -m PyInstaller packaging\iracing_vc_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
+& $PythonExe -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
