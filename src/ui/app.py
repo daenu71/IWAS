@@ -1,5 +1,5 @@
 ﻿import tkinter as tk
-from tkinter import ttk, filedialog, font as tkfont
+from tkinter import ttk, filedialog, font as tkfont, messagebox
 import math
 import re
 from pathlib import Path
@@ -7,6 +7,9 @@ import json
 import os
 import subprocess
 import threading
+import urllib.error
+import urllib.request
+import webbrowser
 from dataclasses import dataclass
 from typing import Callable
 
@@ -22,7 +25,7 @@ from core.models import (
     migrate_profile_contract_dict,
     migrate_ui_last_run_contract_dict,
 )
-from core.cfg import APP_NAME
+from core.cfg import APP_NAME, APP_VERSION
 from core import persistence, filesvc, profile_service, render_service
 from core.resources import get_resource_path
 from core.output_geometry import (
@@ -40,6 +43,180 @@ from ui.controller import Controller, UIContext
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
+
+UPDATE_VERSION_JSON_URL = "https://raw.githubusercontent.com/daenu71/IWAS/main/version.json"
+UPDATE_RELEASE_LATEST_URL = "https://github.com/daenu71/IWAS/releases/latest"
+UPDATE_CHECK_TIMEOUT_SECONDS = 5.0
+
+
+def _parse_semver_triplet(version_text: str) -> tuple[int, int, int]:
+    raw = str(version_text or "").strip()
+    if raw.lower().startswith("v"):
+        raw = raw[1:]
+    parts = raw.split(".")
+    if len(parts) != 3:
+        raise ValueError("Version format must be major.minor.patch.")
+    values: list[int] = []
+    for part in parts:
+        token = part.strip()
+        if not token.isdigit():
+            raise ValueError("Version contains non-numeric parts.")
+        values.append(int(token))
+    return values[0], values[1], values[2]
+
+
+def _fetch_update_manifest() -> tuple[str, str, str]:
+    request = urllib.request.Request(
+        UPDATE_VERSION_JSON_URL,
+        headers={"User-Agent": f"IWAS/{APP_VERSION}"},
+    )
+    with urllib.request.urlopen(request, timeout=UPDATE_CHECK_TIMEOUT_SECONDS) as response:
+        raw = response.read()
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Update check failed: received invalid JSON.") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Update check failed: update data must be a JSON object.")
+
+    version = payload.get("version")
+    release_url = payload.get("release_url")
+    notes = payload.get("notes", "")
+
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("Update check failed: field 'version' is missing or empty.")
+    if not isinstance(release_url, str) or not release_url.strip():
+        raise ValueError(
+            "Update check failed: field 'release_url' is missing or empty "
+            f"(expected {UPDATE_RELEASE_LATEST_URL})."
+        )
+    if notes is None:
+        notes = ""
+    elif not isinstance(notes, str):
+        raise ValueError("Update check failed: field 'notes' must be a string.")
+
+    _parse_semver_triplet(version)
+    return version.strip(), release_url.strip(), notes.strip()
+
+
+def _show_update_available_dialog(root: tk.Misc, online_version: str, release_url: str, notes: str) -> None:
+    try:
+        win = tk.Toplevel(root)
+    except Exception:
+        return
+
+    win.title("Update available")
+    try:
+        win.transient(root)
+    except Exception:
+        pass
+    try:
+        win.resizable(False, False)
+    except Exception:
+        pass
+
+    frame = ttk.Frame(win, padding=12)
+    frame.grid(row=0, column=0, sticky="nsew")
+    frame.columnconfigure(0, weight=1)
+
+    ttk.Label(frame, text=f"A new version {online_version} is available.").grid(
+        row=0, column=0, sticky="w", pady=(0, 8)
+    )
+
+    next_row = 1
+    if notes:
+        ttk.Label(frame, text=f"Notes: {notes}", wraplength=440, justify="left").grid(
+            row=next_row, column=0, sticky="w", pady=(0, 10)
+        )
+        next_row += 1
+
+    btn_row = ttk.Frame(frame)
+    btn_row.grid(row=next_row, column=0, sticky="e")
+
+    def _open_download_page() -> None:
+        try:
+            webbrowser.open(release_url)
+        except Exception:
+            messagebox.showwarning(
+                "Update check failed",
+                "Could not open the download page in your browser.",
+                parent=win,
+            )
+            return
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    ttk.Button(btn_row, text="Open download page", command=_open_download_page).pack(side="left", padx=(0, 8))
+    ttk.Button(btn_row, text="Later", command=win.destroy).pack(side="left")
+
+    try:
+        win.grab_set()
+    except Exception:
+        pass
+
+
+def _run_update_check(root: tk.Misc, *, show_up_to_date: bool) -> None:
+    def _worker() -> None:
+        try:
+            online_version, release_url, notes = _fetch_update_manifest()
+            is_newer = _parse_semver_triplet(online_version) > _parse_semver_triplet(APP_VERSION)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            def _show_network_error() -> None:
+                messagebox.showwarning(
+                    "Update check failed",
+                    "Could not check for updates. Please check your internet connection and try again.",
+                    parent=root,
+                )
+
+            try:
+                root.after(0, _show_network_error)
+            except Exception:
+                pass
+            return
+        except ValueError as exc:
+            def _show_data_error() -> None:
+                messagebox.showwarning(
+                    "Update check failed",
+                    str(exc),
+                    parent=root,
+                )
+
+            try:
+                root.after(0, _show_data_error)
+            except Exception:
+                pass
+            return
+        except Exception:
+            def _show_unknown_error() -> None:
+                messagebox.showwarning(
+                    "Update check failed",
+                    "Update check failed due to an unexpected error.",
+                    parent=root,
+                )
+
+            try:
+                root.after(0, _show_unknown_error)
+            except Exception:
+                pass
+            return
+
+        def _show_result() -> None:
+            if is_newer:
+                _show_update_available_dialog(root, online_version, release_url, notes)
+                return
+            if show_up_to_date:
+                messagebox.showinfo("Update check", "You are up to date.", parent=root)
+
+        try:
+            root.after(0, _show_result)
+        except Exception:
+            pass
+
+    threading.Thread(target=_worker, name="update-check", daemon=True).start()
 
 
 @dataclass(frozen=True)
@@ -829,8 +1006,21 @@ class VideoAnalysisView(ttk.Frame):
 class SettingsView(ttk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master)
-        lbl = ttk.Label(self, text="Settings")
-        lbl.pack(anchor="center", expand=True, padx=20, pady=20)
+        frm = ttk.Frame(self, padding=20)
+        frm.pack(anchor="center", expand=True)
+
+        lbl = ttk.Label(frm, text="Settings")
+        lbl.pack(anchor="center", pady=(0, 10))
+
+        btn_updates = ttk.Button(frm, text="Check for Updates", command=self._on_check_for_updates)
+        btn_updates.pack(anchor="center")
+
+    def _on_check_for_updates(self) -> None:
+        try:
+            root = self.winfo_toplevel()
+        except Exception:
+            return
+        _run_update_check(root, show_up_to_date=True)
 
 
 ViewEntry = type[ttk.Frame] | Callable[[], type[ttk.Frame]]
