@@ -6713,7 +6713,13 @@ def render_split_screen_sync(
     # 4) HUD Render
     # HUD pro Frame in Python rendern und als rawvideo/rgba an ffmpeg stdin streamen.
     hud_stream_ctx: HudContext | None = None
-    hud_scroll_on = (os.environ.get("IRVC_HUD_SCROLL") or "").strip() == "1"
+    # Legacy debug flag kept as an override:
+    # unset => HUD rendering ON (release/default behavior)
+    # explicit 0/false/no/off => HUD rendering OFF
+    hud_scroll_env = str(os.environ.get("IRVC_HUD_SCROLL") or "").strip().lower()
+    hud_scroll_on = hud_scroll_env not in ("0", "false", "no", "off")
+    if not hud_scroll_on:
+        _log_print(f"[hudpy] OFF via IRVC_HUD_SCROLL={hud_scroll_env or '<empty>'}", log_file)
     if hud_scroll_on:
         # Story 2: Zeitfenster pro HUD (nicht nur erstes HUD)
         before_default_s = float(hud_window_default_before_s or 10.0)
