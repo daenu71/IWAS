@@ -113,7 +113,8 @@ class LayoutPreviewController:
             except Exception:
                 continue
 
-            if x == 0 and hud_mode != "free":
+            # Nur Legacy-Fall verschieben: In horizontalen Frames ist x==0 eine gueltige, buendige Kante.
+            if x == 0 and hud_mode != "free" and hud_x0 > 0:
                 x = hud_x0 + 10
 
             x = self._clamp(x, hud_x0, max(hud_x0, hud_x1 - w))

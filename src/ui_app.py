@@ -1016,7 +1016,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     left_column = ttk.Frame(host)
     left_top_files_frame = ttk.LabelFrame(left_column, text="Files")
     left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Settings")
-    frame_preview = ttk.LabelFrame(host, text="Preview")
+    frame_preview = ttk.LabelFrame(host, text="Preview", padding=(0, 2, 0, 0))
 
     left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=(2, 10))
     left_column.columnconfigure(0, weight=1)
@@ -3130,6 +3130,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     _apply_theme_to_tk_widget(
         preview_canvas,
         bg=colors.background,
+        background=colors.background,
         highlightbackground=colors.surface,
         highlightcolor=colors.accent,
     )
