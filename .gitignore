@@ -9,6 +9,8 @@ __pycache__/
 # Logs / Output
 _logs/
 output/
+build/
+dist/
 
 # OS
 .DS_Store
