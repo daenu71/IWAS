@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core import persistence
-from log import build_log_file_path
+from core.log import build_log_file_path
 from core.models import AppModel, RenderPayload
 
 
@@ -562,7 +562,7 @@ def start_render(
         while True:
             if is_cancelled is not None and is_cancelled():
                 cancelled = True
-                _emit_progress(on_progress, max(0.0, last_pct), "Canceling…")
+                _emit_progress(on_progress, max(0.0, last_pct), "Cancelingâ€¦")
                 try:
                     if p is not None and p.pid:
                         subprocess.run(
@@ -585,7 +585,7 @@ def start_render(
                 line = ""
 
             if line:
-                if ("Cut found 0 segments → Full fallback" in line) or ("Cut found 0 segments â†’ Full fallback" in line):
+                if ("Cut found 0 segments â†’ Full fallback" in line) or ("Cut found 0 segments Ã¢â€ â€™ Full fallback" in line):
                     cut_fallback_zero_segments = True
                 if show_live:
                     try:
@@ -694,7 +694,7 @@ def start_render(
         if not cut_fallback_zero_segments and log_file_path is not None and log_file_path.exists():
             try:
                 log_txt = log_file_path.read_text(encoding="utf-8", errors="ignore")
-                cut_fallback_zero_segments = "Cut found 0 segments → Full fallback" in log_txt
+                cut_fallback_zero_segments = "Cut found 0 segments â†’ Full fallback" in log_txt
             except Exception:
                 pass
 
@@ -716,3 +716,4 @@ def start_render(
         if render_end is None:
             render_end = final_end
         _log_stage_durations(log_file_path, start_time, prep_end, render_start, render_end, final_end)
+

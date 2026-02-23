@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 import json
@@ -11,9 +11,9 @@ from typing import Any, Callable, TYPE_CHECKING
 from core.models import AppModel
 
 if TYPE_CHECKING:
-    from preview.layout_preview import LayoutPreviewController
-    from preview.png_preview import PngPreviewController
-    from preview.video_preview import VideoPreviewController
+    from ui.preview.layout_preview import LayoutPreviewController
+    from ui.preview.png_preview import PngPreviewController
+    from ui.preview.video_preview import VideoPreviewController
 
 
 @dataclass
@@ -259,7 +259,7 @@ class Controller:
             if self.ui.set_fast_text is not None:
                 self.ui.set_fast_text("Fast: Please select exactly 2 videos")
             if self.ui.set_slow_text is not None:
-                self.ui.set_slow_text("Slow: –")
+                self.ui.set_slow_text("Slow: â€“")
             if self.ui.close_preview_video is not None:
                 self.ui.close_preview_video()
             return
@@ -335,7 +335,7 @@ class Controller:
             return
         _win, close, set_text, set_progress, is_cancelled = self.ui.show_progress_with_cancel(
             "Generate Video",
-            "Starting main.py…",
+            "Starting main.pyâ€¦",
         )
         if self.ui.update_ui is not None:
             try:
@@ -543,3 +543,4 @@ class Controller:
             _refresh_after_resize()
 
         self._schedule(16, _followup)
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import configparser
@@ -8,14 +8,14 @@ import re
 from pathlib import Path
 from typing import Tuple
 
-from cfg import load_cfg
-from log import make_logger
+from core.cfg import load_cfg
+from core.log import make_logger
 from core.models import LayoutConfig, migrate_layout_contract_dict
-from huds.common import configure_hud_text_style
-from render_split import render_split_screen, render_split_screen_sync
-from csv_g61 import get_float_col, load_g61_csv
-from resample_lapdist import build_lapdist_grid, resample_run_linear
-from sync_map import build_sync_map_by_lapdist
+from features.huds.common import configure_hud_text_style
+from features.render_split import render_split_screen, render_split_screen_sync
+from core.csv_g61 import get_float_col, load_g61_csv
+from core.resample_lapdist import build_lapdist_grid, resample_run_linear
+from core.sync_map import build_sync_map_by_lapdist
 
 
 TIME_RE = re.compile(r"(\d{2}\.\d{2}\.\d{3})")
@@ -47,7 +47,7 @@ def _load_ui_json(p: Path) -> tuple[dict, bool]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ui-json", default="", help="UI Übergabe (JSON)")
+    ap.add_argument("--ui-json", default="", help="UI Ãœbergabe (JSON)")
     args = ap.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
@@ -151,7 +151,7 @@ def main() -> None:
     except Exception:
         pass
     
-    # Defaults aus cfg, optional überschrieben durch UI
+    # Defaults aus cfg, optional Ã¼berschrieben durch UI
     # Regel: UI gewinnt immer (ui["output"]["hud_width_px"])
     hud_width_px = int(getattr(cfg, "hud_width_px", 0) or 0)
 
@@ -167,7 +167,7 @@ def main() -> None:
     except Exception:
         pass
 
-    # 2) Fallback: altes UI-Format (Top-Level) – nur wenn oben nichts gesetzt wurde
+    # 2) Fallback: altes UI-Format (Top-Level) â€“ nur wenn oben nichts gesetzt wurde
     try:
         if hud_width_px <= 0 and isinstance(ui, dict) and ("hud_width_px" in ui):
             vv = int(float(ui.get("hud_width_px") or 0))
@@ -703,3 +703,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
