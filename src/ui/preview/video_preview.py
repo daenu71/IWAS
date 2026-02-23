@@ -8,6 +8,8 @@ import tkinter as tk
 
 import cv2
 from PIL import Image, ImageTk
+from core.ffmpeg_tools import ffmpeg_exists as _ffmpeg_exists_bundled, resolve_ffmpeg_bin
+from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
 
 class VideoPreviewController:
@@ -76,8 +78,7 @@ class VideoPreviewController:
 
     def ffmpeg_exists(self) -> bool:
         try:
-            from shutil import which
-            return which("ffmpeg") is not None
+            return bool(_ffmpeg_exists_bundled())
         except Exception:
             return False
 
@@ -96,7 +97,7 @@ class VideoPreviewController:
             self.root.update_idletasks()
 
             cmd = [
-                "ffmpeg",
+                resolve_ffmpeg_bin(),
                 "-y",
                 "-i", str(src),
                 "-an",
@@ -106,7 +107,13 @@ class VideoPreviewController:
                 "-crf", "20",
                 str(dst),
             ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                **windows_no_window_subprocess_kwargs(),
+            )
 
             if dst.exists() and dst.stat().st_size > 0:
                 return dst
@@ -415,7 +422,7 @@ class VideoPreviewController:
             self.root.update_idletasks()
 
             cmd = [
-                "ffmpeg",
+                resolve_ffmpeg_bin(),
                 "-y",
                 "-ss", f"{start_sec:.6f}",
                 "-i", str(dst_final),
@@ -427,7 +434,13 @@ class VideoPreviewController:
                 "-crf", "20",
                 str(tmp),
             ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                **windows_no_window_subprocess_kwargs(),
+            )
 
             if not (tmp.exists() and tmp.stat().st_size > 0):
                 self.lbl_loaded.config(text="Video: Cut failed")

@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from core.ffmpeg_tools import resolve_ffmpeg_bin
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
 
@@ -75,7 +76,7 @@ def build_plan(
     filter_dir = outp.parent / "_tmp_filters"
 
     cmd: list[str] = [
-        "ffmpeg",
+        resolve_ffmpeg_bin(),
         "-hide_banner",
         "-y",
         "-nostats",

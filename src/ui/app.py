@@ -27,7 +27,9 @@ from core.models import (
 )
 from core.cfg import APP_NAME, APP_VERSION
 from core import persistence, filesvc, profile_service, render_service
+from core.ffmpeg_tools import ffprobe_exists as _ffprobe_exists_bundled, resolve_ffprobe_bin
 from core.resources import get_resource_path
+from core.subprocess_utils import windows_no_window_subprocess_kwargs
 from core.output_geometry import (
     Rect,
     build_output_geometry_for_size,
@@ -2809,8 +2811,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     def ffprobe_exists() -> bool:
         try:
-            from shutil import which
-            return which("ffprobe") is not None
+            return bool(_ffprobe_exists_bundled())
         except Exception:
             return False
 
@@ -2819,14 +2820,20 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
             return 0, 0, 0.0
         try:
             cmd = [
-                "ffprobe",
+                resolve_ffprobe_bin(),
                 "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height,r_frame_rate",
                 "-of", "json",
                 str(p),
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=0.8)
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=0.8,
+                **windows_no_window_subprocess_kwargs(),
+            )
             if r.returncode != 0:
                 return 0, 0, 0.0
 

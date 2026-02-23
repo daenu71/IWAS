@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from core.ffmpeg_plan import EncodeSpec
+from core.ffmpeg_tools import resolve_ffmpeg_bin
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
 
@@ -19,7 +20,8 @@ _ENCODER_CACHE: dict[str, set[str]] = {}
 
 
 def detect_available_encoders(ffmpeg_bin: str, *, cache: bool = True) -> set[str]:
-    key = (ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
+    raw_key = (ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
+    key = resolve_ffmpeg_bin() if raw_key.lower() == "ffmpeg" else raw_key
     if cache and key in _ENCODER_CACHE:
         return set(_ENCODER_CACHE[key])
     try:

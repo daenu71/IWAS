@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from core.ffmpeg_tools import resolve_ffmpeg_bin, resolve_ffprobe_bin
 from core.models import LayoutConfig
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 from core.output_geometry import (
@@ -179,7 +180,7 @@ def _build_render_video_views(
 def probe_video_meta(video_path: Path) -> VideoMeta:
     # Stream-Meta + Format-Duration in einem Call
     cmd = [
-        "ffprobe",
+        resolve_ffprobe_bin(),
         "-v",
         "error",
         "-show_entries",
@@ -221,7 +222,7 @@ def probe_video_meta(video_path: Path) -> VideoMeta:
 def probe_has_audio(video_path: Path) -> bool:
     try:
         cmd = [
-            "ffprobe",
+            resolve_ffprobe_bin(),
             "-v",
             "error",
             "-select_streams",
@@ -6303,7 +6304,7 @@ def render_split_screen(
         hud_boxes=hud_boxes,
     )
 
-    available_encoders = detect_available_encoders("ffmpeg")
+    available_encoders = detect_available_encoders(resolve_ffmpeg_bin())
     encode_candidates = build_encode_specs(
         W=geom.W,
         fps=float(fps_int),
@@ -6912,7 +6913,7 @@ def render_split_screen_sync(
         hud_input_label=hud_label,
     )
 
-    available_encoders = detect_available_encoders("ffmpeg")
+    available_encoders = detect_available_encoders(resolve_ffmpeg_bin())
     encode_candidates = build_encode_specs(
         W=geom.W,
         fps=float(fps_int),
@@ -7071,7 +7072,7 @@ def render_split_screen_sync(
                     pass
                 black_hold_s = 0.2
                 black_plan_cmd = [
-                    "ffmpeg",
+                    resolve_ffmpeg_bin(),
                     "-hide_banner",
                     "-y",
                     "-nostats",
@@ -7109,7 +7110,7 @@ def render_split_screen_sync(
             )
             concat_plan = Plan(
                 cmd=[
-                    "ffmpeg",
+                    resolve_ffmpeg_bin(),
                     "-hide_banner",
                     "-y",
                     "-nostats",

@@ -26,9 +26,12 @@ powershell -ExecutionPolicy Bypass -File packaging\build_onefolder.ps1
 
 ## Clean Windows Test Checklist
 
-Prerequisite for render test: `ffmpeg` and `ffprobe` available in `PATH`.
+Prerequisite for render test:
 
-1. Copy the complete folder `dist\iWAS\` to the test machine (do not copy only the `.exe`).
+- Copy the complete `dist\iWAS\` folder (contains bundled `ffmpeg`/`ffprobe` and FFmpeg DLLs).
+- Do not copy only `iWAS.exe`.
+
+1. Copy the complete folder `dist\iWAS\` to the test machine.
 2. Start `dist\iWAS\iWAS.exe` with double-click.
 3. Verify minimal app startup:
    - Main window opens.
@@ -37,4 +40,4 @@ Prerequisite for render test: `ffmpeg` and `ffprobe` available in `PATH`.
    - Select one fast and one slow video plus matching CSVs.
    - Start a short render.
    - Check that an output video is created in the app output folder.
-5. If render fails immediately, first verify `ffmpeg`/`ffprobe` in `PATH` on the clean machine.
+5. If render fails immediately, verify `_internal\tools\ffmpeg\` exists in the copied folder.

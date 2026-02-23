@@ -26,18 +26,26 @@ Status: `0.1.0 (beta)`
 ## Requirements
 
 - Windows (primary target for the packaged app)
+<<<<<<< HEAD
 - `ffmpeg` and `ffprobe` available in `PATH`
+=======
+>>>>>>> cc1ffa4 (gepatcht, dass die dist-Version ffmpeg und ffprobe (inkl. benötigter FFmpeg-DLLs) mitliefert.)
 - Matching lap videos (`.mp4`) and telemetry CSVs (`.csv`)
 
 Python source run additionally requires:
 
 - Python 3.11+
 - `pip`
+<<<<<<< HEAD
+=======
+- `ffmpeg` and `ffprobe` available in `PATH`
+>>>>>>> cc1ffa4 (gepatcht, dass die dist-Version ffmpeg und ffprobe (inkl. benötigter FFmpeg-DLLs) mitliefert.)
 
 ## Quick Start (Windows EXE)
 
 1. Download the release and extract it.
 2. Copy the whole `dist\\iWAS\\` folder (not only `iWAS.exe`).
+<<<<<<< HEAD
 3. Ensure `ffmpeg` and `ffprobe` are available in `PATH`.
 4. Start `iWAS.exe`.
 5. Select:
@@ -45,6 +53,14 @@ Python source run additionally requires:
    - fast lap video
    - CSVs (optional if auto-matching finds them)
 6. Start rendering.
+=======
+3. Start `iWAS.exe`.
+4. Select:
+   - slow lap video
+   - fast lap video
+   - CSVs (optional if auto-matching finds them)
+5. Start rendering.
+>>>>>>> cc1ffa4 (gepatcht, dass die dist-Version ffmpeg und ffprobe (inkl. benötigter FFmpeg-DLLs) mitliefert.)
 
 ## Run From Source
 
@@ -76,19 +92,45 @@ powershell -ExecutionPolicy Bypass -File packaging\build_onefolder.ps1
 
 Default project folders (typical usage):
 
+<<<<<<< HEAD
 - `input/video` for source videos. (Make a screen video of a slow and fast lap using an iRacing replay.)
 - `input/csv` for telemetry CSVs. (Download the csv file from Garage 61 for the same laps. Rename the videos to match the csv files.)
+=======
+- `input/video` for source videos
+- `input/csv` for telemetry CSVs
+>>>>>>> cc1ffa4 (gepatcht, dass die dist-Version ffmpeg und ffprobe (inkl. benötigter FFmpeg-DLLs) mitliefert.)
 - `output/video` for rendered comparison videos
 - `output/debug` for sync/debug artifacts
 
 The app can also work with files selected from arbitrary folders.
 
+<<<<<<< HEAD
 ### Render fails immediately
 
 - Check `ffmpeg` and `ffprobe` are in `PATH`.
 - Verify video and CSV filenames belong to the same laps.
 - Check the generated log file for the first error lines.
 
+=======
+## Troubleshooting
+
+### HUD boxes visible but HUD content missing
+
+- Update to the latest `0.1.0 beta` build (this was fixed in the packaged EXE workflow).
+
+### Render fails immediately
+
+- For source runs: check `ffmpeg` and `ffprobe` are in `PATH`.
+- For packaged builds: ensure the full `dist\\iWAS\\` folder was copied (including `_internal\\tools\\ffmpeg`).
+- Verify video and CSV filenames belong to the same laps.
+- Check the generated log file for the first error lines.
+
+### Console window appears during render
+
+- Recent beta builds hide the FFmpeg console window on Windows.
+- If you still see one, test with the latest build.
+
+>>>>>>> cc1ffa4 (gepatcht, dass die dist-Version ffmpeg und ffprobe (inkl. benötigter FFmpeg-DLLs) mitliefert.)
 ## Project Structure (high level)
 
 - `src/ui/` GUI
