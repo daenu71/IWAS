@@ -23,9 +23,9 @@ def _find_bundled_tool(base_name: str) -> Path | None:
             return p
     except Exception:
         pass
-    # Optional developer local layout in repo root.
+    # Developer layout (authoritative FFmpeg source for local runs).
     try:
-        p2 = get_resource_path(fn)
+        p2 = get_resource_path("third_party", "ffmpeg", "lgpl_shared", "bin", fn)
         if p2.exists():
             return p2
     except Exception:
