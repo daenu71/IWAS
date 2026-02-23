@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from core.ffmpeg_plan import EncodeSpec
+from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ def detect_available_encoders(ffmpeg_bin: str, *, cache: bool = True) -> set[str
             [key, "-hide_banner", "-encoders"],
             capture_output=True,
             text=True,
+            **windows_no_window_subprocess_kwargs(),
         )
         if p.returncode != 0:
             out: set[str] = set()

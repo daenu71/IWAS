@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from core.models import LayoutConfig
+from core.subprocess_utils import windows_no_window_subprocess_kwargs
 from core.output_geometry import (
     OutputGeometry,
     build_output_geometry_for_size,
@@ -189,7 +190,7 @@ def probe_video_meta(video_path: Path) -> VideoMeta:
         "json",
         str(video_path),
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, **windows_no_window_subprocess_kwargs())
     if p.returncode != 0 or not p.stdout.strip():
         raise RuntimeError(f"ffprobe failed: {video_path}")
 
@@ -231,7 +232,7 @@ def probe_has_audio(video_path: Path) -> bool:
             "csv=p=0",
             str(video_path),
         ]
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(cmd, capture_output=True, text=True, **windows_no_window_subprocess_kwargs())
         return p.returncode == 0 and (p.stdout or "").strip() != ""
     except Exception:
         return False

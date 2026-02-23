@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,7 @@ def run_ffmpeg(
             stderr=subprocess.STDOUT,
             text=not use_stdin_writer,
             bufsize=1 if not use_stdin_writer else 0,
+            **windows_no_window_subprocess_kwargs(),
         )
     except Exception as e:
         _append(f"[python] failed to start ffmpeg: {e}")
