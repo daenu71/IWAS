@@ -91,6 +91,7 @@ class Controller:
         self.get_layout_preview_ctrl = get_layout_preview_ctrl
         self.get_png_preview_ctrl = get_png_preview_ctrl
         self.get_video_preview_ctrl = get_video_preview_ctrl
+        self._preview_resize_followup_pending = False
 
     def _schedule(self, ms: int, fn: Callable[[], None]) -> None:
         if self.ui.schedule_after is not None:
@@ -520,9 +521,25 @@ class Controller:
             pass
 
     def on_preview_resize(self, _event: Any = None) -> None:
+        def _refresh_after_resize() -> None:
+            video_ctrl = self.get_video_preview_ctrl()
+            if video_ctrl is not None and getattr(video_ctrl, "cap", None) is not None:
+                video_ctrl.render_frame(video_ctrl.current_frame_idx, force=True)
+                return
+            self._refresh_active_preview(force_reload=False)
+
         video_ctrl = self.get_video_preview_ctrl()
         if video_ctrl is not None and getattr(video_ctrl, "cap", None) is not None:
             video_ctrl.render_frame(video_ctrl.current_frame_idx, force=True)
-            return
+        else:
+            self._refresh_active_preview(force_reload=False)
 
-        self._refresh_active_preview(force_reload=False)
+        if self._preview_resize_followup_pending:
+            return
+        self._preview_resize_followup_pending = True
+
+        def _followup() -> None:
+            self._preview_resize_followup_pending = False
+            _refresh_after_resize()
+
+        self._schedule(16, _followup)

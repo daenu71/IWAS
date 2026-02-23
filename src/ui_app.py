@@ -3711,6 +3711,8 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         controller.on_preview_resize(_event)
 
     preview_area.bind("<Configure>", on_preview_resize)
+    preview_canvas.bind("<Configure>", on_preview_resize)
+    preview_canvas.bind("<Map>", on_preview_resize)
 
     btn_play.config(command=on_play_pause)
     btn_prev.config(command=on_prev_frame)
