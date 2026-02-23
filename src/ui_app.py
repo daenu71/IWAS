@@ -104,25 +104,78 @@ def _mix_hex_colors(base: str, target: str, ratio: float) -> str:
 
 
 def build_default_dark_theme() -> Theme:
-    surface = "#171c29"
+    # Neutral, sehr dunkel (Logo soll wirken)
+    surface = "#0d0f14"
+
+    # Logo-Rot (dominant)
+    logo_red = "#E10E19"
+
     colors = ThemeColors(
-        background="#050609",
+        background="#000000",
         surface=surface,
-        accent="#3da2ff",
+
+        # wenige Akzente: Buttons/Highlights/Links
+        accent=logo_red,
+
         text_primary="#f8fbff",
         text_secondary="#9aa5bf",
-        hover_surface="#1f2330",
-        active_surface="#2556d4",
+
+        # Hover bleibt neutral (nicht rot), sonst wird es zu “laut”
+        hover_surface=_mix_hex_colors(surface, "#ffffff", 0.06),
+
+        # Active darf leicht rot sein (Pressed/Active State)
+        active_surface=_mix_hex_colors(surface, logo_red, 0.35),
+
         border=_mix_hex_colors(surface, "#9aa5bf", 0.35),
+
         field_background=_mix_hex_colors(surface, "#ffffff", 0.08),
-        field_background_hover=_mix_hex_colors(surface, "#1f2330", 0.25),
-        selection_background="#3da2ff",
-        selection_foreground="#f8fbff",
+        field_background_hover=_mix_hex_colors(surface, "#ffffff", 0.12),
+
+        # Selection (z.B. markierter Text / Auswahl) in Rot wie Logo
+        selection_background=logo_red,
+        selection_foreground="#ffffff",
     )
     return Theme(colors=colors, font_family="Segoe UI", font_size=10)
 
 
+
 CURRENT_THEME: Theme = build_default_dark_theme()
+
+
+def _enable_windows_dpi_awareness_best_effort() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+    except Exception:
+        return
+
+    user32 = None
+    try:
+        user32 = ctypes.windll.user32
+    except Exception:
+        user32 = None
+
+    if user32 is not None:
+        try:
+            dpi_ctx_per_monitor_v2 = ctypes.c_void_p(-4)
+            if bool(user32.SetProcessDpiAwarenessContext(dpi_ctx_per_monitor_v2)):
+                return
+        except Exception:
+            pass
+
+    try:
+        shcore = ctypes.windll.shcore
+        if int(shcore.SetProcessDpiAwareness(2)) == 0:
+            return
+    except Exception:
+        pass
+
+    if user32 is not None:
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 
 _THEME_FONT_NAMES = ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont")
@@ -674,6 +727,93 @@ class HoverTooltip:
         except Exception:
             pass
         self._tip = None
+
+
+class ScrollableContentHost(ttk.Frame):
+    def __init__(self, master: tk.Widget, **kwargs) -> None:
+        super().__init__(master, **kwargs)
+        frame_style = kwargs.get("style")
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, relief="flat")
+        self.vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vscroll.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.vscroll.grid(row=0, column=1, sticky="ns")
+
+        if isinstance(frame_style, str) and frame_style:
+            self.content_frame = ttk.Frame(self, style=frame_style)
+        else:
+            self.content_frame = ttk.Frame(self)
+        self.content_frame.grid_columnconfigure(0, weight=1)
+        self.content_frame.grid_rowconfigure(0, weight=1)
+        self._content_window = self.canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+
+        self.content_frame.bind("<Configure>", self._on_content_configure, add="+")
+        self.canvas.bind("<Configure>", self._on_canvas_configure, add="+")
+        self.after_idle(self._sync_scroll_state)
+
+    def _update_scrollregion(self) -> None:
+        try:
+            bbox = self.canvas.bbox("all")
+            self.canvas.configure(scrollregion=bbox if bbox else (0, 0, 0, 0))
+        except Exception:
+            pass
+
+    def _sync_content_window_size(
+        self,
+        canvas_width: int | None = None,
+        canvas_height: int | None = None,
+    ) -> None:
+        try:
+            width = int(canvas_width if canvas_width is not None else self.canvas.winfo_width())
+        except Exception:
+            width = 0
+        try:
+            viewport_h = int(canvas_height if canvas_height is not None else self.canvas.winfo_height())
+        except Exception:
+            viewport_h = 0
+        try:
+            req_h = int(self.content_frame.winfo_reqheight())
+        except Exception:
+            req_h = 0
+        try:
+            self.canvas.itemconfigure(
+                self._content_window,
+                width=max(0, width),
+                height=max(0, max(viewport_h, req_h)),
+            )
+        except Exception:
+            pass
+
+    def _sync_scroll_state(self) -> None:
+        self._sync_content_window_size()
+        self._update_scrollregion()
+        try:
+            bbox = self.canvas.bbox(self._content_window)
+            content_h = 0 if not bbox else max(0, int(bbox[3]) - int(bbox[1]))
+            viewport_h = max(0, int(self.canvas.winfo_height()))
+            if content_h > viewport_h + 1:
+                self.vscroll.grid()
+            else:
+                self.vscroll.grid_remove()
+        except Exception:
+            pass
+
+    def _on_content_configure(self, _event=None) -> None:
+        self._sync_scroll_state()
+
+    def _on_canvas_configure(self, event) -> None:
+        self._sync_content_window_size(canvas_width=int(event.width), canvas_height=int(event.height))
+        self._update_scrollregion()
+        self._sync_scroll_state()
+
+    def scroll_to_top(self) -> None:
+        try:
+            self.canvas.yview_moveto(0.0)
+        except Exception:
+            pass
 
 
 class VideoAnalysisView(ttk.Frame):
@@ -2986,7 +3126,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     preview_label = ttk.Label(preview_area, text="")
     preview_label.grid(row=0, column=0, sticky="nsew")
 
-    preview_canvas = tk.Canvas(preview_area, highlightthickness=0)
+    preview_canvas = tk.Canvas(preview_area, highlightthickness=0, borderwidth=0, relief="flat")
     _apply_theme_to_tk_widget(
         preview_canvas,
         bg=colors.background,
@@ -3064,9 +3204,19 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         )
         layout_preview_ctrl.ensure_boxes_in_hud_area(hud_boxes)
 
+    def _preview_draw_size() -> tuple[int, int]:
+        try:
+            cw = int(preview_canvas.winfo_width())
+            ch = int(preview_canvas.winfo_height())
+        except Exception:
+            cw, ch = 0, 0
+        if cw > 1 and ch > 1:
+            return cw, ch
+        return int(preview_area.winfo_width()), int(preview_area.winfo_height())
+
     png_preview_ctrl = PngPreviewController(
         canvas=preview_canvas,
-        get_preview_area_size=lambda: (preview_area.winfo_width(), preview_area.winfo_height()),
+        get_preview_area_size=_preview_draw_size,
         get_output_format=current_png_output_format,
         is_png_mode=lambda: True,
         get_png_view_key=png_view_key,
@@ -3757,6 +3907,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
 
 def main() -> None:
+    _enable_windows_dpi_awareness_best_effort()
     root = tk.Tk()
     project_root = find_project_root(Path(__file__))
     icon_path = _resolve_icon_path(project_root)
@@ -3774,6 +3925,7 @@ def main() -> None:
 
     root.title(_window_title_for_view())
     root.geometry("1200x800")
+    root.resizable(True, True)
     root.grid_columnconfigure(0, weight=1)
     root.grid_rowconfigure(1, weight=1)
 
@@ -3792,10 +3944,21 @@ def main() -> None:
 
     ribbon = ttk.Frame(root, padding=(8, 2, 10, 0), style="App.TFrame")
     ribbon.grid(row=0, column=0, sticky="ew")
-    content = ttk.Frame(root, padding=(0, 0, 0, 0), style="App.TFrame")
+    content = ScrollableContentHost(root, padding=(0, 0, 0, 0), style="App.TFrame")
     content.grid(row=1, column=0, sticky="nsew")
     content.grid_columnconfigure(0, weight=1)
     content.grid_rowconfigure(0, weight=1)
+    _apply_theme_to_tk_widget(
+        content.canvas,
+        bg=colors.background,
+        highlightbackground=colors.background,
+        highlightcolor=colors.accent,
+    )
+    _apply_theme_to_tk_widget(
+        content.content_frame,
+        background=colors.background,
+        highlightbackground=colors.background,
+    )
 
     brand_assets: dict[str, object] = {}
     logo_path = _resolve_logo_path(project_root)
@@ -3863,11 +4026,11 @@ def main() -> None:
     def _build_view(name: str) -> ttk.Frame:
         entry = VIEW_REGISTRY.get(name)
         if entry is None:
-            return SettingsView(content)
+            return SettingsView(content.content_frame)
         cls = _resolve_view_class(entry)
         if cls is VideoAnalysisView:
-            return cls(content, root)
-        return cls(content)
+            return cls(content.content_frame, root)
+        return cls(content.content_frame)
 
     def show_view(name: str) -> None:
         if active["name"] == name:
@@ -3879,7 +4042,9 @@ def main() -> None:
             except Exception:
                 pass
         view = _build_view(name)
+        content.scroll_to_top()
         view.grid(row=0, column=0, sticky="nsew")
+        content.scroll_to_top()
         current["widget"] = view
         active["name"] = name
         root.title(_window_title_for_view(name))
