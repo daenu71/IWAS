@@ -27,3 +27,5 @@ config/ui_last_run.json
 /.idea/*.iml
 /.idea/vcs.xml
 assets/
+.cache/
+third_party/

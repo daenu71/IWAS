@@ -7,6 +7,7 @@ PROJECT_ROOT = SPEC_DIR.parent
 SRC_DIR = PROJECT_ROOT / "src"
 project_root = str(PROJECT_ROOT)
 ffmpeg_src = os.path.join(project_root, "third_party", "ffmpeg", "lgpl_shared", "bin")
+ffmpeg_lic_src = os.path.join(project_root, "third_party", "ffmpeg", "lgpl_shared", "licenses")
 
 
 def _collect_ffmpeg_binaries() -> list[tuple[str, str]]:
@@ -37,6 +38,22 @@ def _collect_ffmpeg_binaries() -> list[tuple[str, str]]:
 FFMPEG_BINARIES = _collect_ffmpeg_binaries()
 
 
+def _collect_ffmpeg_licenses() -> list[tuple[str, str]]:
+    src = Path(ffmpeg_lic_src)
+    if not (src / "LICENSE.txt").exists():
+        raise FileNotFoundError(
+            f"Missing FFmpeg license file for bundling: {src / 'LICENSE.txt'} "
+            "Install the LGPL shared license files in third_party\\ffmpeg\\lgpl_shared\\licenses."
+        )
+
+    out = [(str(path), "tools/ffmpeg/licenses") for path in sorted(src.iterdir()) if path.is_file()]
+    print(f"[iWAS build] Bundling FFmpeg license files from authoritative source: {src}")
+    return out
+
+
+FFMPEG_LICENSES = _collect_ffmpeg_licenses()
+
+
 a = Analysis(
     [str(SRC_DIR / "app_entry.py")],
     pathex=[str(SRC_DIR)],
@@ -44,6 +61,7 @@ a = Analysis(
     datas=[
         (str(PROJECT_ROOT / "assets"), "assets"),
         (str(PROJECT_ROOT / "config"), "config"),
+        *FFMPEG_LICENSES,
     ],
     hiddenimports=[],
     hookspath=[],
