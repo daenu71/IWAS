@@ -3909,16 +3909,34 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     def show_progress(title: str, text: str):
         win, close, _set_text, _set_progress, _is_cancelled = show_progress_with_cancel(title, text)
+        progress_bar: ttk.Progressbar | None = None
 
         def hide_cancel_button() -> None:
+            nonlocal progress_bar
             for child in win.winfo_children():
                 for grand in child.winfo_children():
+                    if isinstance(grand, ttk.Progressbar):
+                        progress_bar = grand
                     if isinstance(grand, ttk.Button):
                         grand.grid_remove()
+            if progress_bar is not None:
+                progress_bar.configure(mode="indeterminate")
+                try:
+                    progress_bar.start(12)
+                except Exception:
+                    pass
             win.update_idletasks()
 
+        def close_with_stop() -> None:
+            try:
+                if progress_bar is not None:
+                    progress_bar.stop()
+            except Exception:
+                pass
+            close()
+
         _safe(hide_cancel_button, label="show_progress.hide_cancel")
-        return win, close
+        return win, close_with_stop
 
     def parse_ffmpeg_time_to_sec(s: str) -> float:
         # "00:01:23.45" -> Sekunden
