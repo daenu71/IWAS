@@ -2954,6 +2954,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     output_row_tooltips: list[HoverTooltip] = []
     output_rows_frame: ttk.Frame | None = None
+    output_list_host: ScrollableContentHost | None = None
 
     def _truncate_text_for_label(label: ttk.Label, text: str) -> str:
         try:
@@ -3055,7 +3056,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
                 pass
 
     def refresh_output_list() -> None:
-        nonlocal output_row_tooltips
+        nonlocal output_row_tooltips, output_list_host
         if output_rows_frame is None:
             return
 
@@ -3076,6 +3077,11 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
                 padx=2,
                 pady=2,
             )
+            try:
+                if output_list_host is not None:
+                    output_list_host.after_idle(output_list_host._sync_scroll_state)
+            except Exception:
+                pass
             return
 
         for idx, path in enumerate(items):
@@ -3104,8 +3110,14 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
             btn_menu.bind("<Button-1>", lambda e, p=path: _show_output_item_menu(e, p), add="+")
 
+        try:
+            if output_list_host is not None:
+                output_list_host.after_idle(output_list_host._sync_scroll_state)
+        except Exception:
+            pass
+
     def build_output_panel(parent: ttk.LabelFrame) -> None:
-        nonlocal output_rows_frame
+        nonlocal output_rows_frame, output_list_host
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(1, weight=1)
 
@@ -3139,6 +3151,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
             list_host.canvas.configure(height=132)
         except Exception:
             pass
+        output_list_host = list_host
         output_rows_frame = list_host.content_frame
         output_rows_frame.columnconfigure(0, weight=1)
         output_rows_frame.grid_rowconfigure(0, weight=0)
