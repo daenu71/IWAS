@@ -365,7 +365,17 @@ class VideoPreviewController:
         return False, f"ffmpeg rc={p.returncode}"
 
     def _validate_hybrid_output(self, *, out_path: Path, left_dur_ts: float, mid_dur_ts: float, right_dur_ts: float) -> tuple[bool, str]:
-        probes: list[tuple[str, float]] = [("start", 0.0)]
+        # Some Windows/FFmpeg builds intermittently fail a decode probe exactly at t=0.000
+        # on valid H.264 files produced by the hybrid concat path. Probe slightly inside start.
+        start_probe_ts = 0.01
+        try:
+            left_d = max(0.0, float(left_dur_ts))
+            if left_d > 0.0:
+                start_probe_ts = min(0.01, max(0.001, left_d * 0.5))
+        except Exception:
+            start_probe_ts = 0.01
+
+        probes: list[tuple[str, float]] = [("start", max(0.001, start_probe_ts))]
         if mid_dur_ts > 0.0:
             probes.append(("mid-join", max(0.0, float(left_dur_ts) + 0.02)))
             probes.append(("mid-body", max(0.0, float(left_dur_ts) + min(1.0, max(0.02, float(mid_dur_ts) * 0.25)))))
