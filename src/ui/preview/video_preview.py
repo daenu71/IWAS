@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import queue
 import subprocess
+import threading
 import time
 from typing import Callable
 import tkinter as tk
+from tkinter import ttk
 
 import cv2
 from PIL import Image, ImageTk
@@ -221,6 +224,8 @@ class VideoPreviewController:
         args_before_video_codec: list[str],
         out_path: Path,
         encoder_candidates: list[tuple[str, list[str]]] | None = None,
+        progress_total_sec: float | None = None,
+        progress_cb: Callable[[float], None] | None = None,
     ) -> tuple[bool, str, str]:
         ffmpeg_bin = resolve_ffmpeg_bin()
         last_error = ""
@@ -228,18 +233,37 @@ class VideoPreviewController:
         candidates = list(encoder_candidates) if encoder_candidates is not None else self._video_encode_candidates()
         for encoder_name, encoder_args in candidates:
             self.safe_unlink(out_path)
+            progress_line_cb = None
+            if (progress_cb is not None) and (progress_total_sec is not None) and (progress_total_sec > 0):
+                try:
+                    progress_cb(0.0)
+                except Exception:
+                    pass
+
+                def _on_progress_line(line: str, total_s: float = float(progress_total_sec), cb: Callable[[float], None] = progress_cb) -> None:
+                    pct = self._progress_pct_from_ffmpeg_line(line, total_s)
+                    if pct is None:
+                        return
+                    try:
+                        cb(pct)
+                    except Exception:
+                        pass
+
+                progress_line_cb = _on_progress_line
+
             cmd = [
                 ffmpeg_bin,
                 "-hide_banner",
                 "-nostats",
                 "-loglevel",
                 "error",
+                *([] if progress_line_cb is None else ["-progress", "pipe:1"]),
                 *args_before_video_codec,
                 *encoder_args,
                 str(out_path),
             ]
             try:
-                p = self._run_process_with_ui_pump(cmd)
+                p = self._run_process_with_ui_pump(cmd, stdout_line_cb=progress_line_cb)
             except Exception as e:
                 last_error = str(e)
                 continue
@@ -282,22 +306,180 @@ class VideoPreviewController:
                 return False, lines[-1]
         return False, f"ffmpeg rc={p.returncode}"
 
-    def _run_process_with_ui_pump(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    @staticmethod
+    def _parse_ffmpeg_clock_to_sec(s: str) -> float:
+        try:
+            txt = str(s or "").strip()
+            if txt.count(":") != 2:
+                return 0.0
+            hh, mm, ss = txt.split(":", 2)
+            return (int(hh) * 3600.0) + (int(mm) * 60.0) + float(ss)
+        except Exception:
+            return 0.0
+
+    def _progress_pct_from_ffmpeg_line(self, line: str, total_s: float) -> float | None:
+        txt = str(line or "").strip()
+        if txt == "" or "=" not in txt or total_s <= 0:
+            return None
+        k, v = txt.split("=", 1)
+        key = k.strip()
+        val = v.strip()
+        if key == "progress" and val == "end":
+            return 100.0
+        if key == "out_time_ms":
+            try:
+                sec = float(val) / 1_000_000.0
+            except Exception:
+                return None
+        elif key == "out_time_us":
+            try:
+                sec = float(val) / 1_000_000.0
+            except Exception:
+                return None
+        elif key == "out_time":
+            sec = self._parse_ffmpeg_clock_to_sec(val)
+        else:
+            return None
+        pct = (max(0.0, sec) / max(0.001, float(total_s))) * 100.0
+        if pct < 0.0:
+            return 0.0
+        if pct > 100.0:
+            return 100.0
+        return pct
+
+    def _run_process_with_ui_pump(
+        self,
+        cmd: list[str],
+        *,
+        stdout_line_cb: Callable[[str], None] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
             **windows_no_window_subprocess_kwargs(),
         )
-        while proc.poll() is None:
+
+        q: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+        def _reader(tag: str, stream) -> None:
+            try:
+                if stream is None:
+                    return
+                for raw in iter(stream.readline, ""):
+                    q.put((tag, raw))
+            finally:
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+                q.put((tag, None))
+
+        t_out = threading.Thread(target=_reader, args=("stdout", proc.stdout), daemon=True)
+        t_err = threading.Thread(target=_reader, args=("stderr", proc.stderr), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        out_done = False
+        err_done = False
+
+        while True:
+            drained_any = False
+            while True:
+                try:
+                    tag, payload = q.get_nowait()
+                except queue.Empty:
+                    break
+                drained_any = True
+                if payload is None:
+                    if tag == "stdout":
+                        out_done = True
+                    else:
+                        err_done = True
+                    continue
+                if tag == "stdout":
+                    stdout_parts.append(payload)
+                    if stdout_line_cb is not None:
+                        try:
+                            stdout_line_cb(payload)
+                        except Exception:
+                            pass
+                else:
+                    stderr_parts.append(payload)
+
             try:
                 self.root.update()
             except Exception:
                 pass
-            time.sleep(0.03)
-        stdout_txt, stderr_txt = proc.communicate()
+
+            if (proc.poll() is not None) and out_done and err_done:
+                break
+            if not drained_any:
+                time.sleep(0.03)
+
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        t_out.join(timeout=0.2)
+        t_err.join(timeout=0.2)
+        stdout_txt = "".join(stdout_parts)
+        stderr_txt = "".join(stderr_parts)
         return subprocess.CompletedProcess(cmd, int(proc.returncode or 0), stdout_txt or "", stderr_txt or "")
+
+    @staticmethod
+    def _find_progressbar_widget(progress_win: object) -> ttk.Progressbar | None:
+        try:
+            if not isinstance(progress_win, tk.Misc):
+                return None
+            for child in progress_win.winfo_children():
+                for grand in child.winfo_children():
+                    if isinstance(grand, ttk.Progressbar):
+                        return grand
+        except Exception:
+            return None
+        return None
+
+    def _make_progress_setter(self, progress_win: object, *, label_prefix: str) -> Callable[[float], None]:
+        bar = self._find_progressbar_widget(progress_win)
+        if bar is not None:
+            try:
+                bar.stop()
+            except Exception:
+                pass
+            try:
+                bar.configure(mode="determinate", maximum=100.0, value=0.0)
+            except Exception:
+                pass
+
+        last_pct = {"v": -1}
+
+        def _set_progress(pct: float) -> None:
+            p = max(0.0, min(100.0, float(pct)))
+            pi = int(p)
+            if pi == last_pct["v"] and p < 100.0:
+                return
+            last_pct["v"] = pi
+            if bar is not None:
+                try:
+                    bar["value"] = p
+                except Exception:
+                    pass
+            try:
+                self.lbl_loaded.config(text=f"{label_prefix} {pi}%")
+            except Exception:
+                pass
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
+
+        return _set_progress
 
     def make_proxy_h264(self, src: Path) -> Path | None:
         if not self.ffmpeg_exists():
@@ -622,6 +804,7 @@ class VideoPreviewController:
 
         progress_win, progress_close = self._show_progress("Cutting", "Video is being cut… Please wait.")
         self.root.update()
+        set_cut_progress = self._make_progress_setter(progress_win, label_prefix="Video: Cutting…")
 
         cut_ok = False
         cut_success_msg = ""
@@ -629,6 +812,10 @@ class VideoPreviewController:
         try:
             self.lbl_loaded.config(text="Video: Cutting…")
             self.root.update_idletasks()
+            try:
+                set_cut_progress(0.0)
+            except Exception:
+                pass
 
             exact_frame_count = max(1, (e - s) + 1)
             ok, used_encoder, err = self._run_ffmpeg_with_video_encode_fallback(
@@ -644,6 +831,8 @@ class VideoPreviewController:
                 ],
                 out_path=tmp,
                 encoder_candidates=self._exact_cut_encode_candidates(),
+                progress_total_sec=float(dur_sec),
+                progress_cb=set_cut_progress,
             )
 
             if not ok:
@@ -666,6 +855,10 @@ class VideoPreviewController:
             self._save_endframes(self.endframes_by_name)
 
             cut_success_msg = f"Video: Cut and replaced (exact:{used_encoder})"
+            try:
+                set_cut_progress(100.0)
+            except Exception:
+                pass
             self.lbl_loaded.config(text=cut_success_msg)
             cut_ok = True
         except Exception as e:
