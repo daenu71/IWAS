@@ -361,10 +361,109 @@ class VideoPreviewController:
         if err_txt:
             lines = [ln.strip() for ln in err_txt.splitlines() if ln.strip()]
             if lines:
-                return False, lines[-1]
+                tail = " | ".join(lines[-3:])
+                return False, f"ffmpeg rc={p.returncode}: {tail}"
         return False, f"ffmpeg rc={p.returncode}"
 
-    def _validate_hybrid_output(self, *, out_path: Path, left_dur_ts: float, mid_dur_ts: float, right_dur_ts: float) -> tuple[bool, str]:
+    def _ffprobe_media_summary(self, src: Path) -> str:
+        try:
+            p = subprocess.run(
+                [
+                    resolve_ffprobe_bin(),
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_format",
+                    "-of",
+                    "json",
+                    str(src),
+                ],
+                capture_output=True,
+                text=True,
+                **windows_no_window_subprocess_kwargs(),
+            )
+        except Exception as e:
+            return f"ffprobe-start-failed: {e}"
+
+        if p.returncode != 0:
+            err_txt = (p.stderr or p.stdout or "").strip()
+            if err_txt:
+                lines = [ln.strip() for ln in err_txt.splitlines() if ln.strip()]
+                if lines:
+                    return f"ffprobe-rc={p.returncode}: {' | '.join(lines[-3:])}"
+            return f"ffprobe-rc={p.returncode}"
+
+        try:
+            payload = json.loads(p.stdout or "{}")
+        except Exception as e:
+            return f"ffprobe-json-failed: {e}"
+
+        fmt = payload.get("format") if isinstance(payload, dict) else None
+        streams = payload.get("streams") if isinstance(payload, dict) else None
+        fmt_name = ""
+        fmt_dur = ""
+        fmt_start = ""
+        if isinstance(fmt, dict):
+            fmt_name = str(fmt.get("format_name") or "")
+            if fmt.get("duration") not in (None, "N/A"):
+                fmt_dur = str(fmt.get("duration"))
+            if fmt.get("start_time") not in (None, "N/A"):
+                fmt_start = str(fmt.get("start_time"))
+
+        v0 = None
+        if isinstance(streams, list):
+            for st in streams:
+                if isinstance(st, dict) and str(st.get("codec_type") or "") == "video":
+                    v0 = st
+                    break
+        if not isinstance(v0, dict):
+            return f"fmt={fmt_name or '?'} dur={fmt_dur or '?'} start={fmt_start or '?'} video=none"
+
+        parts = [
+            f"fmt={fmt_name or '?'}",
+            f"dur={fmt_dur or '?'}",
+            f"start={fmt_start or '?'}",
+            f"codec={v0.get('codec_name') or '?'}",
+            f"tag={v0.get('codec_tag_string') or '?'}",
+            f"pix={v0.get('pix_fmt') or '?'}",
+            f"size={v0.get('width') or '?'}x{v0.get('height') or '?'}",
+            f"fps={v0.get('avg_frame_rate') or v0.get('r_frame_rate') or '?'}",
+        ]
+        for k in ("is_avc", "nal_length_size", "has_b_frames", "profile", "level"):
+            val = v0.get(k)
+            if val not in (None, "", "N/A"):
+                parts.append(f"{k}={val}")
+        return " ".join(parts)
+
+    def _log_hybrid_artifact_debug(self, *, label: str, path: Path) -> None:
+        try:
+            if not path.exists():
+                self._cut_log(f"hybrid debug {label}: missing path={path.name}")
+                return
+            size_bytes = 0
+            try:
+                size_bytes = int(path.stat().st_size)
+            except Exception:
+                size_bytes = 0
+            self._cut_log(f"hybrid debug {label}: file={path.name} size={size_bytes}")
+            self._cut_log(f"hybrid debug {label}: probe {self._ffprobe_media_summary(path)}")
+            ok, err = self._ffmpeg_decode_check(src=path, seek_sec=0.0, frames=8)
+            if ok:
+                self._cut_log(f"hybrid debug {label}: decode-check ok t=0.000s")
+            else:
+                self._cut_log(f"hybrid debug {label}: decode-check fail t=0.000s: {err}")
+        except Exception as e:
+            self._cut_log(f"hybrid debug {label}: diagnostics failed: {e}")
+
+    def _validate_hybrid_output(
+        self,
+        *,
+        out_path: Path,
+        left_dur_ts: float,
+        mid_dur_ts: float,
+        right_dur_ts: float,
+        debug_artifacts: list[tuple[str, Path]] | None = None,
+    ) -> tuple[bool, str]:
         # Some Windows/FFmpeg builds intermittently fail a decode probe exactly at t=0.000
         # on valid H.264 files produced by the hybrid concat path. Probe slightly inside start.
         start_probe_ts = 0.01
@@ -386,6 +485,11 @@ class VideoPreviewController:
             ok, err = self._ffmpeg_decode_check(src=out_path, seek_sec=ts, frames=24)
             if not ok:
                 self._cut_log(f"hybrid decode-check failed probe={label} t={ts:.3f}s: {err}")
+                if debug_artifacts:
+                    self._cut_log("hybrid debug dump begin")
+                    for a_label, a_path in debug_artifacts:
+                        self._log_hybrid_artifact_debug(label=a_label, path=a_path)
+                    self._cut_log("hybrid debug dump end")
                 return False, f"decode-check {label} failed: {err}"
             self._cut_log(f"hybrid decode-check ok probe={label} t={ts:.3f}s")
         return True, ""
@@ -817,6 +921,12 @@ class VideoPreviewController:
                     left_dur_ts=float(left_dur_ts),
                     mid_dur_ts=float(mid_dur_ts),
                     right_dur_ts=float(right_dur_ts),
+                    debug_artifacts=[
+                        ("seg_left", seg_left),
+                        ("seg_mid", seg_mid),
+                        ("seg_right", seg_right),
+                        ("mux_out", mux_out),
+                    ],
                 )
                 if not ok_decode:
                     last_error = decode_err or f"{encoder_name}: hybrid decode-check failed"
