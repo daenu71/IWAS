@@ -687,6 +687,11 @@ class VideoPreviewController:
                         str(int(left_count)),
                         "-f",
                         "mpegts",
+                        # Keep H.264 parameter sets available at TS segment boundaries for concat/remux.
+                        "-bsf:v",
+                        "dump_extra",
+                        "-mpegts_flags",
+                        "+resend_headers",
                     ],
                     encoder_args=list(encoder_args),
                     out_path=seg_left,
@@ -742,6 +747,11 @@ class VideoPreviewController:
                         str(int(right_count)),
                         "-f",
                         "mpegts",
+                        # Keep H.264 parameter sets available at TS segment boundaries for concat/remux.
+                        "-bsf:v",
+                        "dump_extra",
+                        "-mpegts_flags",
+                        "+resend_headers",
                     ],
                     encoder_args=list(encoder_args),
                     out_path=seg_right,
