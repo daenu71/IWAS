@@ -582,6 +582,52 @@ class VideoPreviewController:
         self._cut_log(f"ffprobe frames ok file={src.name} frames={len(frame_times)} keyframes={len(keyframes)}")
         return frame_times, sorted(set(int(i) for i in keyframes if 0 <= int(i) < len(frame_times)))
 
+    def _probe_primary_video_codec_name(self, src: Path) -> str:
+        try:
+            p = subprocess.run(
+                [
+                    resolve_ffprobe_bin(),
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=codec_name",
+                    "-of",
+                    "json",
+                    str(src),
+                ],
+                capture_output=True,
+                text=True,
+                **windows_no_window_subprocess_kwargs(),
+            )
+        except Exception as e:
+            raise RuntimeError(f"ffprobe codec start failed: {e}") from e
+
+        if p.returncode != 0:
+            err = (p.stderr or p.stdout or "").strip()
+            if err:
+                lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+                if lines:
+                    raise RuntimeError(lines[-1])
+            raise RuntimeError(f"ffprobe codec rc={p.returncode}")
+
+        try:
+            payload = json.loads(p.stdout or "{}")
+        except Exception as e:
+            raise RuntimeError(f"ffprobe codec JSON parse failed: {e}") from e
+
+        streams = payload.get("streams") if isinstance(payload, dict) else None
+        if not isinstance(streams, list) or not streams:
+            raise RuntimeError("ffprobe codec returned no video stream")
+        st0 = streams[0]
+        if not isinstance(st0, dict):
+            raise RuntimeError("ffprobe codec returned invalid stream payload")
+        codec_name = str(st0.get("codec_name") or "").strip().lower()
+        if codec_name == "":
+            raise RuntimeError("ffprobe codec returned empty codec_name")
+        return codec_name
+
     def _hybrid_cut_copy_partition(self, *, s: int, e: int, keyframes: list[int]) -> tuple[int, int] | None:
         if e <= s or not keyframes:
             return None
@@ -1474,15 +1520,26 @@ class VideoPreviewController:
             err = ""
             hybrid_attempted = False
             hybrid_fail_reason = ""
+            src_video_codec = ""
 
             try:
-                frame_times, keyframes = self._probe_video_frames_for_hybrid_cut(dst_final)
-            except Exception as probe_err:
-                frame_times = []
-                keyframes = []
-                err = f"hybrid probe failed: {probe_err}"
-                hybrid_fail_reason = err
-                self._cut_log(err)
+                src_video_codec = self._probe_primary_video_codec_name(dst_final)
+                self._cut_log(f"hybrid source codec={src_video_codec}")
+            except Exception as codec_err:
+                self._cut_log(f"hybrid source codec probe failed: {codec_err}")
+
+            frame_times: list[float] = []
+            keyframes: list[int] = []
+            if src_video_codec and src_video_codec != "h264":
+                hybrid_fail_reason = f"hybrid unsupported source codec: {src_video_codec} (current hybrid requires H.264 middle-copy)"
+                self._cut_log(hybrid_fail_reason)
+            else:
+                try:
+                    frame_times, keyframes = self._probe_video_frames_for_hybrid_cut(dst_final)
+                except Exception as probe_err:
+                    err = f"hybrid probe failed: {probe_err}"
+                    hybrid_fail_reason = err
+                    self._cut_log(err)
 
             if frame_times and keyframes:
                 hybrid_attempted = True
