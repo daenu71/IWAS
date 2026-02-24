@@ -106,13 +106,20 @@ class VideoPreviewController:
                     ["-c:v", "libopenh264", "-pix_fmt", "yuv420p", "-b:v", "6M"],
                 )
             )
+        for hw_name, hw_args in (
+            ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p5", "-cq:v", "19"]),
+            ("h264_qsv", ["-c:v", "h264_qsv", "-global_quality", "23"]),
+            ("h264_amf", ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20", "-qp_b", "22"]),
+        ):
+            if hw_name in available:
+                candidates.append((hw_name, [*hw_args, "-pix_fmt", "yuv420p"]))
 
         # Native MPEG-4 is available in LGPL builds and keeps Cut/Proxy functional
         # when libx264 is not bundled (e.g. LGPL FFmpeg package).
         candidates.append(
             (
                 "mpeg4",
-                ["-c:v", "mpeg4", "-pix_fmt", "yuv420p", "-q:v", "4"],
+                ["-c:v", "mpeg4", "-pix_fmt", "yuv420p", "-q:v", "2"],
             )
         )
 
@@ -501,7 +508,11 @@ class VideoPreviewController:
                     "-ss", f"{start_sec:.6f}",
                     "-i", str(dst_final),
                     "-t", f"{dur_sec:.6f}",
-                    "-an",
+                    "-map", "0:v:0",
+                    "-map", "0:a?",
+                    "-c:a", "aac",
+                    "-b:a", "160k",
+                    "-movflags", "+faststart",
                 ],
                 out_path=tmp,
             )
