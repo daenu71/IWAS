@@ -73,7 +73,7 @@ def build_plan(
     outp: Path,
     debug_max_s: float = 0.0,
 ) -> Plan:
-    filter_dir = outp.parent / "_tmp_filters"
+    filter_dir = outp.parent.parent / "debug" / "_tmp_filters"
 
     cmd: list[str] = [
         resolve_ffmpeg_bin(),

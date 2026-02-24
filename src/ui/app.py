@@ -1233,16 +1233,20 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     left_column = ttk.Frame(host)
     left_top_files_frame = ttk.LabelFrame(left_column, text="Files")
+    left_output_frame = ttk.LabelFrame(left_column, text="Output")
     left_scroll_settings_frame = ttk.LabelFrame(left_column, text="Settings")
     frame_preview = ttk.LabelFrame(host, text="Preview", padding=(0, 2, 0, 0))
 
     left_column.grid(row=0, column=0, sticky="nsew", padx=10, pady=(2, 10))
     left_column.columnconfigure(0, weight=1)
+    left_column.columnconfigure(1, weight=1)
     left_column.rowconfigure(0, weight=0)
-    left_column.rowconfigure(1, weight=1)
+    left_column.rowconfigure(1, weight=0)
+    left_column.rowconfigure(2, weight=1)
 
-    left_top_files_frame.grid(row=0, column=0, sticky="new")
-    left_scroll_settings_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+    left_top_files_frame.grid(row=0, column=0, columnspan=2, sticky="new")
+    left_output_frame.grid(row=1, column=0, sticky="new", pady=(10, 0))
+    left_scroll_settings_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
     left_scroll_settings_frame.columnconfigure(0, weight=1)
     left_scroll_settings_frame.rowconfigure(0, weight=1)
 
@@ -1319,6 +1323,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     _bind_root("<Button-5>", _on_settings_mousewheel)
 
     frame_files = left_top_files_frame
+    frame_output = left_output_frame
     frame_settings = settings_inner
 
     # Vorschau soll die ganze rechte Seite fÃ¼llen (ohne "Aktionen")
@@ -2947,6 +2952,200 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     cmb_preset.bind("<<ComboboxSelected>>", on_output_change)
     cmb_quality.bind("<<ComboboxSelected>>", on_output_change)
 
+    output_row_tooltips: list[HoverTooltip] = []
+    output_rows_frame: ttk.Frame | None = None
+
+    def _truncate_text_for_label(label: ttk.Label, text: str) -> str:
+        try:
+            font_value = label.cget("font")
+            if isinstance(font_value, tkfont.Font):
+                fnt = font_value
+            else:
+                fnt = tkfont.nametofont(str(font_value or "TkDefaultFont"))
+            max_px = max(48, int(label.winfo_width()) - 4)
+            if fnt.measure(text) <= max_px:
+                return text
+            ellipsis = "..."
+            if fnt.measure(ellipsis) >= max_px:
+                return ellipsis
+            lo = 0
+            hi = len(text)
+            best = ellipsis
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                candidate = text[:mid] + ellipsis
+                if fnt.measure(candidate) <= max_px:
+                    best = candidate
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            return best
+        except Exception:
+            return shorten_prefix(text, max_len=28)
+
+    def load_output_videos() -> list[Path]:
+        try:
+            output_video_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        items: list[Path] = []
+        try:
+            for p in output_video_dir.iterdir():
+                if not p.is_file():
+                    continue
+                if str(p.suffix or "").lower() != ".mp4":
+                    continue
+                items.append(p)
+        except Exception:
+            return []
+
+        def _sort_key(p: Path) -> tuple[float, str]:
+            try:
+                mtime = float(p.stat().st_mtime)
+            except Exception:
+                mtime = 0.0
+            return (mtime, p.name.lower())
+
+        items.sort(key=_sort_key, reverse=True)
+        return items
+
+    def _show_output_item_menu(event, item: Path) -> None:
+        menu = tk.Menu(root, tearoff=0)
+        _apply_theme_to_tk_widget(
+            menu,
+            background=colors.surface,
+            foreground=colors.text_primary,
+            activebackground=colors.hover_surface,
+            activeforeground=colors.text_primary,
+            borderwidth=0,
+            relief="flat",
+        )
+
+        def do_play() -> None:
+            try:
+                os.startfile(str(item))
+            except Exception as exc:
+                messagebox.showerror("Play Video", f"Could not open video:\n{item}\n\n{exc}", parent=root)
+
+        def do_delete() -> None:
+            confirm = messagebox.askyesno(
+                "Delete Video",
+                f"Delete '{item.name}'?",
+                parent=root,
+            )
+            if not confirm:
+                return
+            try:
+                item.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                messagebox.showerror("Delete Video", f"Could not delete file:\n{item}\n\n{exc}", parent=root)
+                return
+            refresh_output_list()
+
+        menu.add_command(label="Play", command=do_play)
+        menu.add_command(label="Delete", command=do_delete)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
+    def refresh_output_list() -> None:
+        nonlocal output_row_tooltips
+        if output_rows_frame is None:
+            return
+
+        for child in list(output_rows_frame.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        output_row_tooltips = []
+
+        items = load_output_videos()
+        output_rows_frame.columnconfigure(0, weight=1)
+        if not items:
+            ttk.Label(output_rows_frame, text="No .mp4 files found").grid(
+                row=0,
+                column=0,
+                sticky="w",
+                padx=2,
+                pady=2,
+            )
+            return
+
+        for idx, path in enumerate(items):
+            row = ttk.Frame(output_rows_frame)
+            row.grid(row=idx, column=0, sticky="ew", pady=(0, 2))
+            row.columnconfigure(0, weight=1)
+
+            lbl_name = ttk.Label(row, text=path.name)
+            btn_menu = ttk.Button(row, text="...", width=3)
+            lbl_name.grid(row=0, column=0, sticky="ew", padx=(2, 6), pady=1)
+            btn_menu.grid(row=0, column=1, sticky="e", pady=1)
+
+            tip = HoverTooltip(lbl_name)
+            tip.set_text(path.name)
+            output_row_tooltips.append(tip)
+
+            def _update_output_label(_event=None, *, label=lbl_name, file_name=path.name) -> None:
+                label.config(text=_truncate_text_for_label(label, file_name))
+
+            lbl_name.bind("<Configure>", _update_output_label, add="+")
+            row.bind("<Configure>", _update_output_label, add="+")
+            try:
+                row.after_idle(_update_output_label)
+            except Exception:
+                _update_output_label()
+
+            btn_menu.bind("<Button-1>", lambda e, p=path: _show_output_item_menu(e, p), add="+")
+
+    def build_output_panel(parent: ttk.LabelFrame) -> None:
+        nonlocal output_rows_frame
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        top_bar = ttk.Frame(parent)
+        top_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 4))
+        top_bar.columnconfigure(0, weight=1)
+
+        def _open_output_folder() -> None:
+            try:
+                output_video_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                os.startfile(str(output_video_dir))
+            except Exception as exc:
+                messagebox.showerror("Open Folder", f"Could not open folder:\n{output_video_dir}\n\n{exc}", parent=root)
+                return
+            refresh_output_list()
+
+        ttk.Button(top_bar, text="Open Folder", command=_open_output_folder).grid(row=0, column=0, sticky="w")
+
+        list_host = ScrollableContentHost(parent)
+        list_host.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        _apply_theme_to_tk_widget(
+            list_host.canvas,
+            bg=colors.surface,
+            highlightbackground=colors.surface,
+            highlightcolor=colors.accent,
+        )
+        try:
+            list_host.canvas.configure(height=132)
+        except Exception:
+            pass
+        output_rows_frame = list_host.content_frame
+        output_rows_frame.columnconfigure(0, weight=1)
+        refresh_output_list()
+
+    build_output_panel(frame_output)
+    frame_output.bind("<Map>", lambda _event=None: refresh_output_list(), add="+")
+
     # ---- Dateibereich ----
 
     # Nur 2 Spalten (Text + "â€¦"), damit der linke Bereich nicht unnÃ¶tig breit wird
@@ -4013,6 +4212,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     STARTUP_SETTINGS_VIEWPORT_HEIGHT = 340
     RESIZE_SETTINGS_VIEWPORT_MIN = 140
     _files_req_height = max(1, int(frame_files.winfo_reqheight()))
+    _output_req_height = max(1, int(frame_output.winfo_reqheight()))
 
     def _settings_frame_chrome_height() -> int:
         try:
@@ -4024,7 +4224,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         return int(chrome)
 
     def _apply_window_layout_policy(startup: bool = False) -> None:
-        nonlocal _files_req_height
+        nonlocal _files_req_height, _output_req_height
         try:
             root.update_idletasks()
         except Exception:
@@ -4034,12 +4234,18 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
             _files_req_height = max(int(_files_req_height), int(frame_files.winfo_reqheight()))
         except Exception:
             pass
+        try:
+            _output_req_height = max(int(_output_req_height), int(frame_output.winfo_reqheight()))
+        except Exception:
+            pass
         files_req_height = max(1, int(_files_req_height))
+        output_req_height = max(1, int(_output_req_height))
         settings_chrome = _settings_frame_chrome_height()
 
         files_min_visible = max(110, min(files_req_height, int(round(files_req_height * 0.8))))
         left_column.rowconfigure(0, minsize=int(files_min_visible))
-        left_column.rowconfigure(1, minsize=int(RESIZE_SETTINGS_VIEWPORT_MIN))
+        left_column.rowconfigure(1, minsize=int(output_req_height))
+        left_column.rowconfigure(2, minsize=int(RESIZE_SETTINGS_VIEWPORT_MIN))
 
         screen_w = max(1, int(root.winfo_screenwidth()))
         screen_h = max(1, int(root.winfo_screenheight()))
@@ -4047,7 +4253,14 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         max_window_h = max(240, int(screen_h * 0.95))
 
         min_w = max(760, int(left_column.winfo_reqwidth()) + 320)
-        min_h = int(files_min_visible) + 10 + int(settings_chrome) + int(RESIZE_SETTINGS_VIEWPORT_MIN)
+        min_h = (
+            int(files_min_visible)
+            + 10
+            + int(output_req_height)
+            + 10
+            + int(settings_chrome)
+            + int(RESIZE_SETTINGS_VIEWPORT_MIN)
+        )
         min_w = min(int(min_w), max(320, int(screen_w - 40)))
         min_h = min(int(min_h), max(240, int(screen_h - 60)))
         root.minsize(int(max(320, min_w)), int(max(240, min_h)))
@@ -4055,7 +4268,14 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         if not startup:
             return
 
-        required_left_height = int(files_req_height) + 10 + int(settings_chrome) + int(STARTUP_SETTINGS_VIEWPORT_HEIGHT)
+        required_left_height = (
+            int(files_req_height)
+            + 10
+            + int(output_req_height)
+            + 10
+            + int(settings_chrome)
+            + int(STARTUP_SETTINGS_VIEWPORT_HEIGHT)
+        )
         required_w = max(
             int(root.winfo_reqwidth()),
             int(left_column.winfo_reqwidth()) + int(frame_preview.winfo_reqwidth()) + 40,

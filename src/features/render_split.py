@@ -6630,7 +6630,7 @@ def render_split_screen_sync(
     cut_render_jobs: list[CutRenderJob] = []
     cut_tmp_dir: Path | None = None
     if effective_video_mode == "cut":
-        cut_tmp_dir = outp.parent / "_tmp_cut_segments" / str(outp.stem)
+        cut_tmp_dir = outp.parent.parent / "debug" / "_tmp_cut_segments" / str(outp.stem)
         cut_render_jobs = _build_cut_render_jobs(
             frame_segments=cut_frame_segments,
             common_start_frame=int(cut_i0),
