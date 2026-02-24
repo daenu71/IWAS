@@ -52,6 +52,7 @@ class UIContext:
     png_save_state_for_current: Callable[[], None] | None = None
     close_preview_video: Callable[[], None] | None = None
     refresh_display: Callable[[], None] | None = None
+    refresh_output_list: Callable[[], None] | None = None
     set_fast_text: Callable[[str], None] | None = None
     set_slow_text: Callable[[str], None] | None = None
     get_profiles_dir: Callable[[], Path] | None = None
@@ -409,6 +410,11 @@ class Controller:
                     if requested_video_mode == "cut" and cut_zero_segments_fallback and out_ok:
                         self.ui.set_status("Cut: 0 segments -> rendered full")
                     elif out_ok:
+                        try:
+                            if self.ui.refresh_output_list is not None:
+                                self.ui.refresh_output_list()
+                        except Exception:
+                            pass
                         self.ui.set_status(f"Video: Done ({out_path.name})")
                     else:
                         self.ui.set_status("Video: Render failed (0 KB)")

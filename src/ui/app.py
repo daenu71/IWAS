@@ -3141,6 +3141,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
             pass
         output_rows_frame = list_host.content_frame
         output_rows_frame.columnconfigure(0, weight=1)
+        output_rows_frame.grid_rowconfigure(0, weight=0)
         refresh_output_list()
 
     build_output_panel(frame_output)
@@ -4016,6 +4017,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         png_save_state_for_current=png_save_state_for_current,
         close_preview_video=lambda: video_preview_ctrl.close_preview_video() if video_preview_ctrl is not None else None,
         refresh_display=refresh_display,
+        refresh_output_list=refresh_output_list,
         set_fast_text=lambda text: lbl_fast.config(text=text),
         set_slow_text=lambda text: lbl_slow.config(text=text),
         get_profiles_dir=lambda: profiles_dir,
