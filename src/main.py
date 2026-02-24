@@ -332,9 +332,7 @@ def main() -> None:
     log.kv("hud_width_px", hud_width_px)
 
     # Output Pfad
-    debug_dir = project_root / "output" / "debug"
-    temp_split_video = debug_dir / "slow_fast_split.mp4"
-    out_video = temp_split_video
+    out_video = project_root / "output" / "video" / "slow_fast_split.mp4"
     try:
         ov = (ui.get("out_video") or "").strip()
         if ov:
@@ -342,11 +340,6 @@ def main() -> None:
     except Exception:
         pass
     log.kv("out_video", str(out_video))
-    cleanup_temp_split_video = False
-    try:
-        cleanup_temp_split_video = str(out_video.resolve()).lower() == str(temp_split_video.resolve()).lower()
-    except Exception:
-        cleanup_temp_split_video = False
 
     # Videos: bevorzugt aus UI, sonst aus input/video + Matching
     slow_video = None
@@ -893,13 +886,6 @@ def main() -> None:
             log_file=log.log_file,
         )
     log.msg("render done")
-    if cleanup_temp_split_video:
-        try:
-            if out_video.exists():
-                out_video.unlink()
-                log.kv("cleanup_temp_split_video", str(out_video))
-        except Exception as e:
-            log.kv("cleanup_temp_split_video_error", str(e))
 
 if __name__ == "__main__":
     main()

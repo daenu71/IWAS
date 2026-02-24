@@ -383,6 +383,29 @@ class Controller:
                     close()
                     cut_zero_segments_fallback = bool(result.get("cut_zero_segments_fallback"))
                     out_ok = out_path.exists() and out_path.stat().st_size > 0
+                    if out_ok:
+                        try:
+                            temp_split_src = project_root_local / "output" / "video" / "slow_fast_split.mp4"
+                            if temp_split_src.exists():
+                                debug_dir = project_root_local / "output" / "debug"
+                                debug_dir.mkdir(parents=True, exist_ok=True)
+                                debug_temp = debug_dir / temp_split_src.name
+                                try:
+                                    if debug_temp.exists():
+                                        debug_temp.unlink()
+                                except Exception:
+                                    pass
+                                try:
+                                    temp_split_src.replace(debug_temp)
+                                except Exception:
+                                    pass
+                                try:
+                                    if debug_temp.exists():
+                                        debug_temp.unlink()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                     if requested_video_mode == "cut" and cut_zero_segments_fallback and out_ok:
                         self.ui.set_status("Cut: 0 segments -> rendered full")
                     elif out_ok:

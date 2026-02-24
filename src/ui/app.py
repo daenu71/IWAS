@@ -1245,7 +1245,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     left_column.rowconfigure(2, weight=1)
 
     left_top_files_frame.grid(row=0, column=0, columnspan=2, sticky="new")
-    left_output_frame.grid(row=1, column=0, sticky="new", pady=(10, 0))
+    left_output_frame.grid(row=1, column=0, columnspan=2, sticky="new", pady=(10, 0))
     left_scroll_settings_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
     left_scroll_settings_frame.columnconfigure(0, weight=1)
     left_scroll_settings_frame.rowconfigure(0, weight=1)
