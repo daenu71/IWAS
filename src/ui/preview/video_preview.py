@@ -154,6 +154,19 @@ class VideoPreviewController:
             )
 
         for hw_name, hw_args in (
+            (
+                "h264_mf",
+                [
+                    "-c:v",
+                    "h264_mf",
+                    "-rate_control",
+                    "quality",
+                    "-quality",
+                    "100",
+                    "-scenario",
+                    "archive",
+                ],
+            ),
             ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p6", "-cq:v", "16"]),
             ("h264_qsv", ["-c:v", "h264_qsv", "-global_quality", "18"]),
             (
@@ -171,19 +184,6 @@ class VideoPreviewController:
                     "16",
                     "-qp_b",
                     "18",
-                ],
-            ),
-            (
-                "h264_mf",
-                [
-                    "-c:v",
-                    "h264_mf",
-                    "-rate_control",
-                    "quality",
-                    "-quality",
-                    "100",
-                    "-scenario",
-                    "archive",
                 ],
             ),
         ):
@@ -1230,6 +1230,8 @@ class VideoPreviewController:
             ok = False
             used_encoder = ""
             err = ""
+            hybrid_attempted = False
+            hybrid_fail_reason = ""
 
             try:
                 frame_times, keyframes = self._probe_video_frames_for_hybrid_cut(dst_final)
@@ -1237,8 +1239,10 @@ class VideoPreviewController:
                 frame_times = []
                 keyframes = []
                 err = f"hybrid probe failed: {probe_err}"
+                hybrid_fail_reason = err
 
             if frame_times and keyframes:
+                hybrid_attempted = True
                 ok, used_encoder, hybrid_err = self._run_hybrid_exact_cut(
                     src=dst_final,
                     s=int(s),
@@ -1253,6 +1257,7 @@ class VideoPreviewController:
                     err = ""
                 elif hybrid_err:
                     err = hybrid_err
+                    hybrid_fail_reason = str(hybrid_err)
 
             if not ok:
                 ok, used_encoder, exact_err = self._run_ffmpeg_with_video_encode_fallback(
@@ -1297,6 +1302,11 @@ class VideoPreviewController:
             self._save_endframes(self.endframes_by_name)
 
             cut_success_msg = f"Video: Cut and replaced ({used_mode}:{used_encoder})"
+            if used_mode == "exact" and hybrid_fail_reason:
+                short_reason = hybrid_fail_reason.strip()
+                if len(short_reason) > 120:
+                    short_reason = short_reason[:117] + "..."
+                cut_success_msg = f"{cut_success_msg} [hybrid->exact: {short_reason}]"
             try:
                 set_cut_progress(100.0)
             except Exception:
