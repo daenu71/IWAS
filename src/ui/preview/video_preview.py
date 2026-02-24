@@ -302,17 +302,22 @@ class VideoPreviewController:
         out_path: Path,
     ) -> tuple[bool, str]:
         self.safe_unlink(out_path)
+        cmd = [resolve_ffmpeg_bin(), "-hide_banner", "-nostats", "-loglevel", "error", *args, str(out_path)]
         try:
-            p = self._run_process_with_ui_pump(
-                [resolve_ffmpeg_bin(), "-hide_banner", "-nostats", "-loglevel", "error", *args, str(out_path)]
-            )
+            p = self._run_process_with_ui_pump(cmd)
         except Exception as e:
+            self._cut_log(f"ffmpeg once start failed out={out_path.name}: {e}")
             return False, str(e)
 
         if p.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
             return True, ""
 
         err_txt = (p.stderr or p.stdout or "").strip()
+        if err_txt:
+            tail = " | ".join([ln.strip() for ln in err_txt.splitlines() if ln.strip()][-3:])
+            self._cut_log(f"ffmpeg once failed out={out_path.name} rc={p.returncode} err={tail}")
+        else:
+            self._cut_log(f"ffmpeg once failed out={out_path.name} rc={p.returncode} (no stderr)")
         if err_txt:
             lines = [ln.strip() for ln in err_txt.splitlines() if ln.strip()]
             if lines:
@@ -470,12 +475,18 @@ class VideoPreviewController:
         try:
             p = self._run_process_with_ui_pump(cmd, stdout_line_cb=progress_line_cb)
         except Exception as e:
+            self._cut_log(f"ffmpeg encode start failed out={out_path.name}: {e}")
             return False, str(e)
 
         if p.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
             return True, ""
 
         err_txt = (p.stderr or p.stdout or "").strip()
+        if err_txt:
+            tail = " | ".join([ln.strip() for ln in err_txt.splitlines() if ln.strip()][-3:])
+            self._cut_log(f"ffmpeg encode failed out={out_path.name} rc={p.returncode} err={tail}")
+        else:
+            self._cut_log(f"ffmpeg encode failed out={out_path.name} rc={p.returncode} (no stderr)")
         if err_txt:
             lines = [ln.strip() for ln in err_txt.splitlines() if ln.strip()]
             if lines:
@@ -636,10 +647,12 @@ class VideoPreviewController:
                         "-an",
                         "-c:v",
                         "copy",
-                        "-bsf:v",
-                        "h264_mp4toannexb",
                         "-f",
                         "mpegts",
+                        "-muxpreload",
+                        "0",
+                        "-muxdelay",
+                        "0",
                     ],
                     out_path=seg_mid,
                 )
