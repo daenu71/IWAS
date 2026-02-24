@@ -326,23 +326,31 @@ class VideoPreviewController:
         return False, f"ffmpeg rc={p.returncode}"
 
     def _ffmpeg_decode_check(self, *, src: Path, seek_sec: float, frames: int = 24) -> tuple[bool, str]:
+        seek_val = max(0.0, float(seek_sec))
         cmd = [
             resolve_ffmpeg_bin(),
             "-hide_banner",
             "-nostats",
             "-loglevel",
             "error",
-            "-ss",
-            f"{max(0.0, float(seek_sec)):.6f}",
-            "-i",
-            str(src),
-            "-frames:v",
-            str(max(1, int(frames))),
-            "-an",
-            "-f",
-            "null",
-            ("NUL" if os.name == "nt" else "/dev/null"),
+            # Avoid frame-thread decoder false negatives (observed as error -1145393733 / 0xBBBAADBB).
+            "-threads",
+            "1",
         ]
+        if seek_val > 1e-6:
+            cmd.extend(["-ss", f"{seek_val:.6f}"])
+        cmd.extend(
+            [
+                "-i",
+                str(src),
+                "-frames:v",
+                str(max(1, int(frames))),
+                "-an",
+                "-f",
+                "null",
+                ("NUL" if os.name == "nt" else "/dev/null"),
+            ]
+        )
         try:
             p = self._run_process_with_ui_pump(cmd)
         except Exception as e:
