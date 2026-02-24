@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import shutil
 
 
 SPEC_DIR = Path(globals().get("SPECPATH") or Path.cwd()).resolve()
@@ -61,6 +62,7 @@ a = Analysis(
     datas=[
         (str(PROJECT_ROOT / "assets"), "assets"),
         (str(PROJECT_ROOT / "config"), "config"),
+        (os.path.join(project_root, "THIRD_PARTY_LICENSES.md"), "."),
         *FFMPEG_LICENSES,
     ],
     hiddenimports=[],
@@ -97,3 +99,5 @@ coll = COLLECT(
     upx=False,
     name="iWAS",
 )
+
+shutil.copy2(os.path.join(project_root, "THIRD_PARTY_LICENSES.md"), str(Path(coll.name) / "THIRD_PARTY_LICENSES.md"))
