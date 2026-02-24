@@ -251,6 +251,7 @@ class VideoPreviewController:
                 )
 
             for hw_name, hw_args in (
+                ("hevc_nvenc", ["-c:v", "hevc_nvenc", "-preset", "p6", "-cq:v", "18"]),
                 (
                     "hevc_mf",
                     [
@@ -264,7 +265,6 @@ class VideoPreviewController:
                         "archive",
                     ],
                 ),
-                ("hevc_nvenc", ["-c:v", "hevc_nvenc", "-preset", "p6", "-cq:v", "18"]),
                 ("hevc_qsv", ["-c:v", "hevc_qsv", "-global_quality", "20"]),
                 (
                     "hevc_amf",
@@ -882,6 +882,7 @@ class VideoPreviewController:
         try:
             self._cut_log(f"hybrid codec path source={hybrid_codec}")
             for encoder_name, encoder_args in encoder_candidates:
+                t_attempt = time.perf_counter()
                 self._cut_log(f"hybrid encoder try={encoder_name}")
                 for p in (seg_left, seg_mid, seg_right, concat_txt, mux_out):
                     self.safe_unlink(p)
@@ -890,6 +891,7 @@ class VideoPreviewController:
                 mid_weight = (mid_dur_ts / total_duration) * 90.0
                 right_weight = (right_dur_ts / total_duration) * 90.0
 
+                t_stage = time.perf_counter()
                 ok_left, err_left = self._run_ffmpeg_with_single_video_encoder(
                     args_before_video_codec=[
                         "-y",
@@ -917,10 +919,13 @@ class VideoPreviewController:
                 )
                 if not ok_left:
                     last_error = err_left or f"{encoder_name}: left segment failed"
+                    self._cut_log(f"hybrid stage encoder={encoder_name} left_sec={time.perf_counter() - t_stage:.3f}")
                     self._cut_log(f"hybrid encoder={encoder_name} left failed: {last_error}")
                     continue
+                self._cut_log(f"hybrid stage encoder={encoder_name} left_sec={time.perf_counter() - t_stage:.3f}")
                 _set_abs_progress(left_weight)
 
+                t_stage = time.perf_counter()
                 ok_mid, err_mid = self._run_ffmpeg_once(
                     args=[
                         "-y",
@@ -946,10 +951,13 @@ class VideoPreviewController:
                 )
                 if not ok_mid:
                     last_error = err_mid or f"{encoder_name}: middle copy segment failed"
+                    self._cut_log(f"hybrid stage encoder={encoder_name} mid_copy_sec={time.perf_counter() - t_stage:.3f}")
                     self._cut_log(f"hybrid encoder={encoder_name} middle failed: {last_error}")
                     continue
+                self._cut_log(f"hybrid stage encoder={encoder_name} mid_copy_sec={time.perf_counter() - t_stage:.3f}")
                 _set_abs_progress(left_weight + mid_weight)
 
+                t_stage = time.perf_counter()
                 ok_right, err_right = self._run_ffmpeg_with_single_video_encoder(
                     args_before_video_codec=[
                         "-y",
@@ -981,11 +989,14 @@ class VideoPreviewController:
                 )
                 if not ok_right:
                     last_error = err_right or f"{encoder_name}: right segment failed"
+                    self._cut_log(f"hybrid stage encoder={encoder_name} right_sec={time.perf_counter() - t_stage:.3f}")
                     self._cut_log(f"hybrid encoder={encoder_name} right failed: {last_error}")
                     continue
+                self._cut_log(f"hybrid stage encoder={encoder_name} right_sec={time.perf_counter() - t_stage:.3f}")
                 _set_abs_progress(left_weight + mid_weight + right_weight)
 
                 try:
+                    t_stage = time.perf_counter()
                     concat_txt.write_text(
                         "\n".join(
                             [
@@ -1002,7 +1013,9 @@ class VideoPreviewController:
                     last_error = f"hybrid concat list failed: {e}"
                     self._cut_log(f"hybrid encoder={encoder_name} concat-list failed: {e}")
                     continue
+                self._cut_log(f"hybrid stage encoder={encoder_name} concat_list_sec={time.perf_counter() - t_stage:.3f}")
 
+                t_stage = time.perf_counter()
                 ok_mux, err_mux = self._run_ffmpeg_once(
                     args=[
                         "-y",
@@ -1026,9 +1039,12 @@ class VideoPreviewController:
                 )
                 if not ok_mux:
                     last_error = err_mux or f"{encoder_name}: concat failed"
+                    self._cut_log(f"hybrid stage encoder={encoder_name} concat_mux_sec={time.perf_counter() - t_stage:.3f}")
                     self._cut_log(f"hybrid encoder={encoder_name} concat failed: {last_error}")
                     continue
+                self._cut_log(f"hybrid stage encoder={encoder_name} concat_mux_sec={time.perf_counter() - t_stage:.3f}")
 
+                t_stage = time.perf_counter()
                 ok_decode, decode_err = self._validate_hybrid_output(
                     out_path=mux_out,
                     left_dur_ts=float(left_dur_ts),
@@ -1043,12 +1059,15 @@ class VideoPreviewController:
                 )
                 if not ok_decode:
                     last_error = decode_err or f"{encoder_name}: hybrid decode-check failed"
+                    self._cut_log(f"hybrid stage encoder={encoder_name} validate_sec={time.perf_counter() - t_stage:.3f}")
                     self._cut_log(f"hybrid encoder={encoder_name} decode-check failed: {last_error}")
                     continue
+                self._cut_log(f"hybrid stage encoder={encoder_name} validate_sec={time.perf_counter() - t_stage:.3f}")
 
                 self.safe_unlink(out_path)
                 mux_out.replace(out_path)
                 _set_abs_progress(100.0)
+                self._cut_log(f"hybrid encoder={encoder_name} total_sec={time.perf_counter() - t_attempt:.3f}")
                 self._cut_log(f"hybrid success encoder={encoder_name}")
                 return True, encoder_name, ""
 
@@ -1590,8 +1609,10 @@ class VideoPreviewController:
             src_video_codec = ""
 
             try:
+                t_probe_codec = time.perf_counter()
                 src_video_codec = self._probe_primary_video_codec_name(dst_final)
                 self._cut_log(f"hybrid source codec={src_video_codec}")
+                self._cut_log(f"hybrid timing codec_probe_sec={time.perf_counter() - t_probe_codec:.3f}")
             except Exception as codec_err:
                 self._cut_log(f"hybrid source codec probe failed: {codec_err}")
 
@@ -1605,7 +1626,9 @@ class VideoPreviewController:
                 self._cut_log(hybrid_fail_reason)
             else:
                 try:
+                    t_probe_frames = time.perf_counter()
                     frame_times, keyframes = self._probe_video_frames_for_hybrid_cut(dst_final)
+                    self._cut_log(f"hybrid timing frame_probe_sec={time.perf_counter() - t_probe_frames:.3f}")
                 except Exception as probe_err:
                     err = f"hybrid probe failed: {probe_err}"
                     hybrid_fail_reason = err
