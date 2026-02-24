@@ -821,6 +821,12 @@ class VideoPreviewController:
                     return cur + (cur - prev)
             return _frame_ts(idx_inclusive) + nominal_step
 
+        def _split_exact_seek(ts: float, *, preroll_sec: float = 2.0) -> tuple[float, float]:
+            target = max(0.0, float(ts))
+            pre = max(0.0, target - max(0.0, float(preroll_sec)))
+            post = max(0.0, target - pre)
+            return pre, post
+
         left_start_ts = _frame_ts(s)
         copy_start_ts = _frame_ts(copy_start_idx)
         copy_end_ts = _frame_ts(copy_end_idx)
@@ -890,15 +896,19 @@ class VideoPreviewController:
                 left_weight = (left_dur_ts / total_duration) * 90.0
                 mid_weight = (mid_dur_ts / total_duration) * 90.0
                 right_weight = (right_dur_ts / total_duration) * 90.0
+                left_pre_ss, left_post_ss = _split_exact_seek(left_start_ts)
+                right_pre_ss, right_post_ss = _split_exact_seek(right_start_ts)
 
                 t_stage = time.perf_counter()
                 ok_left, err_left = self._run_ffmpeg_with_single_video_encoder(
                     args_before_video_codec=[
                         "-y",
+                        "-ss",
+                        f"{left_pre_ss:.6f}",
                         "-i",
                         str(src),
                         "-ss",
-                        f"{left_start_ts:.6f}",
+                        f"{left_post_ss:.6f}",
                         "-map",
                         "0:v:0",
                         "-an",
@@ -961,10 +971,12 @@ class VideoPreviewController:
                 ok_right, err_right = self._run_ffmpeg_with_single_video_encoder(
                     args_before_video_codec=[
                         "-y",
+                        "-ss",
+                        f"{right_pre_ss:.6f}",
                         "-i",
                         str(src),
                         "-ss",
-                        f"{right_start_ts:.6f}",
+                        f"{right_post_ss:.6f}",
                         "-map",
                         "0:v:0",
                         "-an",
