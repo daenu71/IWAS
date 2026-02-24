@@ -232,6 +232,70 @@ class VideoPreviewController:
             deduped.append((name, args))
         return deduped
 
+    def _hybrid_edge_encode_candidates(self, *, src_video_codec: str) -> list[tuple[str, list[str]]]:
+        codec = str(src_video_codec or "").strip().lower()
+        if codec == "h264":
+            return self._exact_cut_encode_candidates()
+
+        ffmpeg_bin = resolve_ffmpeg_bin()
+        available = detect_available_encoders(ffmpeg_bin, cache=True)
+        candidates: list[tuple[str, list[str]]] = []
+
+        if codec == "hevc":
+            if ("libx265" in available) or (not available):
+                candidates.append(
+                    (
+                        "libx265",
+                        ["-c:v", "libx265", "-pix_fmt", "yuv420p", "-preset", "medium", "-crf", "20"],
+                    )
+                )
+
+            for hw_name, hw_args in (
+                (
+                    "hevc_mf",
+                    [
+                        "-c:v",
+                        "hevc_mf",
+                        "-rate_control",
+                        "quality",
+                        "-quality",
+                        "100",
+                        "-scenario",
+                        "archive",
+                    ],
+                ),
+                ("hevc_nvenc", ["-c:v", "hevc_nvenc", "-preset", "p6", "-cq:v", "18"]),
+                ("hevc_qsv", ["-c:v", "hevc_qsv", "-global_quality", "20"]),
+                (
+                    "hevc_amf",
+                    [
+                        "-c:v",
+                        "hevc_amf",
+                        "-quality",
+                        "quality",
+                        "-rc",
+                        "cqp",
+                        "-qp_i",
+                        "18",
+                        "-qp_p",
+                        "18",
+                        "-qp_b",
+                        "20",
+                    ],
+                ),
+            ):
+                if hw_name in available:
+                    candidates.append((hw_name, [*hw_args, "-pix_fmt", "yuv420p"]))
+
+        deduped: list[tuple[str, list[str]]] = []
+        seen: set[str] = set()
+        for name, args in candidates:
+            if name in seen:
+                continue
+            seen.add(name)
+            deduped.append((name, args))
+        return deduped
+
     def _run_ffmpeg_with_video_encode_fallback(
         self,
         *,
@@ -713,6 +777,7 @@ class VideoPreviewController:
         self,
         *,
         src: Path,
+        src_video_codec: str,
         s: int,
         e: int,
         frame_times: list[float],
@@ -806,14 +871,16 @@ class VideoPreviewController:
             except Exception:
                 pass
 
-        encoder_candidates = self._exact_cut_encode_candidates()
+        hybrid_codec = str(src_video_codec or "").strip().lower()
+        encoder_candidates = self._hybrid_edge_encode_candidates(src_video_codec=hybrid_codec)
         if not encoder_candidates:
-            return False, "", "no exact H.264 encoder available"
+            return False, "", f"no hybrid edge encoder available for codec={hybrid_codec or '?'}"
 
         last_error = ""
         self.safe_unlink(out_path)
 
         try:
+            self._cut_log(f"hybrid codec path source={hybrid_codec}")
             for encoder_name, encoder_args in encoder_candidates:
                 self._cut_log(f"hybrid encoder try={encoder_name}")
                 for p in (seg_left, seg_mid, seg_right, concat_txt, mux_out):
@@ -837,7 +904,7 @@ class VideoPreviewController:
                         str(int(left_count)),
                         "-f",
                         "mpegts",
-                        # Keep H.264 parameter sets available at TS segment boundaries for concat/remux.
+                        # Keep codec parameter sets available at TS segment boundaries for concat/remux.
                         "-bsf:v",
                         "dump_extra",
                         "-mpegts_flags",
@@ -897,7 +964,7 @@ class VideoPreviewController:
                         str(int(right_count)),
                         "-f",
                         "mpegts",
-                        # Keep H.264 parameter sets available at TS segment boundaries for concat/remux.
+                        # Keep codec parameter sets available at TS segment boundaries for concat/remux.
                         "-bsf:v",
                         "dump_extra",
                         "-mpegts_flags",
@@ -1530,8 +1597,11 @@ class VideoPreviewController:
 
             frame_times: list[float] = []
             keyframes: list[int] = []
-            if src_video_codec and src_video_codec != "h264":
-                hybrid_fail_reason = f"hybrid unsupported source codec: {src_video_codec} (current hybrid requires H.264 middle-copy)"
+            if src_video_codec and src_video_codec not in {"h264", "hevc"}:
+                hybrid_fail_reason = (
+                    f"hybrid unsupported source codec: {src_video_codec} "
+                    f"(current hybrid supports h264/hevc middle-copy)"
+                )
                 self._cut_log(hybrid_fail_reason)
             else:
                 try:
@@ -1545,6 +1615,7 @@ class VideoPreviewController:
                 hybrid_attempted = True
                 ok, used_encoder, hybrid_err = self._run_hybrid_exact_cut(
                     src=dst_final,
+                    src_video_codec=src_video_codec,
                     s=int(s),
                     e=int(e),
                     frame_times=frame_times,
