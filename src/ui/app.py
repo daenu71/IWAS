@@ -2956,6 +2956,26 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     output_rows_frame: ttk.Frame | None = None
     output_list_host: ScrollableContentHost | None = None
 
+    def _schedule_output_scroll_sync() -> None:
+        try:
+            if output_list_host is None:
+                return
+            output_list_host.update_idletasks()
+            output_list_host._sync_scroll_state()
+
+            def _sync_again() -> None:
+                try:
+                    if output_list_host is None:
+                        return
+                    output_list_host.update_idletasks()
+                    output_list_host._sync_scroll_state()
+                except Exception:
+                    pass
+
+            output_list_host.after_idle(_sync_again)
+        except Exception:
+            pass
+
     def _truncate_text_for_label(label: ttk.Label, text: str) -> str:
         try:
             font_value = label.cget("font")
@@ -3077,11 +3097,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
                 padx=2,
                 pady=2,
             )
-            try:
-                if output_list_host is not None:
-                    output_list_host.after_idle(output_list_host._sync_scroll_state)
-            except Exception:
-                pass
+            _schedule_output_scroll_sync()
             return
 
         for idx, path in enumerate(items):
@@ -3110,11 +3126,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
             btn_menu.bind("<Button-1>", lambda e, p=path: _show_output_item_menu(e, p), add="+")
 
-        try:
-            if output_list_host is not None:
-                output_list_host.after_idle(output_list_host._sync_scroll_state)
-        except Exception:
-            pass
+        _schedule_output_scroll_sync()
 
     def build_output_panel(parent: ttk.LabelFrame) -> None:
         nonlocal output_rows_frame, output_list_host
