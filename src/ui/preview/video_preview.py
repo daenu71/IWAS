@@ -8,6 +8,7 @@ import tkinter as tk
 
 import cv2
 from PIL import Image, ImageTk
+from core.encoders import detect_available_encoders
 from core.ffmpeg_tools import ffmpeg_exists as _ffmpeg_exists_bundled, resolve_ffmpeg_bin
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
@@ -75,12 +76,94 @@ class VideoPreviewController:
 
         self.scrub_is_dragging: bool = False
         self.last_render_ts: float = 0.0
+        self._video_encode_candidates_cache: list[tuple[str, list[str]]] | None = None
 
     def ffmpeg_exists(self) -> bool:
         try:
             return bool(_ffmpeg_exists_bundled())
         except Exception:
             return False
+
+    def _video_encode_candidates(self) -> list[tuple[str, list[str]]]:
+        if self._video_encode_candidates_cache is not None:
+            return list(self._video_encode_candidates_cache)
+
+        ffmpeg_bin = resolve_ffmpeg_bin()
+        available = detect_available_encoders(ffmpeg_bin, cache=True)
+
+        candidates: list[tuple[str, list[str]]] = []
+        if ("libx264" in available) or (not available):
+            candidates.append(
+                (
+                    "libx264",
+                    ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20"],
+                )
+            )
+        if "libopenh264" in available:
+            candidates.append(
+                (
+                    "libopenh264",
+                    ["-c:v", "libopenh264", "-pix_fmt", "yuv420p", "-b:v", "6M"],
+                )
+            )
+
+        # Native MPEG-4 is available in LGPL builds and keeps Cut/Proxy functional
+        # when libx264 is not bundled (e.g. LGPL FFmpeg package).
+        candidates.append(
+            (
+                "mpeg4",
+                ["-c:v", "mpeg4", "-pix_fmt", "yuv420p", "-q:v", "4"],
+            )
+        )
+
+        deduped: list[tuple[str, list[str]]] = []
+        seen: set[str] = set()
+        for name, args in candidates:
+            if name in seen:
+                continue
+            seen.add(name)
+            deduped.append((name, args))
+
+        self._video_encode_candidates_cache = list(deduped)
+        return list(deduped)
+
+    def _run_ffmpeg_with_video_encode_fallback(
+        self,
+        *,
+        args_before_video_codec: list[str],
+        out_path: Path,
+    ) -> tuple[bool, str, str]:
+        ffmpeg_bin = resolve_ffmpeg_bin()
+        last_error = ""
+
+        for encoder_name, encoder_args in self._video_encode_candidates():
+            self.safe_unlink(out_path)
+            cmd = [ffmpeg_bin, *args_before_video_codec, *encoder_args, str(out_path)]
+            try:
+                p = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    **windows_no_window_subprocess_kwargs(),
+                )
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+            if p.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                return True, encoder_name, ""
+
+            err_txt = (p.stderr or p.stdout or "").strip()
+            if err_txt:
+                lines = [ln.strip() for ln in err_txt.splitlines() if ln.strip()]
+                if lines:
+                    last_error = lines[-1]
+            if not last_error:
+                last_error = f"ffmpeg rc={p.returncode}"
+
+        self.safe_unlink(out_path)
+        return False, "", last_error
 
     def make_proxy_h264(self, src: Path) -> Path | None:
         if not self.ffmpeg_exists():
@@ -96,26 +179,15 @@ class VideoPreviewController:
             self.lbl_loaded.config(text=f"Video: Creating proxy… ({src.name})")
             self.root.update_idletasks()
 
-            cmd = [
-                resolve_ffmpeg_bin(),
-                "-y",
-                "-i", str(src),
-                "-an",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-preset", "veryfast",
-                "-crf", "20",
-                str(dst),
-            ]
-            subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                **windows_no_window_subprocess_kwargs(),
+            ok, _, _ = self._run_ffmpeg_with_video_encode_fallback(
+                args_before_video_codec=[
+                    "-y",
+                    "-i", str(src),
+                    "-an",
+                ],
+                out_path=dst,
             )
-
-            if dst.exists() and dst.stat().st_size > 0:
+            if ok and dst.exists() and dst.stat().st_size > 0:
                 return dst
         except Exception:
             pass
@@ -417,33 +489,27 @@ class VideoPreviewController:
         progress_win, progress_close = self._show_progress("Cutting", "Video is being cut… Please wait.")
         self.root.update()
 
+        cut_ok = False
+        cut_fail_msg = "Video: Cut failed"
         try:
             self.lbl_loaded.config(text="Video: Cutting…")
             self.root.update_idletasks()
 
-            cmd = [
-                resolve_ffmpeg_bin(),
-                "-y",
-                "-ss", f"{start_sec:.6f}",
-                "-i", str(dst_final),
-                "-t", f"{dur_sec:.6f}",
-                "-an",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-preset", "veryfast",
-                "-crf", "20",
-                str(tmp),
-            ]
-            subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                **windows_no_window_subprocess_kwargs(),
+            ok, used_encoder, err = self._run_ffmpeg_with_video_encode_fallback(
+                args_before_video_codec=[
+                    "-y",
+                    "-ss", f"{start_sec:.6f}",
+                    "-i", str(dst_final),
+                    "-t", f"{dur_sec:.6f}",
+                    "-an",
+                ],
+                out_path=tmp,
             )
 
-            if not (tmp.exists() and tmp.stat().st_size > 0):
-                self.lbl_loaded.config(text="Video: Cut failed")
+            if not ok:
+                if err:
+                    cut_fail_msg = f"Video: Cut failed ({err})"
+                self.lbl_loaded.config(text=cut_fail_msg)
                 self.safe_unlink(tmp)
                 self._sync_from_folders_if_needed_ui(force=True)
                 return
@@ -457,15 +523,19 @@ class VideoPreviewController:
             self.endframes_by_name[dst_final.name] = self.clamp_frame(int(dur_sec * max(1.0, self.fps)))
             self._save_endframes(self.endframes_by_name)
 
-            self.lbl_loaded.config(text="Video: Cut and replaced")
-        except Exception:
-            self.lbl_loaded.config(text="Video: Cut failed")
+            self.lbl_loaded.config(text=f"Video: Cut and replaced ({used_encoder})")
+            cut_ok = True
+        except Exception as e:
+            cut_fail_msg = f"Video: Cut failed ({e})"
+            self.lbl_loaded.config(text=cut_fail_msg)
             self.safe_unlink(tmp)
         finally:
             progress_close()
 
         self._sync_from_folders_if_needed_ui(force=True)
         self.start_crop_for_video(dst_final)
+        if not cut_ok:
+            self.lbl_loaded.config(text=cut_fail_msg)
 
     def start_crop_for_video(self, video_path: Path) -> None:
         self.close_preview_video()
