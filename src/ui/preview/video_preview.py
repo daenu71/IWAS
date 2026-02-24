@@ -558,7 +558,149 @@ class VideoPreviewController:
             self._cut_log(f"hybrid decode-check ok probe={label} t={ts:.3f}s")
         return True, ""
 
+    def _probe_video_packets_for_hybrid_cut(self, src: Path) -> tuple[list[float], list[int]]:
+        self._cut_log(f"ffprobe packets start file={src.name}")
+        try:
+            p = subprocess.run(
+                [
+                    resolve_ffprobe_bin(),
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_packets",
+                    "-show_entries",
+                    "packet=flags,pts_time,dts_time,duration_time",
+                    "-of",
+                    "json",
+                    str(src),
+                ],
+                capture_output=True,
+                text=True,
+                **windows_no_window_subprocess_kwargs(),
+            )
+        except Exception as e:
+            raise RuntimeError(f"ffprobe packet start failed: {e}") from e
+
+        if p.returncode != 0:
+            err = (p.stderr or p.stdout or "").strip()
+            if err:
+                lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+                if lines:
+                    raise RuntimeError(lines[-1])
+            raise RuntimeError(f"ffprobe packet rc={p.returncode}")
+
+        try:
+            payload = json.loads(p.stdout or "{}")
+        except Exception as e:
+            raise RuntimeError(f"ffprobe packet JSON parse failed: {e}") from e
+
+        raw_packets = payload.get("packets")
+        if not isinstance(raw_packets, list) or len(raw_packets) == 0:
+            raise RuntimeError("ffprobe returned no video packets")
+
+        def _parse_opt_float(val: object) -> float | None:
+            if val in (None, "N/A"):
+                return None
+            try:
+                return float(val)
+            except Exception:
+                return None
+
+        packet_rows: list[dict[str, object]] = []
+        pts_present = 0
+        dts_present = 0
+        nominal_step = 1.0 / max(1.0, float(self.fps))
+        for i, item in enumerate(raw_packets):
+            if not isinstance(item, dict):
+                continue
+            pts_ts = _parse_opt_float(item.get("pts_time"))
+            dts_ts = _parse_opt_float(item.get("dts_time"))
+            dur_ts = _parse_opt_float(item.get("duration_time"))
+            if pts_ts is not None:
+                pts_present += 1
+            if dts_ts is not None:
+                dts_present += 1
+            flags = str(item.get("flags") or "")
+            packet_rows.append(
+                {
+                    "orig_idx": int(i),
+                    "pts_ts": pts_ts,
+                    "dts_ts": dts_ts,
+                    "dur_ts": dur_ts,
+                    "is_key": ("K" in flags),
+                }
+            )
+
+        if not packet_rows:
+            raise RuntimeError("ffprobe returned no usable video packets")
+
+        # For H.264/HEVC with B-frames, packet order is decode order. We require near-complete
+        # PTS coverage so we can reconstruct presentation order exactly; otherwise fall back.
+        if pts_present < len(packet_rows):
+            raise RuntimeError(
+                f"packet probe missing pts_time ({pts_present}/{len(packet_rows)}); requires frame probe fallback"
+            )
+
+        ordered_rows = sorted(
+            packet_rows,
+            key=lambda row: (
+                float(row["pts_ts"]) if isinstance(row.get("pts_ts"), float) else float("inf"),
+                int(row["orig_idx"]) if isinstance(row.get("orig_idx"), int) else 0,
+            ),
+        )
+        reordered = any(
+            int(row.get("orig_idx", -1)) != idx for idx, row in enumerate(ordered_rows)
+        )
+
+        frame_times: list[float] = []
+        keyframes: list[int] = []
+        last_ts = -1.0
+        for row in ordered_rows:
+            ts = row.get("pts_ts")
+            if not isinstance(ts, float):
+                ts = None
+            if ts is None:
+                dur = row.get("dur_ts")
+                dur_f = float(dur) if isinstance(dur, float) else None
+                if frame_times:
+                    step = dur_f if (dur_f is not None and dur_f > 0.0) else nominal_step
+                    ts = max(last_ts + max(1e-6, step), 0.0)
+                else:
+                    ts = 0.0
+            if ts <= last_ts:
+                ts = last_ts + max(1e-6, nominal_step)
+            frame_times.append(float(ts))
+            last_ts = float(ts)
+            if bool(row.get("is_key")):
+                keyframes.append(len(frame_times) - 1)
+
+        if not frame_times:
+            raise RuntimeError("ffprobe packet probe returned no usable frame timestamps")
+        if 0 not in keyframes:
+            keyframes.insert(0, 0)
+
+        expected_total = int(self.total_frames) if int(self.total_frames or 0) > 0 else 0
+        if expected_total > 0:
+            tolerance = max(3, int(round(expected_total * 0.01)))
+            if abs(len(frame_times) - expected_total) > tolerance:
+                raise RuntimeError(
+                    f"packet probe count mismatch packets={len(frame_times)} expected~={expected_total}"
+                )
+
+        self._cut_log(
+            f"ffprobe packets ok file={src.name} frames={len(frame_times)} "
+            f"keyframes={len(keyframes)} pts={pts_present}/{len(packet_rows)} "
+            f"dts={dts_present}/{len(packet_rows)} reordered={'yes' if reordered else 'no'}"
+        )
+        return frame_times, sorted(set(int(i) for i in keyframes if 0 <= int(i) < len(frame_times)))
+
     def _probe_video_frames_for_hybrid_cut(self, src: Path) -> tuple[list[float], list[int]]:
+        try:
+            return self._probe_video_packets_for_hybrid_cut(src)
+        except Exception as packet_err:
+            self._cut_log(f"ffprobe packet-probe fallback-to-frames reason={packet_err}")
+
         self._cut_log(f"ffprobe frames start file={src.name}")
         try:
             p = subprocess.run(
