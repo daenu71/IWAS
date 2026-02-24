@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import queue
 import shutil
@@ -323,6 +324,53 @@ class VideoPreviewController:
             if lines:
                 return False, lines[-1]
         return False, f"ffmpeg rc={p.returncode}"
+
+    def _ffmpeg_decode_check(self, *, src: Path, seek_sec: float, frames: int = 24) -> tuple[bool, str]:
+        cmd = [
+            resolve_ffmpeg_bin(),
+            "-hide_banner",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{max(0.0, float(seek_sec)):.6f}",
+            "-i",
+            str(src),
+            "-frames:v",
+            str(max(1, int(frames))),
+            "-an",
+            "-f",
+            "null",
+            ("NUL" if os.name == "nt" else "/dev/null"),
+        ]
+        try:
+            p = self._run_process_with_ui_pump(cmd)
+        except Exception as e:
+            return False, f"decode check start failed: {e}"
+        if p.returncode == 0:
+            return True, ""
+        err_txt = (p.stderr or p.stdout or "").strip()
+        if err_txt:
+            lines = [ln.strip() for ln in err_txt.splitlines() if ln.strip()]
+            if lines:
+                return False, lines[-1]
+        return False, f"ffmpeg rc={p.returncode}"
+
+    def _validate_hybrid_output(self, *, out_path: Path, left_dur_ts: float, mid_dur_ts: float, right_dur_ts: float) -> tuple[bool, str]:
+        probes: list[tuple[str, float]] = [("start", 0.0)]
+        if mid_dur_ts > 0.0:
+            probes.append(("mid-join", max(0.0, float(left_dur_ts) + 0.02)))
+            probes.append(("mid-body", max(0.0, float(left_dur_ts) + min(1.0, max(0.02, float(mid_dur_ts) * 0.25)))))
+        if right_dur_ts > 0.0:
+            probes.append(("right-join", max(0.0, float(left_dur_ts + mid_dur_ts) + 0.02)))
+
+        for label, ts in probes:
+            ok, err = self._ffmpeg_decode_check(src=out_path, seek_sec=ts, frames=24)
+            if not ok:
+                self._cut_log(f"hybrid decode-check failed probe={label} t={ts:.3f}s: {err}")
+                return False, f"decode-check {label} failed: {err}"
+            self._cut_log(f"hybrid decode-check ok probe={label} t={ts:.3f}s")
+        return True, ""
 
     def _probe_video_frames_for_hybrid_cut(self, src: Path) -> tuple[list[float], list[int]]:
         self._cut_log(f"ffprobe frames start file={src.name}")
@@ -734,6 +782,17 @@ class VideoPreviewController:
                 if not ok_mux:
                     last_error = err_mux or f"{encoder_name}: concat failed"
                     self._cut_log(f"hybrid encoder={encoder_name} concat failed: {last_error}")
+                    continue
+
+                ok_decode, decode_err = self._validate_hybrid_output(
+                    out_path=mux_out,
+                    left_dur_ts=float(left_dur_ts),
+                    mid_dur_ts=float(mid_dur_ts),
+                    right_dur_ts=float(right_dur_ts),
+                )
+                if not ok_decode:
+                    last_error = decode_err or f"{encoder_name}: hybrid decode-check failed"
+                    self._cut_log(f"hybrid encoder={encoder_name} decode-check failed: {last_error}")
                     continue
 
                 self.safe_unlink(out_path)
