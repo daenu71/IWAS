@@ -228,15 +228,18 @@ class VideoPreviewController:
         candidates = list(encoder_candidates) if encoder_candidates is not None else self._video_encode_candidates()
         for encoder_name, encoder_args in candidates:
             self.safe_unlink(out_path)
-            cmd = [ffmpeg_bin, *args_before_video_codec, *encoder_args, str(out_path)]
+            cmd = [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-nostats",
+                "-loglevel",
+                "error",
+                *args_before_video_codec,
+                *encoder_args,
+                str(out_path),
+            ]
             try:
-                p = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    **windows_no_window_subprocess_kwargs(),
-                )
+                p = self._run_process_with_ui_pump(cmd)
             except Exception as e:
                 last_error = str(e)
                 continue
@@ -263,12 +266,8 @@ class VideoPreviewController:
     ) -> tuple[bool, str]:
         self.safe_unlink(out_path)
         try:
-            p = subprocess.run(
-                [resolve_ffmpeg_bin(), *args, str(out_path)],
-                capture_output=True,
-                text=True,
-                check=False,
-                **windows_no_window_subprocess_kwargs(),
+            p = self._run_process_with_ui_pump(
+                [resolve_ffmpeg_bin(), "-hide_banner", "-nostats", "-loglevel", "error", *args, str(out_path)]
             )
         except Exception as e:
             return False, str(e)
@@ -282,6 +281,23 @@ class VideoPreviewController:
             if lines:
                 return False, lines[-1]
         return False, f"ffmpeg rc={p.returncode}"
+
+    def _run_process_with_ui_pump(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **windows_no_window_subprocess_kwargs(),
+        )
+        while proc.poll() is None:
+            try:
+                self.root.update()
+            except Exception:
+                pass
+            time.sleep(0.03)
+        stdout_txt, stderr_txt = proc.communicate()
+        return subprocess.CompletedProcess(cmd, int(proc.returncode or 0), stdout_txt or "", stderr_txt or "")
 
     def make_proxy_h264(self, src: Path) -> Path | None:
         if not self.ffmpeg_exists():
