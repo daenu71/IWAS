@@ -15,6 +15,7 @@ import cv2
 from PIL import Image, ImageTk
 from core.encoders import detect_available_encoders
 from core.ffmpeg_tools import ffmpeg_exists as _ffmpeg_exists_bundled, resolve_ffmpeg_bin, resolve_ffprobe_bin
+from core.log import make_logger
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
 
@@ -82,12 +83,22 @@ class VideoPreviewController:
         self.scrub_is_dragging: bool = False
         self.last_render_ts: float = 0.0
         self._video_encode_candidates_cache: list[tuple[str, list[str]]] | None = None
+        self._preview_cut_logger = None
 
     def ffmpeg_exists(self) -> bool:
         try:
             return bool(_ffmpeg_exists_bundled())
         except Exception:
             return False
+
+    def _cut_log(self, text: str) -> None:
+        try:
+            if self._preview_cut_logger is None:
+                project_root = self.input_video_dir.parent.parent
+                self._preview_cut_logger = make_logger(project_root, name="preview_cut")
+            self._preview_cut_logger.msg(f"[preview-cut] {text}")
+        except Exception:
+            pass
 
     def _video_encode_candidates(self) -> list[tuple[str, list[str]]]:
         if self._video_encode_candidates_cache is not None:
@@ -309,6 +320,7 @@ class VideoPreviewController:
         return False, f"ffmpeg rc={p.returncode}"
 
     def _probe_video_frames_for_hybrid_cut(self, src: Path) -> tuple[list[float], list[int]]:
+        self._cut_log(f"ffprobe frames start file={src.name}")
         try:
             p = subprocess.run(
                 [
@@ -392,6 +404,7 @@ class VideoPreviewController:
             raise RuntimeError("ffprobe returned no usable frame timestamps")
         if 0 not in keyframes:
             keyframes.insert(0, 0)
+        self._cut_log(f"ffprobe frames ok file={src.name} frames={len(frame_times)} keyframes={len(keyframes)}")
         return frame_times, sorted(set(int(i) for i in keyframes if 0 <= int(i) < len(frame_times)))
 
     def _hybrid_cut_copy_partition(self, *, s: int, e: int, keyframes: list[int]) -> tuple[int, int] | None:
@@ -527,6 +540,13 @@ class VideoPreviewController:
         if left_dur_ts <= 0.0 or mid_dur_ts <= 0.0 or right_dur_ts <= 0.0:
             return False, "", "hybrid_nonpositive_duration"
 
+        self._cut_log(
+            "hybrid partition "
+            f"frames={s}..{e} copy={copy_start_idx}..{copy_end_idx} "
+            f"counts=L{left_count}/M{mid_count}/R{right_count} "
+            f"dur=L{left_dur_ts:.3f}s/M{mid_dur_ts:.3f}s/R{right_dur_ts:.3f}s"
+        )
+
         work_dir = self.input_video_dir / f"{src.stem}__cut_hybrid_tmp"
         concat_txt = work_dir / "concat.txt"
         seg_left = work_dir / "seg_left.ts"
@@ -568,6 +588,7 @@ class VideoPreviewController:
 
         try:
             for encoder_name, encoder_args in encoder_candidates:
+                self._cut_log(f"hybrid encoder try={encoder_name}")
                 for p in (seg_left, seg_mid, seg_right, concat_txt, mux_out):
                     self.safe_unlink(p)
 
@@ -597,6 +618,7 @@ class VideoPreviewController:
                 )
                 if not ok_left:
                     last_error = err_left or f"{encoder_name}: left segment failed"
+                    self._cut_log(f"hybrid encoder={encoder_name} left failed: {last_error}")
                     continue
                 _set_abs_progress(left_weight)
 
@@ -623,6 +645,7 @@ class VideoPreviewController:
                 )
                 if not ok_mid:
                     last_error = err_mid or f"{encoder_name}: middle copy segment failed"
+                    self._cut_log(f"hybrid encoder={encoder_name} middle failed: {last_error}")
                     continue
                 _set_abs_progress(left_weight + mid_weight)
 
@@ -652,6 +675,7 @@ class VideoPreviewController:
                 )
                 if not ok_right:
                     last_error = err_right or f"{encoder_name}: right segment failed"
+                    self._cut_log(f"hybrid encoder={encoder_name} right failed: {last_error}")
                     continue
                 _set_abs_progress(left_weight + mid_weight + right_weight)
 
@@ -670,6 +694,7 @@ class VideoPreviewController:
                     )
                 except Exception as e:
                     last_error = f"hybrid concat list failed: {e}"
+                    self._cut_log(f"hybrid encoder={encoder_name} concat-list failed: {e}")
                     continue
 
                 ok_mux, err_mux = self._run_ffmpeg_once(
@@ -695,15 +720,18 @@ class VideoPreviewController:
                 )
                 if not ok_mux:
                     last_error = err_mux or f"{encoder_name}: concat failed"
+                    self._cut_log(f"hybrid encoder={encoder_name} concat failed: {last_error}")
                     continue
 
                 self.safe_unlink(out_path)
                 mux_out.replace(out_path)
                 _set_abs_progress(100.0)
+                self._cut_log(f"hybrid success encoder={encoder_name}")
                 return True, encoder_name, ""
 
             if not last_error:
                 last_error = "hybrid failed"
+            self._cut_log(f"hybrid failed all encoders: {last_error}")
             return False, "", last_error
         finally:
             for p in (seg_left, seg_mid, seg_right, concat_txt, mux_out):
@@ -1218,6 +1246,10 @@ class VideoPreviewController:
         cut_success_msg = ""
         cut_fail_msg = "Video: Cut failed"
         try:
+            self._cut_log(
+                f"cut start file={dst_final.name} frames={s}..{e} fps={self.fps:.6f} "
+                f"start_s={start_sec:.6f} dur_s={dur_sec:.6f}"
+            )
             self.lbl_loaded.config(text="Video: Cutting…")
             self.root.update_idletasks()
             try:
@@ -1240,6 +1272,7 @@ class VideoPreviewController:
                 keyframes = []
                 err = f"hybrid probe failed: {probe_err}"
                 hybrid_fail_reason = err
+                self._cut_log(err)
 
             if frame_times and keyframes:
                 hybrid_attempted = True
@@ -1255,11 +1288,14 @@ class VideoPreviewController:
                 if ok:
                     used_mode = "hybrid"
                     err = ""
+                    self._cut_log(f"cut mode=hybrid encoder={used_encoder}")
                 elif hybrid_err:
                     err = hybrid_err
                     hybrid_fail_reason = str(hybrid_err)
+                    self._cut_log(f"hybrid->exact fallback reason: {hybrid_fail_reason}")
 
             if not ok:
+                self._cut_log("exact fallback start")
                 ok, used_encoder, exact_err = self._run_ffmpeg_with_video_encode_fallback(
                     args_before_video_codec=[
                         "-y",
@@ -1279,8 +1315,10 @@ class VideoPreviewController:
                 if ok:
                     used_mode = "exact"
                     err = ""
+                    self._cut_log(f"cut mode=exact encoder={used_encoder}")
                 elif exact_err:
                     err = exact_err
+                    self._cut_log(f"exact failed: {exact_err}")
 
             if not ok:
                 if err:
@@ -1290,6 +1328,7 @@ class VideoPreviewController:
                 self.lbl_loaded.config(text=cut_fail_msg)
                 self.safe_unlink(tmp)
                 self._sync_from_folders_if_needed_ui(force=True)
+                self._cut_log(f"cut failed {cut_fail_msg}")
                 return
 
             self.safe_unlink(dst_final)
@@ -1307,6 +1346,7 @@ class VideoPreviewController:
                 if len(short_reason) > 120:
                     short_reason = short_reason[:117] + "..."
                 cut_success_msg = f"{cut_success_msg} [hybrid->exact: {short_reason}]"
+            self._cut_log(f"cut success {cut_success_msg}")
             try:
                 set_cut_progress(100.0)
             except Exception:
@@ -1315,6 +1355,7 @@ class VideoPreviewController:
             cut_ok = True
         except Exception as e:
             cut_fail_msg = f"Video: Cut failed ({e})"
+            self._cut_log(f"cut exception: {e}")
             self.lbl_loaded.config(text=cut_fail_msg)
             self.safe_unlink(tmp)
         finally:
