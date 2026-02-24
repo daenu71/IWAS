@@ -233,12 +233,13 @@ class Controller:
             multiple=True,
             title="Select Files (2 videos + optional CSV)",
             filetypes=[
-                ("Videos and CSV", "*.mp4 *.csv"),
-                ("Video", "*.mp4"),
+                ("Videos and CSV", "*.mp4 *.mkv *.mov *.avi *.csv"),
+                ("Video", "*.mp4 *.mkv *.mov *.avi"),
                 ("CSV", "*.csv"),
             ],
         )
 
+        current_videos, current_csvs = self.ui.get_selected_files()
         status, selected_videos, selected_csvs = self.files_service.select_files(
             paths=paths,
             input_video_dir=self.ui.get_input_video_dir(),
@@ -247,26 +248,30 @@ class Controller:
         if status == "empty":
             return
 
-        current_videos, _current_csvs = self.ui.get_selected_files()
-        if status == "csv_only":
-            self.ui.set_selected_files(list(current_videos), list(selected_csvs[:2]))
-            if self.ui.refresh_display is not None:
-                self.ui.refresh_display()
-            return
-
-        if status == "need_two_videos":
-            self.ui.set_selected_files([], [])
-            if self.ui.refresh_display is not None:
-                self.ui.refresh_display()
+        if status == "too_many_videos":
             if self.ui.set_fast_text is not None:
-                self.ui.set_fast_text("Fast: Please select exactly 2 videos")
+                self.ui.set_fast_text("Fast: Please select max. 2 videos")
             if self.ui.set_slow_text is not None:
-                self.ui.set_slow_text("Slow: â€“")
-            if self.ui.close_preview_video is not None:
-                self.ui.close_preview_video()
+                self.ui.set_slow_text("Slow: -")
             return
 
-        self.ui.set_selected_files(list(selected_videos[:2]), list(selected_csvs[:2]))
+        merged_videos = list(current_videos[:2])
+        if selected_videos:
+            if len(selected_videos) >= 2:
+                merged_videos = list(selected_videos[:2])
+            else:
+                picked = selected_videos[0]
+                keep = [p for p in merged_videos if p != picked]
+                if len(keep) >= 2:
+                    merged_videos = [keep[0], picked]
+                else:
+                    merged_videos = (keep + [picked])[:2]
+
+        merged_csvs = list(current_csvs[:2])
+        if selected_csvs:
+            merged_csvs = list(selected_csvs[:2])
+
+        self.ui.set_selected_files(merged_videos, merged_csvs)
         if self.ui.refresh_display is not None:
             self.ui.refresh_display()
 
@@ -338,7 +343,7 @@ class Controller:
             return
         _win, close, set_text, set_progress, is_cancelled = self.ui.show_progress_with_cancel(
             "Generate Video",
-            "Starting main.pyâ€¦",
+            "Starting main.py...",
         )
         if self.ui.update_ui is not None:
             try:

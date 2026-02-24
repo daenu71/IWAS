@@ -5,6 +5,7 @@ from typing import Callable, Sequence
 
 
 FolderScanSignature = tuple[tuple[str, ...], tuple[str, ...]]
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi"}
 
 
 def copy_to_dir(src: Path, dst_dir: Path) -> Path:
@@ -31,8 +32,7 @@ def open_folder(path: Path) -> None:
 
 
 def scan_folders_signature(input_video_dir: Path, input_csv_dir: Path) -> FolderScanSignature:
-    vid_exts = {".mp4", ".mkv", ".mov", ".avi"}
-    vids = tuple(sorted([p.name for p in input_video_dir.iterdir() if p.is_file() and p.suffix.lower() in vid_exts]))
+    vids = tuple(sorted([p.name for p in input_video_dir.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS]))
     cs = tuple(sorted([p.name for p in input_csv_dir.glob("*.csv") if p.is_file()]))
     return vids, cs
 
@@ -86,19 +86,19 @@ def select_files(paths: Sequence[str], input_video_dir: Path, input_csv_dir: Pat
     for p in paths:
         pp = Path(p)
         suf = pp.suffix.lower()
-        if suf == ".mp4":
+        if suf in VIDEO_EXTS:
             selected_videos.append(pp)
         elif suf == ".csv":
             selected_csvs.append(pp)
+
+    if len(selected_videos) > 2:
+        return "too_many_videos", [], []
 
     if len(selected_videos) == 0 and len(selected_csvs) > 0:
         copied_csvs: list[Path] = []
         for c in selected_csvs[:2]:
             copied_csvs.append(copy_to_dir(c, input_csv_dir))
         return "csv_only", [], copied_csvs[:2]
-
-    if len(selected_videos) != 2:
-        return "need_two_videos", [], []
 
     copied_videos: list[Path] = []
     for v in selected_videos:

@@ -572,7 +572,7 @@ def start_render(
         while True:
             if is_cancelled is not None and is_cancelled():
                 cancelled = True
-                _emit_progress(on_progress, max(0.0, last_pct), "Cancelingâ€¦")
+                _emit_progress(on_progress, max(0.0, last_pct), "Canceling...")
                 try:
                     if p is not None and p.pid:
                         subprocess.run(

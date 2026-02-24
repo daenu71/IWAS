@@ -872,8 +872,8 @@ def shorten_prefix(text: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
     if max_len <= 1:
-        return "â€¦"
-    return s[: max_len - 1] + "â€¦"
+        return "..."
+    return s[: max_len - 1] + "..."
 
 
 class HoverTooltip:
@@ -1562,7 +1562,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     QUALITYS = ["Original", "2160p", "1440p", "1080p", "720p", "480p"]
     out_quality_var = tk.StringVar(value=sel.get("quality", "Original"))
 
-    lbl_in_res = ttk.Label(frame_settings, text="Input Resolution: â€“")
+    lbl_in_res = ttk.Label(frame_settings, text="Input Resolution: -")
     lbl_in_res.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 2))
 
     ttk.Label(frame_settings, text="Quality (Output):").grid(row=3, column=0, sticky="w", padx=10, pady=2)
@@ -2166,7 +2166,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     lbl_hud_size = ttk.Label(frame_settings, text="HUD-width (px):")
     spn_hud = ttk.Spinbox(frame_settings, from_=0, to=10000, width=10, textvariable=hud_width_var)
 
-    lbl_out_fps = ttk.Label(frame_settings, text="FPS (from video): â€“")
+    lbl_out_fps = ttk.Label(frame_settings, text="FPS (from video): -")
     lbl_out_fps.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(6, 6))
 
     controller: Controller | None = None
@@ -2795,7 +2795,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
 
     def parse_preset(preset: str) -> tuple[int, int]:
-        s = (preset or "").lower().replace("Ã—", "x").strip()
+        s = (preset or "").lower().replace("×", "x").replace("Ã—", "x").strip()
         if "x" not in s:
             return 0, 0
         a, b = s.split("x", 1)
@@ -2902,8 +2902,8 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     def fmt_res(w: int, h: int) -> str:
         if w <= 0 or h <= 0:
-            return "â€“"
-        return f"{w}Ã—{h}"
+            return "-"
+        return f"{w}x{h}"
 
     def quality_to_height(q: str) -> int:
         s = (q or "").strip().lower()
@@ -3198,14 +3198,14 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         videos[:] = list(new_videos[:2])
         csvs[:] = list(new_csvs[:2])
 
-    lbl_v1 = ttk.Label(frame_files, text="Video 1: â€“")
+    lbl_v1 = ttk.Label(frame_files, text="Video 1: -")
     btn_v1 = ttk.Button(frame_files, text="...", width=3)
-    lbl_v2 = ttk.Label(frame_files, text="Video 2: â€“")
+    lbl_v2 = ttk.Label(frame_files, text="Video 2: -")
     btn_v2 = ttk.Button(frame_files, text="...", width=3)
 
-    lbl_c1 = ttk.Label(frame_files, text="CSV 1: â€“")
+    lbl_c1 = ttk.Label(frame_files, text="CSV 1: -")
     btn_c1 = ttk.Button(frame_files, text="...", width=3)
-    lbl_c2 = ttk.Label(frame_files, text="CSV 2: â€“")
+    lbl_c2 = ttk.Label(frame_files, text="CSV 2: -")
     btn_c2 = ttk.Button(frame_files, text="...", width=3)
 
     lbl_v1.grid(row=1, column=0, sticky="w", padx=10, pady=2)
@@ -3218,8 +3218,8 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     lbl_c2.grid(row=4, column=0, sticky="w", padx=10, pady=2)
     btn_c2.grid(row=4, column=1, sticky="e", padx=10, pady=2)
 
-    lbl_fast = ttk.Label(frame_files, text="Fast: â€“", font=("Segoe UI", 10, "bold"))
-    lbl_slow = ttk.Label(frame_files, text="Slow: â€“", font=("Segoe UI", 10, "bold"))
+    lbl_fast = ttk.Label(frame_files, text="Fast: -", font=("Segoe UI", 10, "bold"))
+    lbl_slow = ttk.Label(frame_files, text="Slow: -", font=("Segoe UI", 10, "bold"))
     lbl_fast.grid(row=5, column=0, sticky="w", padx=10, pady=(10, 2))
     lbl_slow.grid(row=6, column=0, sticky="w", padx=10, pady=(2, 10))
 
@@ -3229,12 +3229,12 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     tip_c2 = HoverTooltip(lbl_c2)
 
     def clear_result() -> None:
-        lbl_fast.config(text="Fast: â€“")
-        lbl_slow.config(text="Slow: â€“")
+        lbl_fast.config(text="Fast: -")
+        lbl_slow.config(text="Slow: -")
 
     def set_row(label: ttk.Label, tip: HoverTooltip, prefix: str, path: Path | None) -> None:
         if path is None:
-            label.config(text=f"{prefix}: â€“")
+            label.config(text=f"{prefix}: -")
             tip.set_text("")
             return
         short = shorten_prefix(path.name, max_len=55)
@@ -3414,24 +3414,24 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
                 w2, h2, _fps2 = info2
 
         if v1 is None and v2 is None:
-            lbl_in_res.config(text="Input Resolution: â€“")
+            lbl_in_res.config(text="Input Resolution: -")
         elif v2 is None:
             if w1 > 0 and h1 > 0:
                 lbl_in_res.config(text=f"Input Resolution: V1 {fmt_res(w1, h1)}")
             else:
-                lbl_in_res.config(text="Input Resolution: V1 â€¦ (loading)")
+                lbl_in_res.config(text="Input Resolution: V1 ... (loading)")
         else:
-            s1 = fmt_res(w1, h1) if (w1 > 0 and h1 > 0) else "â€¦ (loading)"
-            s2 = fmt_res(w2, h2) if (w2 > 0 and h2 > 0) else "â€¦ (loading)"
+            s1 = fmt_res(w1, h1) if (w1 > 0 and h1 > 0) else "... (loading)"
+            s2 = fmt_res(w2, h2) if (w2 > 0 and h2 > 0) else "... (loading)"
             lbl_in_res.config(text=f"Input Resolution: V1 {s1} | V2 {s2}")
 
         if v1 is None:
-            lbl_out_fps.config(text="FPS (from video): â€“")
+            lbl_out_fps.config(text="FPS (from video): -")
         else:
             if fps1 > 0.1:
                 lbl_out_fps.config(text=f"FPS (from video): {fps1:.3f}")
             else:
-                lbl_out_fps.config(text="FPS (from video): â€¦ (loading)")
+                lbl_out_fps.config(text="FPS (from video): ... (loading)")
 
         try:
             base_w = w1
@@ -3534,16 +3534,16 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     preview_top.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
     preview_top.grid_remove()
 
-    btn_play = ttk.Button(preview_top, text="â–¶")
-    btn_prev = ttk.Button(preview_top, text="â®")
-    btn_next = ttk.Button(preview_top, text="â­")
+    btn_play = ttk.Button(preview_top, text=">")
+    btn_prev = ttk.Button(preview_top, text="<<")
+    btn_next = ttk.Button(preview_top, text=">>")
     btn_set_start = ttk.Button(preview_top, text="Set Start Here")
     btn_cancel = ttk.Button(preview_top, text="Cancel")
     btn_cut = ttk.Button(preview_top, text="Cut")
 
-    lbl_frame = ttk.Label(preview_top, text="Frame: â€“")
-    lbl_end = ttk.Label(preview_top, text="End: â€“")
-    lbl_loaded = ttk.Label(preview_top, text="Video: â€“")
+    lbl_frame = ttk.Label(preview_top, text="Frame: -")
+    lbl_end = ttk.Label(preview_top, text="End: -")
+    lbl_loaded = ttk.Label(preview_top, text="Video: -")
 
     ttk.Separator(preview_top, orient="horizontal").grid(row=1, column=0, columnspan=8, sticky="ew", pady=(6, 6))
 
