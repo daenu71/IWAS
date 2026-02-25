@@ -38,6 +38,23 @@ output_format_file = config_dir / "output_format.json"
 hud_layout_file = config_dir / "hud_layout.json"
 png_view_file = config_dir / "png_view.json"
 
+_COACHING_RECORDING_SECTION = "coaching_recording"
+_COACHING_RECORDING_INT_RANGES: dict[str, tuple[int, int]] = {
+    "irsdk_sample_hz": (0, 1000),
+    "coaching_retention_months": (1, 120),
+    "coaching_low_disk_warning_gb": (1, 2000),
+}
+_COACHING_RECORDING_DEFAULTS: dict[str, object] = {
+    "coaching_recording_enabled": True,
+    "coaching_storage_dir": "",
+    "irsdk_sample_hz": 120,
+    "coaching_retention_months_enabled": False,
+    "coaching_retention_months": 6,
+    "coaching_low_disk_warning_enabled": False,
+    "coaching_low_disk_warning_gb": 20,
+    "coaching_auto_delete_enabled": False,
+}
+
 _VIDEO_CUT_DEFAULTS: dict[str, float] = {
     "video_before_brake": 1.0,
     "video_after_full_throttle": 1.0,
@@ -99,6 +116,209 @@ def cfg_get(section: str, key: str, fallback: str) -> str:
         return cfg.get(section, key, fallback=fallback)
     except Exception:
         return fallback
+
+
+def _cfg_bool(section: str, key: str, fallback: bool) -> bool:
+    try:
+        raw = str(cfg_get(section, key, "true" if fallback else "false")).strip().lower()
+    except Exception:
+        return bool(fallback)
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return bool(fallback)
+
+
+def _coerce_bool(raw: object, fallback: bool) -> bool:
+    if isinstance(raw, bool):
+        return bool(raw)
+    try:
+        token = str(raw).strip().lower()
+    except Exception:
+        return bool(fallback)
+    if token in ("1", "true", "yes", "on"):
+        return True
+    if token in ("0", "false", "no", "off"):
+        return False
+    return bool(fallback)
+
+
+def _coerce_int_in_range(raw: object, fallback: int, *, min_value: int, max_value: int) -> int:
+    try:
+        value = int(float(str(raw).strip()))
+    except Exception:
+        value = int(fallback)
+    if value < int(min_value):
+        return int(min_value)
+    if value > int(max_value):
+        return int(max_value)
+    return int(value)
+
+
+def _coerce_str(raw: object, fallback: str) -> str:
+    try:
+        return str(raw).strip()
+    except Exception:
+        return str(fallback)
+
+
+def load_coaching_recording_settings() -> dict[str, object]:
+    return {
+        "coaching_recording_enabled": bool(
+            _cfg_bool(
+                _COACHING_RECORDING_SECTION,
+                "coaching_recording_enabled",
+                bool(_COACHING_RECORDING_DEFAULTS["coaching_recording_enabled"]),
+            )
+        ),
+        "coaching_storage_dir": _coerce_str(
+            cfg_get(
+                _COACHING_RECORDING_SECTION,
+                "coaching_storage_dir",
+                str(_COACHING_RECORDING_DEFAULTS["coaching_storage_dir"]),
+            ),
+            str(_COACHING_RECORDING_DEFAULTS["coaching_storage_dir"]),
+        ),
+        "irsdk_sample_hz": _coerce_int_in_range(
+            cfg_get(
+                _COACHING_RECORDING_SECTION,
+                "irsdk_sample_hz",
+                str(_COACHING_RECORDING_DEFAULTS["irsdk_sample_hz"]),
+            ),
+            int(_COACHING_RECORDING_DEFAULTS["irsdk_sample_hz"]),
+            min_value=_COACHING_RECORDING_INT_RANGES["irsdk_sample_hz"][0],
+            max_value=_COACHING_RECORDING_INT_RANGES["irsdk_sample_hz"][1],
+        ),
+        "coaching_retention_months_enabled": bool(
+            _cfg_bool(
+                _COACHING_RECORDING_SECTION,
+                "coaching_retention_months_enabled",
+                bool(_COACHING_RECORDING_DEFAULTS["coaching_retention_months_enabled"]),
+            )
+        ),
+        "coaching_retention_months": _coerce_int_in_range(
+            cfg_get(
+                _COACHING_RECORDING_SECTION,
+                "coaching_retention_months",
+                str(_COACHING_RECORDING_DEFAULTS["coaching_retention_months"]),
+            ),
+            int(_COACHING_RECORDING_DEFAULTS["coaching_retention_months"]),
+            min_value=_COACHING_RECORDING_INT_RANGES["coaching_retention_months"][0],
+            max_value=_COACHING_RECORDING_INT_RANGES["coaching_retention_months"][1],
+        ),
+        "coaching_low_disk_warning_enabled": bool(
+            _cfg_bool(
+                _COACHING_RECORDING_SECTION,
+                "coaching_low_disk_warning_enabled",
+                bool(_COACHING_RECORDING_DEFAULTS["coaching_low_disk_warning_enabled"]),
+            )
+        ),
+        "coaching_low_disk_warning_gb": _coerce_int_in_range(
+            cfg_get(
+                _COACHING_RECORDING_SECTION,
+                "coaching_low_disk_warning_gb",
+                str(_COACHING_RECORDING_DEFAULTS["coaching_low_disk_warning_gb"]),
+            ),
+            int(_COACHING_RECORDING_DEFAULTS["coaching_low_disk_warning_gb"]),
+            min_value=_COACHING_RECORDING_INT_RANGES["coaching_low_disk_warning_gb"][0],
+            max_value=_COACHING_RECORDING_INT_RANGES["coaching_low_disk_warning_gb"][1],
+        ),
+        "coaching_auto_delete_enabled": bool(
+            _cfg_bool(
+                _COACHING_RECORDING_SECTION,
+                "coaching_auto_delete_enabled",
+                bool(_COACHING_RECORDING_DEFAULTS["coaching_auto_delete_enabled"]),
+            )
+        ),
+    }
+
+
+def save_coaching_recording_settings(values: dict[str, object]) -> dict[str, object]:
+    current = load_coaching_recording_settings()
+    merged: dict[str, object] = dict(current)
+    incoming = values if isinstance(values, dict) else {}
+
+    if "coaching_recording_enabled" in incoming:
+        merged["coaching_recording_enabled"] = _coerce_bool(
+            incoming.get("coaching_recording_enabled"),
+            bool(current["coaching_recording_enabled"]),
+        )
+    if "coaching_storage_dir" in incoming:
+        merged["coaching_storage_dir"] = _coerce_str(incoming.get("coaching_storage_dir"), str(current["coaching_storage_dir"]))
+    if "irsdk_sample_hz" in incoming:
+        lo, hi = _COACHING_RECORDING_INT_RANGES["irsdk_sample_hz"]
+        merged["irsdk_sample_hz"] = _coerce_int_in_range(
+            incoming.get("irsdk_sample_hz"),
+            int(current["irsdk_sample_hz"]),
+            min_value=lo,
+            max_value=hi,
+        )
+    if "coaching_retention_months_enabled" in incoming:
+        merged["coaching_retention_months_enabled"] = _coerce_bool(
+            incoming.get("coaching_retention_months_enabled"),
+            bool(current["coaching_retention_months_enabled"]),
+        )
+    if "coaching_retention_months" in incoming:
+        lo, hi = _COACHING_RECORDING_INT_RANGES["coaching_retention_months"]
+        merged["coaching_retention_months"] = _coerce_int_in_range(
+            incoming.get("coaching_retention_months"),
+            int(current["coaching_retention_months"]),
+            min_value=lo,
+            max_value=hi,
+        )
+    if "coaching_low_disk_warning_enabled" in incoming:
+        merged["coaching_low_disk_warning_enabled"] = _coerce_bool(
+            incoming.get("coaching_low_disk_warning_enabled"),
+            bool(current["coaching_low_disk_warning_enabled"]),
+        )
+    if "coaching_low_disk_warning_gb" in incoming:
+        lo, hi = _COACHING_RECORDING_INT_RANGES["coaching_low_disk_warning_gb"]
+        merged["coaching_low_disk_warning_gb"] = _coerce_int_in_range(
+            incoming.get("coaching_low_disk_warning_gb"),
+            int(current["coaching_low_disk_warning_gb"]),
+            min_value=lo,
+            max_value=hi,
+        )
+    if "coaching_auto_delete_enabled" in incoming:
+        merged["coaching_auto_delete_enabled"] = _coerce_bool(
+            incoming.get("coaching_auto_delete_enabled"),
+            bool(current["coaching_auto_delete_enabled"]),
+        )
+
+    user_cp = configparser.ConfigParser()
+    try:
+        if user_ini.exists():
+            user_cp.read(user_ini, encoding="utf-8")
+    except Exception:
+        pass
+    if not user_cp.has_section(_COACHING_RECORDING_SECTION):
+        user_cp.add_section(_COACHING_RECORDING_SECTION)
+
+    for key, value in merged.items():
+        if isinstance(value, bool):
+            text = "true" if value else "false"
+        else:
+            text = str(value)
+        try:
+            user_cp.set(_COACHING_RECORDING_SECTION, str(key), text)
+        except Exception:
+            pass
+        try:
+            if not cfg.has_section(_COACHING_RECORDING_SECTION):
+                cfg.add_section(_COACHING_RECORDING_SECTION)
+            cfg.set(_COACHING_RECORDING_SECTION, str(key), text)
+        except Exception:
+            pass
+
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with user_ini.open("w", encoding="utf-8") as fh:
+            user_cp.write(fh)
+    except Exception:
+        pass
+
+    return merged
 
 
 def load_png_view() -> dict:

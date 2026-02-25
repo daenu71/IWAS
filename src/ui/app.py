@@ -1540,9 +1540,31 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         return list(PRESETS_BY_ASPECT.get(a, ["1920x1080"]))
 
     sel = persistence.load_output_format()
+    coaching_sel = persistence.load_coaching_recording_settings()
     out_aspect_var = tk.StringVar(value=sel.get("aspect", "32:9"))
     out_preset_var = tk.StringVar(value=sel.get("preset", get_presets_for_aspect(sel.get("aspect", "32:9"))[0]))
     video_mode_var = tk.StringVar(value="full")
+    coaching_recording_enabled_var = tk.BooleanVar(
+        value=bool(coaching_sel.get("coaching_recording_enabled", True))
+    )
+    coaching_storage_dir_var = tk.StringVar(value=str(coaching_sel.get("coaching_storage_dir", "")))
+    irsdk_sample_hz_var = tk.StringVar(value=str(int(coaching_sel.get("irsdk_sample_hz", 120))))
+    coaching_retention_months_enabled_var = tk.BooleanVar(
+        value=bool(coaching_sel.get("coaching_retention_months_enabled", False))
+    )
+    coaching_retention_months_var = tk.StringVar(
+        value=str(int(coaching_sel.get("coaching_retention_months", 6)))
+    )
+    coaching_low_disk_warning_enabled_var = tk.BooleanVar(
+        value=bool(coaching_sel.get("coaching_low_disk_warning_enabled", False))
+    )
+    coaching_low_disk_warning_gb_var = tk.StringVar(
+        value=str(int(coaching_sel.get("coaching_low_disk_warning_gb", 20)))
+    )
+    coaching_auto_delete_enabled_var = tk.BooleanVar(
+        value=bool(coaching_sel.get("coaching_auto_delete_enabled", False))
+    )
+    coaching_settings_error_var = tk.StringVar(value="")
 
     # UI im Einstellungen-Block
     frame_settings.columnconfigure(0, weight=0)
@@ -2086,6 +2108,154 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
             refresh_layout_preview()
         except Exception:
             pass
+
+    coaching_numeric_specs: dict[str, tuple[str, int, int]] = {
+        "irsdk_sample_hz": ("IRSDK Sample Hz", 0, 1000),
+        "coaching_retention_months": ("Retention (months)", 1, 120),
+        "coaching_low_disk_warning_gb": ("Low disk warning (GB)", 1, 2000),
+    }
+    coaching_numeric_vars: dict[str, tk.StringVar] = {
+        "irsdk_sample_hz": irsdk_sample_hz_var,
+        "coaching_retention_months": coaching_retention_months_var,
+        "coaching_low_disk_warning_gb": coaching_low_disk_warning_gb_var,
+    }
+    coaching_last_valid_ints: dict[str, int] = {
+        "irsdk_sample_hz": int(coaching_sel.get("irsdk_sample_hz", 120)),
+        "coaching_retention_months": int(coaching_sel.get("coaching_retention_months", 6)),
+        "coaching_low_disk_warning_gb": int(coaching_sel.get("coaching_low_disk_warning_gb", 20)),
+    }
+
+    def _set_coaching_settings_error(message: str) -> None:
+        try:
+            coaching_settings_error_var.set(str(message or "").strip())
+        except Exception:
+            pass
+        try:
+            if message:
+                root.bell()
+        except Exception:
+            pass
+
+    def _clear_coaching_settings_error() -> None:
+        _set_coaching_settings_error("")
+
+    def _parse_coaching_numeric_value(key: str) -> tuple[int | None, str | None]:
+        label, min_value, max_value = coaching_numeric_specs[key]
+        try:
+            raw = str(coaching_numeric_vars[key].get()).strip()
+        except Exception:
+            raw = ""
+        if raw == "":
+            return None, f"{label}: please enter an integer in range {min_value}..{max_value}."
+        if not raw.isdigit():
+            return None, f"{label}: only integers are allowed ({min_value}..{max_value})."
+        value = int(raw)
+        if value < min_value or value > max_value:
+            return None, f"{label}: allowed range is {min_value}..{max_value}."
+        return int(value), None
+
+    def _build_coaching_settings_payload(*, include_numeric: bool = True) -> tuple[dict[str, object] | None, str | None]:
+        payload: dict[str, object] = {
+            "coaching_recording_enabled": bool(coaching_recording_enabled_var.get()),
+            "coaching_storage_dir": str(coaching_storage_dir_var.get()).strip(),
+            "coaching_retention_months_enabled": bool(coaching_retention_months_enabled_var.get()),
+            "coaching_low_disk_warning_enabled": bool(coaching_low_disk_warning_enabled_var.get()),
+            "coaching_auto_delete_enabled": bool(coaching_auto_delete_enabled_var.get()),
+        }
+        if not include_numeric:
+            return payload, None
+        for key in ("irsdk_sample_hz", "coaching_retention_months", "coaching_low_disk_warning_gb"):
+            value, err = _parse_coaching_numeric_value(key)
+            if err is not None or value is None:
+                return None, err
+            payload[key] = int(value)
+        return payload, None
+
+    def _save_coaching_settings_payload(payload: dict[str, object]) -> bool:
+        try:
+            saved = persistence.save_coaching_recording_settings(payload)
+        except Exception:
+            _set_coaching_settings_error("Could not save coaching settings.")
+            return False
+        for key in ("irsdk_sample_hz", "coaching_retention_months", "coaching_low_disk_warning_gb"):
+            try:
+                coaching_last_valid_ints[key] = int(saved.get(key, coaching_last_valid_ints[key]))
+                coaching_numeric_vars[key].set(str(coaching_last_valid_ints[key]))
+            except Exception:
+                pass
+        _clear_coaching_settings_error()
+        return True
+
+    def _commit_coaching_numeric_settings(_event=None) -> None:
+        payload, err = _build_coaching_settings_payload(include_numeric=True)
+        if err is not None or payload is None:
+            _set_coaching_settings_error(str(err or "Invalid coaching settings."))
+            return
+        _save_coaching_settings_payload(payload)
+
+    def _commit_single_coaching_numeric_setting(key: str, _event=None) -> None:
+        value, err = _parse_coaching_numeric_value(key)
+        if err is not None or value is None:
+            try:
+                coaching_numeric_vars[key].set(str(coaching_last_valid_ints[key]))
+            except Exception:
+                pass
+            _set_coaching_settings_error(str(err or "Invalid coaching value."))
+            return
+        try:
+            coaching_numeric_vars[key].set(str(int(value)))
+        except Exception:
+            pass
+        payload, payload_err = _build_coaching_settings_payload(include_numeric=True)
+        if payload_err is not None or payload is None:
+            _set_coaching_settings_error(str(payload_err or "Invalid coaching settings."))
+            return
+        _save_coaching_settings_payload(payload)
+
+    def _commit_coaching_flag_settings() -> None:
+        payload, _err = _build_coaching_settings_payload(include_numeric=False)
+        if payload is None:
+            return
+        _save_coaching_settings_payload(payload)
+
+    def _commit_coaching_storage_dir(_event=None) -> None:
+        payload, _err = _build_coaching_settings_payload(include_numeric=False)
+        if payload is None:
+            return
+        _save_coaching_settings_payload(payload)
+
+    def _browse_coaching_storage_dir() -> None:
+        try:
+            initial_dir = str(coaching_storage_dir_var.get()).strip()
+        except Exception:
+            initial_dir = ""
+        try:
+            chosen = filedialog.askdirectory(
+                parent=root,
+                title="Choose Coaching Storage Folder",
+                initialdir=initial_dir if initial_dir else str(project_root),
+                mustexist=False,
+            )
+        except TypeError:
+            # Older Tk builds may not support mustexist.
+            chosen = filedialog.askdirectory(
+                parent=root,
+                title="Choose Coaching Storage Folder",
+                initialdir=initial_dir if initial_dir else str(project_root),
+            )
+        except Exception:
+            chosen = ""
+        if not chosen:
+            return
+        try:
+            coaching_storage_dir_var.set(str(chosen))
+        except Exception:
+            pass
+        _commit_coaching_storage_dir()
+
+    def _validate_nonnegative_int_entry_text(proposed: str) -> bool:
+        s = str(proposed)
+        return (s == "") or s.isdigit()
 
     def model_from_ui_state() -> AppModel:
         return AppModel(
@@ -2822,6 +2992,122 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     spn_video_shift_x.bind("<FocusOut>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
     spn_video_shift_y.bind("<Return>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
     spn_video_shift_y.bind("<FocusOut>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
+
+    coaching_row = video_place_row + 6
+    ttk.Separator(frame_settings, orient="horizontal").grid(
+        row=coaching_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
+    )
+    ttk.Label(frame_settings, text="Coaching Recording", font=("Segoe UI", 10, "bold")).grid(
+        row=coaching_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6)
+    )
+
+    chk_coaching_recording_enabled = ttk.Checkbutton(
+        frame_settings,
+        text="Enable coaching recording",
+        variable=coaching_recording_enabled_var,
+        command=_commit_coaching_flag_settings,
+    )
+    chk_coaching_recording_enabled.grid(row=coaching_row + 2, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+
+    ttk.Label(frame_settings, text="Storage Folder:").grid(row=coaching_row + 3, column=0, sticky="w", padx=10, pady=2)
+    frm_coaching_storage = ttk.Frame(frame_settings)
+    frm_coaching_storage.grid(row=coaching_row + 3, column=1, columnspan=2, sticky="ew", padx=10, pady=2)
+    frm_coaching_storage.columnconfigure(0, weight=1)
+    ent_coaching_storage = ttk.Entry(frm_coaching_storage, textvariable=coaching_storage_dir_var)
+    ent_coaching_storage.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    btn_coaching_storage_browse = ttk.Button(frm_coaching_storage, text="Browse...", command=_browse_coaching_storage_dir)
+    btn_coaching_storage_browse.grid(row=0, column=1, sticky="w")
+
+    vcmd_nonneg_int = (root.register(_validate_nonnegative_int_entry_text), "%P")
+
+    ttk.Label(frame_settings, text="IRSDK Sample Hz:").grid(row=coaching_row + 4, column=0, sticky="w", padx=10, pady=2)
+    frm_irsdk_sample = ttk.Frame(frame_settings)
+    frm_irsdk_sample.grid(row=coaching_row + 4, column=1, columnspan=2, sticky="w", padx=10, pady=2)
+    spn_irsdk_sample_hz = ttk.Spinbox(
+        frm_irsdk_sample,
+        from_=0,
+        to=1000,
+        increment=1,
+        width=8,
+        textvariable=irsdk_sample_hz_var,
+        validate="key",
+        validatecommand=vcmd_nonneg_int,
+        command=lambda: _commit_single_coaching_numeric_setting("irsdk_sample_hz"),
+    )
+    spn_irsdk_sample_hz.grid(row=0, column=0, sticky="w")
+    ttk.Label(frm_irsdk_sample, text="0 = unthrottled").grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+    chk_coaching_retention_enabled = ttk.Checkbutton(
+        frame_settings,
+        text="Enable retention by months",
+        variable=coaching_retention_months_enabled_var,
+        command=_commit_coaching_flag_settings,
+    )
+    chk_coaching_retention_enabled.grid(row=coaching_row + 5, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 2))
+    ttk.Label(frame_settings, text="Retention Months:").grid(row=coaching_row + 6, column=0, sticky="w", padx=10, pady=2)
+    spn_coaching_retention_months = ttk.Spinbox(
+        frame_settings,
+        from_=1,
+        to=120,
+        increment=1,
+        width=8,
+        textvariable=coaching_retention_months_var,
+        validate="key",
+        validatecommand=vcmd_nonneg_int,
+        command=lambda: _commit_single_coaching_numeric_setting("coaching_retention_months"),
+    )
+    spn_coaching_retention_months.grid(row=coaching_row + 6, column=1, sticky="w", padx=10, pady=2)
+    ttk.Label(frame_settings, text="Range: 1..120").grid(row=coaching_row + 6, column=2, sticky="w", padx=(10, 10), pady=2)
+
+    chk_coaching_low_disk_enabled = ttk.Checkbutton(
+        frame_settings,
+        text="Enable low disk warning",
+        variable=coaching_low_disk_warning_enabled_var,
+        command=_commit_coaching_flag_settings,
+    )
+    chk_coaching_low_disk_enabled.grid(row=coaching_row + 7, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 2))
+    ttk.Label(frame_settings, text="Low Disk Warning (GB):").grid(row=coaching_row + 8, column=0, sticky="w", padx=10, pady=2)
+    spn_coaching_low_disk_gb = ttk.Spinbox(
+        frame_settings,
+        from_=1,
+        to=2000,
+        increment=1,
+        width=8,
+        textvariable=coaching_low_disk_warning_gb_var,
+        validate="key",
+        validatecommand=vcmd_nonneg_int,
+        command=lambda: _commit_single_coaching_numeric_setting("coaching_low_disk_warning_gb"),
+    )
+    spn_coaching_low_disk_gb.grid(row=coaching_row + 8, column=1, sticky="w", padx=10, pady=2)
+    ttk.Label(frame_settings, text="Range: 1..2000").grid(row=coaching_row + 8, column=2, sticky="w", padx=(10, 10), pady=2)
+
+    chk_coaching_auto_delete_enabled = ttk.Checkbutton(
+        frame_settings,
+        text="Enable auto delete",
+        variable=coaching_auto_delete_enabled_var,
+        command=_commit_coaching_flag_settings,
+    )
+    chk_coaching_auto_delete_enabled.grid(row=coaching_row + 9, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 2))
+
+    lbl_coaching_settings_error = ttk.Label(
+        frame_settings,
+        textvariable=coaching_settings_error_var,
+        foreground="#b00020",
+    )
+    lbl_coaching_settings_error.grid(
+        row=coaching_row + 10, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 6)
+    )
+
+    for _spn, _key in (
+        (spn_irsdk_sample_hz, "irsdk_sample_hz"),
+        (spn_coaching_retention_months, "coaching_retention_months"),
+        (spn_coaching_low_disk_gb, "coaching_low_disk_warning_gb"),
+    ):
+        _spn.bind("<Return>", lambda _e, k=_key: _commit_single_coaching_numeric_setting(k))
+        _spn.bind("<FocusOut>", lambda _e, k=_key: _commit_single_coaching_numeric_setting(k))
+
+    ent_coaching_storage.bind("<Return>", _commit_coaching_storage_dir)
+    ent_coaching_storage.bind("<FocusOut>", _commit_coaching_storage_dir)
 
 
     def parse_preset(preset: str) -> tuple[int, int]:
