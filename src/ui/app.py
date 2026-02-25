@@ -1047,6 +1047,35 @@ class SettingsView(ttk.Frame):
         _run_update_check(root, show_up_to_date=True)
 
 
+class CoachingView(ttk.Frame):
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master)
+        self.columnconfigure(0, weight=3)
+        self.columnconfigure(1, weight=2)
+        self.rowconfigure(0, weight=1)
+
+        layout = ttk.Frame(self, padding=12)
+        layout.grid(row=0, column=0, sticky="nsew")
+        layout.columnconfigure(0, weight=3)
+        layout.columnconfigure(1, weight=2)
+        layout.rowconfigure(0, weight=1)
+
+        browser = ttk.LabelFrame(layout, text="Browser", padding=10)
+        browser.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        right = ttk.Frame(layout)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        details = ttk.LabelFrame(right, text="Details", padding=10)
+        details.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+
+        status = ttk.LabelFrame(right, text="Status", padding=10)
+        status.grid(row=1, column=0, sticky="nsew")
+
+
 ViewEntry = type[ttk.Frame] | Callable[[], type[ttk.Frame]]
 
 def _resolve_view_class(entry: ViewEntry) -> type[ttk.Frame]:
@@ -1056,6 +1085,7 @@ def _resolve_view_class(entry: ViewEntry) -> type[ttk.Frame]:
 
 VIEW_REGISTRY: dict[str, ViewEntry] = {
     "Video Analysis": lambda: VideoAnalysisView,
+    "Coaching": lambda: CoachingView,
     "Settings": lambda: SettingsView,
 }
 
