@@ -9,7 +9,17 @@ import time
 from typing import Any
 
 from core.coaching.models import SessionMeta
+from core.coaching.parquet_writer import ParquetRunWriter
 from core.coaching.run_detector import RunDetector
+from core.coaching.storage import (
+    ACTIVE_SESSION_LOCK_FILENAME,
+    SESSION_FINALIZED_FILENAME,
+    build_session_folder_name,
+    ensure_session_dir,
+    get_coaching_storage_dir,
+    mark_session_active,
+    mark_session_finalized,
+)
 from core.irsdk.channels import REQUESTED_CHANNELS
 from core.irsdk.irsdk_client import IRSDKClient
 from core.irsdk.sessioninfo_parser import extract_session_meta
@@ -42,6 +52,11 @@ class RecorderService:
         self._run_id_seq = 0
         self._active_run_id: int | None = None
         self._run_events: deque[dict[str, Any]] = deque(maxlen=200)
+        self._active_run_writer: ParquetRunWriter | None = None
+        self._active_run_meta: dict[str, Any] | None = None
+        self._active_run_write_error_logged = False
+        self._session_identity_fields: dict[str, Any] = {}
+        self._session_finalized_marked = False
 
     @property
     def running(self) -> bool:
@@ -86,6 +101,11 @@ class RecorderService:
             self._run_id_seq = 0
             self._active_run_id = None
             self._run_events = deque(maxlen=200)
+            self._active_run_writer = None
+            self._active_run_meta = None
+            self._active_run_write_error_logged = False
+            self._session_identity_fields = {}
+            self._session_finalized_marked = False
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -99,11 +119,16 @@ class RecorderService:
         with self._lock:
             thread = self._thread
         if thread is None:
+            self._finalize_active_run_if_any(reason="service_stop")
+            self._mark_session_finalized_if_possible()
             self._client.disconnect()
             return
 
         self._stop_event.set()
         thread.join(timeout=2.0)
+        if not thread.is_alive():
+            self._finalize_active_run_if_any(reason="service_stop")
+            self._mark_session_finalized_if_possible()
         self._client.disconnect()
 
         with self._lock:
@@ -145,6 +170,7 @@ class RecorderService:
                     self._sleep_interruptible(0.05)
                     continue
                 self._process_run_detector(sample)
+                self._append_active_run_sample(sample)
 
                 with self._lock:
                     self._buffer.append(sample)
@@ -169,6 +195,8 @@ class RecorderService:
                     # Unthrottled mode still yields briefly so the UI thread stays responsive.
                     self._sleep_interruptible(0.001)
         finally:
+            self._finalize_active_run_if_any(reason="loop_exit")
+            self._mark_session_finalized_if_possible()
             self._client.disconnect()
             with self._lock:
                 if self._thread is not None and self._thread is threading.current_thread():
@@ -285,10 +313,15 @@ class RecorderService:
                     existing = json.loads(meta_path.read_text(encoding="utf-8"))
                     if isinstance(existing, dict):
                         base = existing
+                        self._update_session_identity_fields(existing)
                         self._ensure_run_detector_from_session_type(base.get("SessionType"))
                 except Exception:
                     _LOG.warning("irsdk session_meta.json exists but could not be parsed; overwriting")
-            meta_path.write_text(json.dumps(meta.to_dict(base), indent=2), encoding="utf-8")
+            base.setdefault("active_session_lock_file", ACTIVE_SESSION_LOCK_FILENAME)
+            base.setdefault("session_finalized_marker", SESSION_FINALIZED_FILENAME)
+            merged = meta.to_dict(base)
+            self._update_session_identity_fields(merged)
+            meta_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
         except Exception as exc:
             _LOG.warning("irsdk session meta write failed (%s)", exc)
 
@@ -350,15 +383,28 @@ class RecorderService:
             if self._session_dir is not None:
                 return self._session_dir
             start_wall_ts = self._session_start_wall_ts or time.time()
+            identity_fields = dict(self._session_identity_fields)
+            session_type_hint = self._session_type
         base_dir = self._resolve_session_root_dir()
         if base_dir is None:
             return None
 
-        timestamp_part = time.strftime("%Y%m%d-%H%M%S", time.localtime(start_wall_ts))
-        millis_part = int((start_wall_ts - int(start_wall_ts)) * 1000)
-        session_dir = base_dir / f"session-{timestamp_part}-{millis_part:03d}"
         try:
-            session_dir.mkdir(parents=True, exist_ok=True)
+            session_dir = ensure_session_dir(
+                start_wall_ts,
+                identity_fields.get("TrackDisplayName") or identity_fields.get("TrackConfigName"),
+                identity_fields.get("CarScreenName") or identity_fields.get("CarClassShortName"),
+                identity_fields.get("SessionType") or session_type_hint,
+                identity_fields.get("SessionUniqueID"),
+                base_dir=base_dir,
+            )
+            mark_session_active(
+                session_dir,
+                payload={
+                    "recorder_start_ts": start_wall_ts,
+                    "lock_file": ACTIVE_SESSION_LOCK_FILENAME,
+                },
+            )
         except Exception as exc:
             _LOG.warning("irsdk session dir create failed (%s)", exc)
             return None
@@ -370,15 +416,9 @@ class RecorderService:
 
     def _resolve_session_root_dir(self) -> Path | None:
         try:
-            from core.persistence import load_coaching_recording_settings
-
-            settings = load_coaching_recording_settings()
-            storage_dir = str(settings.get("coaching_storage_dir", "") or "").strip()
-            if storage_dir:
-                return Path(storage_dir)
+            return get_coaching_storage_dir()
         except Exception:
-            pass
-        return Path.cwd()
+            return Path.cwd()
 
     def _merge_session_info_meta_from_yaml(self, yaml_text: str, *, session_info_saved_ts: float) -> bool:
         try:
@@ -394,6 +434,8 @@ class RecorderService:
                     "recorder_start_ts": recorder_start_ts,
                     "session_info_saved_ts": session_info_saved_ts,
                 }
+            self._update_session_identity_fields(extracted)
+            self._maybe_rename_session_dir_from_identity()
             self._ensure_run_detector_from_session_type(extracted.get("SessionType"))
             self._merge_session_meta_fields(extracted)
             return True
@@ -413,12 +455,250 @@ class RecorderService:
                     existing = json.loads(meta_path.read_text(encoding="utf-8"))
                     if isinstance(existing, dict):
                         base = existing
+                        self._update_session_identity_fields(existing)
                 except Exception:
                     _LOG.warning("irsdk session_meta.json exists but could not be parsed; overwriting")
             base.update(fields)
+            base.setdefault("active_session_lock_file", ACTIVE_SESSION_LOCK_FILENAME)
+            base.setdefault("session_finalized_marker", SESSION_FINALIZED_FILENAME)
+            self._update_session_identity_fields(base)
             meta_path.write_text(json.dumps(base, indent=2), encoding="utf-8")
         except Exception as exc:
             _LOG.warning("irsdk session meta merge failed (%s)", exc)
+
+    def _update_session_identity_fields(self, fields: dict[str, Any]) -> None:
+        if not isinstance(fields, dict):
+            return
+        allowed = (
+            "TrackDisplayName",
+            "TrackConfigName",
+            "CarScreenName",
+            "CarClassShortName",
+            "SessionType",
+            "SessionUniqueID",
+        )
+        updates: dict[str, Any] = {}
+        for key in allowed:
+            if key not in fields:
+                continue
+            value = fields.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            updates[key] = value
+        if not updates:
+            return
+        with self._lock:
+            self._session_identity_fields.update(updates)
+
+    def _maybe_rename_session_dir_from_identity(self) -> None:
+        with self._lock:
+            current_dir = self._session_dir
+            start_wall_ts = self._session_start_wall_ts or time.time()
+            identity_fields = dict(self._session_identity_fields)
+            session_type_hint = self._session_type
+        if current_dir is None:
+            return
+        try:
+            desired_name = build_session_folder_name(
+                start_wall_ts,
+                identity_fields.get("TrackDisplayName") or identity_fields.get("TrackConfigName"),
+                identity_fields.get("CarScreenName") or identity_fields.get("CarClassShortName"),
+                identity_fields.get("SessionType") or session_type_hint,
+                identity_fields.get("SessionUniqueID"),
+            )
+        except Exception:
+            return
+        if current_dir.name == desired_name:
+            return
+        target_dir = current_dir.parent / desired_name
+        if target_dir.exists():
+            return
+        try:
+            current_dir.rename(target_dir)
+        except Exception as exc:
+            _LOG.debug("irsdk session dir rename skipped (%s)", exc)
+            return
+        with self._lock:
+            if self._session_dir == current_dir:
+                self._session_dir = target_dir
+
+    def _append_active_run_sample(self, sample: dict[str, Any]) -> None:
+        if not isinstance(sample, dict):
+            return
+
+        with self._lock:
+            active_run_id = self._active_run_id
+            writer = self._active_run_writer
+            run_meta = self._active_run_meta
+        if active_run_id is None or not isinstance(run_meta, dict):
+            return
+
+        raw = sample.get("raw")
+        raw_dict = raw if isinstance(raw, dict) else {}
+        session_time = self._coerce_optional_float(raw_dict.get("SessionTime"))
+        lap_value = self._coerce_optional_int(raw_dict.get("Lap"))
+        if lap_value is None:
+            lap_value = self._coerce_optional_int(raw_dict.get("LapCompleted"))
+
+        with self._lock:
+            current_run_id = self._active_run_id
+            current_meta = self._active_run_meta
+            if current_run_id != active_run_id or not isinstance(current_meta, dict):
+                return
+            current_meta["sample_count"] = int(current_meta.get("sample_count", 0)) + 1
+            if session_time is not None:
+                if "start_session_time" not in current_meta:
+                    current_meta["start_session_time"] = session_time
+                current_meta["end_session_time"] = session_time
+            if lap_value is not None:
+                if "lap_start" not in current_meta:
+                    current_meta["lap_start"] = lap_value
+                current_meta["lap_end"] = lap_value
+            writer = self._active_run_writer
+
+        if writer is None:
+            return
+
+        try:
+            writer.append(sample, now_ts=self._coerce_optional_float(sample.get("timestamp_monotonic")))
+        except Exception as exc:
+            should_log = False
+            with self._lock:
+                if self._active_run_id == active_run_id:
+                    if isinstance(self._active_run_meta, dict):
+                        self._active_run_meta.setdefault("writer_error", str(exc))
+                    if not self._active_run_write_error_logged:
+                        self._active_run_write_error_logged = True
+                        should_log = True
+                    self._active_run_writer = None
+            try:
+                writer.close(final=False)
+            except Exception:
+                pass
+            if should_log:
+                _LOG.warning("irsdk run parquet write disabled for run_id=%s (%s)", active_run_id, exc)
+
+    def _start_run_storage(self, run_id: int) -> None:
+        session_dir = self._ensure_session_dir()
+        if session_dir is None:
+            return
+        with self._lock:
+            recorded_channels = list(self._recorded_channels)
+            dtype_decisions = dict(self._dtype_decisions)
+            sample_hz = self._sample_hz
+            if self._active_run_id != run_id:
+                return
+            self._active_run_meta = {
+                "run_id": run_id,
+                "sample_count": 0,
+                "recorded_channels": recorded_channels,
+                "dtype_decisions": dtype_decisions,
+            }
+            self._active_run_write_error_logged = False
+
+        run_path = session_dir / f"run_{run_id:04d}.parquet"
+        writer = ParquetRunWriter(
+            run_path,
+            recorded_channels=recorded_channels,
+            dtype_decisions=dtype_decisions,
+            chunk_seconds=1.0,
+            sample_hz=sample_hz,
+        )
+        with self._lock:
+            if self._active_run_id != run_id:
+                try:
+                    writer.close(final=False)
+                except Exception:
+                    pass
+                return
+            self._active_run_writer = writer
+
+    def _finalize_run(self, run_id: int | None, *, reason: str | None = None) -> None:
+        writer: ParquetRunWriter | None = None
+        meta: dict[str, Any] | None = None
+        final_run_id = run_id
+        with self._lock:
+            active_run_id = self._active_run_id
+            if final_run_id is None:
+                final_run_id = active_run_id
+            if final_run_id is None:
+                return
+            if active_run_id == final_run_id:
+                self._active_run_id = None
+            writer = self._active_run_writer
+            meta = self._active_run_meta if isinstance(self._active_run_meta, dict) else None
+            self._active_run_writer = None
+            self._active_run_meta = None
+            self._active_run_write_error_logged = False
+
+        if writer is not None:
+            try:
+                writer.close(final=True)
+            except Exception as exc:
+                if isinstance(meta, dict):
+                    meta.setdefault("writer_close_error", str(exc))
+                _LOG.warning("irsdk run parquet close failed for run_id=%s (%s)", final_run_id, exc)
+
+        if isinstance(meta, dict):
+            if reason:
+                meta.setdefault("run_end_reason", reason)
+            self._write_run_meta_file(final_run_id, meta)
+
+    def _finalize_active_run_if_any(self, *, reason: str | None = None) -> None:
+        with self._lock:
+            run_id = self._active_run_id
+            has_meta = isinstance(self._active_run_meta, dict)
+            has_writer = self._active_run_writer is not None
+        if run_id is None and not has_meta and not has_writer:
+            return
+        self._finalize_run(run_id, reason=reason)
+
+    def _write_run_meta_file(self, run_id: int, run_meta: dict[str, Any]) -> None:
+        meta_path = self._resolve_run_meta_path(run_id)
+        if meta_path is None:
+            return
+        try:
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+        except Exception as exc:
+            _LOG.warning("irsdk run meta write failed for run_id=%s (%s)", run_id, exc)
+
+    def _resolve_run_meta_path(self, run_id: int) -> Path | None:
+        session_dir = self._ensure_session_dir()
+        if session_dir is not None:
+            return session_dir / f"run_{run_id:04d}_meta.json"
+        return Path.cwd() / f"run_{run_id:04d}_meta.json"
+
+    def _mark_session_finalized_if_possible(self) -> None:
+        with self._lock:
+            if self._session_finalized_marked:
+                return
+            session_dir = self._session_dir
+        if session_dir is None:
+            return
+        try:
+            mark_session_finalized(session_dir, remove_lock=False)
+            self._merge_session_meta_fields({"session_finalized_ts": time.time()})
+            with self._lock:
+                self._session_finalized_marked = True
+        except Exception as exc:
+            _LOG.warning("irsdk session finalized marker write failed (%s)", exc)
+
+    @staticmethod
+    def _coerce_optional_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_optional_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except Exception:
+            return None
 
     def _ensure_run_detector_from_session_type(self, session_type: Any) -> None:
         if session_type is None:
@@ -486,6 +766,11 @@ class RecorderService:
             stored_event = dict(event)
             stored_event["run_id"] = active_run_id
             self._run_events.append(stored_event)
+
+        if event_type == "RUN_START":
+            self._start_run_storage(active_run_id)
+        elif event_type == "RUN_END":
+            self._finalize_run(active_run_id, reason=reason)
 
         _LOG.info(
             "irsdk %s run_id=%s reason=%s session_type=%s ts=%s",
