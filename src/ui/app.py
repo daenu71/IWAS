@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import json
 import os
+import shutil
 import subprocess
 import threading
 import urllib.error
@@ -30,6 +31,12 @@ from core.models import (
 )
 from core.cfg import APP_NAME, APP_VERSION
 from core import persistence, filesvc, profile_service, render_service
+from core.coaching.indexer import CoachingIndex, CoachingTreeNode, scan_storage
+from core.coaching.storage import (
+    ACTIVE_SESSION_LOCK_FILENAME,
+    SESSION_FINALIZED_FILENAME,
+    get_coaching_storage_dir,
+)
 from core.ffmpeg_tools import ffprobe_exists as _ffprobe_exists_bundled, resolve_ffprobe_bin
 from core.optional_deps import has_cv2, try_import_cv2
 from core.resources import get_resource_path
@@ -44,6 +51,7 @@ from core.output_geometry import (
 )
 from ui.preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from ui.preview.png_preview import PngPreviewController
+from ui.coaching_browser import CoachingBrowser
 from ui.controller import Controller, UIContext
 
 if TYPE_CHECKING:
@@ -1062,6 +1070,10 @@ class CoachingView(ttk.Frame):
         self.columnconfigure(0, weight=3)
         self.columnconfigure(1, weight=2)
         self.rowconfigure(0, weight=1)
+        self._coaching_index: CoachingIndex | None = None
+        self._details_var = tk.StringVar(value="Select a node to see details.")
+        self._status_vars: dict[str, tk.StringVar] = {}
+        self._status_poll_after_id: str | None = None
 
         layout = ttk.Frame(self, padding=12)
         layout.grid(row=0, column=0, sticky="nsew")
@@ -1071,6 +1083,8 @@ class CoachingView(ttk.Frame):
 
         browser = ttk.LabelFrame(layout, text="Browser", padding=10)
         browser.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        browser.columnconfigure(0, weight=1)
+        browser.rowconfigure(0, weight=1)
 
         right = ttk.Frame(layout)
         right.grid(row=0, column=1, sticky="nsew")
@@ -1080,9 +1094,211 @@ class CoachingView(ttk.Frame):
 
         details = ttk.LabelFrame(right, text="Details", padding=10)
         details.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        details.columnconfigure(0, weight=1)
+        ttk.Label(details, textvariable=self._details_var, justify="left", anchor="nw").grid(
+            row=0, column=0, sticky="nsew"
+        )
 
         status = ttk.LabelFrame(right, text="Status", padding=10)
         status.grid(row=1, column=0, sticky="nsew")
+        status.columnconfigure(1, weight=1)
+        for row_idx, key in enumerate(
+            ("connection", "session_type", "run_active", "sample_count", "dropped", "write_lag")
+        ):
+            label_text = {
+                "connection": "connected",
+                "session_type": "sessionType",
+                "run_active": "run active",
+                "sample_count": "sample count",
+                "dropped": "dropped",
+                "write_lag": "write lag",
+            }[key]
+            ttk.Label(status, text=f"{label_text}:").grid(row=row_idx, column=0, sticky="w", padx=(0, 8), pady=1)
+            var = tk.StringVar(value="na")
+            self._status_vars[key] = var
+            ttk.Label(status, textvariable=var).grid(row=row_idx, column=1, sticky="w", pady=1)
+
+        self._browser_widget = CoachingBrowser(
+            browser,
+            on_refresh=self._refresh_coaching_index,
+            on_open_folder=self._open_coaching_node_folder,
+            on_delete_node=self._delete_coaching_node,
+            on_select_node=self._show_coaching_node_details,
+        )
+        self._browser_widget.grid(row=0, column=0, sticky="nsew")
+        self._refresh_coaching_index()
+        self.bind("<Destroy>", self._on_destroy, add="+")
+        self.after(300, self._poll_recorder_status)
+
+    def _coaching_root_dir(self) -> Path:
+        try:
+            return get_coaching_storage_dir()
+        except Exception:
+            return Path.cwd()
+
+    def _refresh_coaching_index(self) -> CoachingIndex:
+        index = scan_storage(self._coaching_root_dir())
+        self._coaching_index = index
+        self._browser_widget.set_index(index)
+        self._browser_widget.set_message(f"Scanned: {index.root_dir}")
+        return index
+
+    def _show_coaching_node_details(self, node: CoachingTreeNode) -> None:
+        lines: list[str] = [f"Type: {node.kind}", f"Name: {node.label}"]
+        if node.session_path is not None:
+            lines.append(f"Session: {node.session_path}")
+        if node.path is not None:
+            lines.append(f"Path: {node.path}")
+        if node.run_id is not None:
+            lines.append(f"Run ID: {node.run_id}")
+        if node.summary.total_time_s is not None:
+            lines.append(f"Total Time: {node.summary.total_time_s:.2f}s")
+        if node.summary.laps is not None:
+            lines.append(f"Laps: {int(node.summary.laps)}")
+        if node.summary.fastest_lap_s is not None:
+            lines.append(f"Fastest Lap: {node.summary.fastest_lap_s:.2f}s")
+        if node.is_active_session:
+            lines.append("Active session: yes")
+        if node.is_finalized:
+            lines.append("Finalized: yes")
+        for key, value in sorted(node.meta.items()):
+            if value is None or value == "":
+                continue
+            lines.append(f"{key}: {value}")
+        self._details_var.set("\n".join(lines))
+
+    def _open_coaching_node_folder(self, node: CoachingTreeNode) -> None:
+        target = node.session_path if node.kind == "run" else node.path or node.session_path
+        if target is None:
+            self._browser_widget.set_message("Open Folder unavailable for selected node.")
+            return
+        path = Path(target)
+        if not path.exists():
+            self._browser_widget.set_message("Folder no longer exists.")
+            return
+        folder = path if path.is_dir() else path.parent
+        try:
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+            self._browser_widget.set_message(f"Opened folder: {folder}")
+        except Exception as exc:
+            try:
+                messagebox.showerror("Open Folder", f"Could not open folder:\n{folder}\n\n{exc}", parent=self)
+            except Exception:
+                pass
+            self._browser_widget.set_message(f"Open Folder failed: {exc}")
+
+    def _delete_coaching_node(self, node: CoachingTreeNode) -> None:
+        session_path = Path(node.session_path) if node.session_path is not None else None
+        if session_path is None:
+            self._browser_widget.set_message("Delete unavailable for selected node.")
+            return
+        if self._is_session_delete_locked(session_path):
+            msg = "Active session – delete disabled."
+            self._browser_widget.set_message(msg)
+            try:
+                messagebox.showinfo("Delete", msg, parent=self)
+            except Exception:
+                pass
+            return
+
+        if node.kind == "run":
+            title = "Delete Run"
+            prompt = f"Delete run artifacts for {node.label}?\n\nSession:\n{session_path}"
+        elif node.kind == "event":
+            title = "Delete Session"
+            prompt = f"Delete entire session folder?\n\n{session_path}"
+        else:
+            self._browser_widget.set_message("Delete is only supported for runs and sessions.")
+            return
+
+        try:
+            confirm = messagebox.askyesno(title, prompt, parent=self)
+        except Exception:
+            confirm = False
+        if not confirm:
+            self._browser_widget.set_message("Delete cancelled.")
+            return
+
+        try:
+            if node.kind == "event":
+                shutil.rmtree(session_path)
+                self._browser_widget.set_message(f"Deleted session: {session_path.name}")
+            else:
+                deleted = 0
+                for item in node.delete_paths:
+                    path = Path(item)
+                    if not path.exists():
+                        continue
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    deleted += 1
+                self._browser_widget.set_message(f"Deleted run artifacts: {deleted}")
+        except Exception as exc:
+            self._browser_widget.set_message(f"Delete failed: {exc}")
+            try:
+                messagebox.showerror("Delete", f"Could not delete item(s):\n\n{exc}", parent=self)
+            except Exception:
+                pass
+            return
+
+        self._refresh_coaching_index()
+
+    def _is_session_delete_locked(self, session_path: Path) -> bool:
+        lock_path = session_path / ACTIVE_SESSION_LOCK_FILENAME
+        finalized_path = session_path / SESSION_FINALIZED_FILENAME
+        try:
+            has_lock = lock_path.exists()
+            is_finalized = finalized_path.exists()
+        except Exception:
+            return False
+        return bool(has_lock and not is_finalized)
+
+    def _poll_recorder_status(self) -> None:
+        service = globals().get("irsdk_recorder_service")
+        if service is None:
+            self._status_vars["connection"].set("disconnected")
+            self._status_vars["session_type"].set("na")
+            self._status_vars["run_active"].set("na")
+            self._status_vars["sample_count"].set("0")
+            self._status_vars["dropped"].set("na")
+            self._status_vars["write_lag"].set("na")
+        else:
+            try:
+                status = service.get_status() if hasattr(service, "get_status") else {}
+            except Exception:
+                status = {}
+            connected = status.get("connected")
+            self._status_vars["connection"].set("connected" if connected else "disconnected")
+            self._status_vars["session_type"].set(str(status.get("session_type") or "na"))
+            run_active = status.get("run_active")
+            if run_active is None:
+                self._status_vars["run_active"].set("na")
+            else:
+                self._status_vars["run_active"].set("yes" if bool(run_active) else "no")
+            sample_count = status.get("sample_count")
+            self._status_vars["sample_count"].set(str(sample_count if sample_count is not None else "0"))
+            dropped = status.get("dropped")
+            self._status_vars["dropped"].set(str(dropped if dropped is not None else "na"))
+            write_lag = status.get("write_lag")
+            self._status_vars["write_lag"].set(str(write_lag if write_lag is not None else "na"))
+
+        try:
+            self._status_poll_after_id = self.after(400, self._poll_recorder_status)
+        except Exception:
+            self._status_poll_after_id = None
+
+    def _on_destroy(self, event) -> None:
+        if event.widget is not self:
+            return
+        after_id = self._status_poll_after_id
+        self._status_poll_after_id = None
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
 
 
 ViewEntry = type[ttk.Frame] | Callable[[], type[ttk.Frame]]

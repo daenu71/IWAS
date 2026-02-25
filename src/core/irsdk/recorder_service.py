@@ -82,6 +82,22 @@ class RecorderService:
         with self._lock:
             return self._sample_hz
 
+    def get_status(self) -> dict[str, Any]:
+        with self._lock:
+            status: dict[str, Any] = {
+                "running": bool(self._thread is not None and self._thread.is_alive()),
+                "connected": bool(self._client.is_connected),
+                "session_type": self._session_type,
+                "run_active": self._active_run_id is not None,
+                "active_run_id": self._active_run_id,
+                "sample_count": int(self._sample_count),
+                "sample_hz": int(self._sample_hz),
+                # Counters are optional in the UI; expose None when not tracked.
+                "dropped": None,
+                "write_lag": None,
+            }
+        return status
+
     def start(self, sample_hz: int) -> None:
         hz = self._normalize_hz(sample_hz)
         with self._lock:
