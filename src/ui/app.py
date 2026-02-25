@@ -2416,12 +2416,30 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         except Exception:
             _set_coaching_settings_error("Could not save coaching settings.")
             return False
+        for key, var in (
+            ("coaching_recording_enabled", coaching_recording_enabled_var),
+            ("coaching_retention_months_enabled", coaching_retention_months_enabled_var),
+            ("coaching_low_disk_warning_enabled", coaching_low_disk_warning_enabled_var),
+            ("coaching_auto_delete_enabled", coaching_auto_delete_enabled_var),
+        ):
+            try:
+                var.set(bool(saved.get(key, bool(var.get()))))
+            except Exception:
+                pass
+        try:
+            coaching_storage_dir_var.set(str(saved.get("coaching_storage_dir", coaching_storage_dir_var.get())))
+        except Exception:
+            pass
         for key in ("irsdk_sample_hz", "coaching_retention_months", "coaching_low_disk_warning_gb"):
             try:
                 coaching_last_valid_ints[key] = int(saved.get(key, coaching_last_valid_ints[key]))
                 coaching_numeric_vars[key].set(str(coaching_last_valid_ints[key]))
             except Exception:
                 pass
+        try:
+            _sync_coaching_settings_widget_states()
+        except Exception:
+            pass
         _clear_coaching_settings_error()
         return True
 
@@ -2455,6 +2473,10 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         payload, _err = _build_coaching_settings_payload(include_numeric=False)
         if payload is None:
             return
+        try:
+            _sync_coaching_settings_widget_states()
+        except Exception:
+            pass
         _save_coaching_settings_payload(payload)
 
     def _commit_coaching_storage_dir(_event=None) -> None:
@@ -3347,6 +3369,33 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
     ent_coaching_storage.bind("<Return>", _commit_coaching_storage_dir)
     ent_coaching_storage.bind("<FocusOut>", _commit_coaching_storage_dir)
+
+    def _set_coaching_widget_enabled(widget, enabled: bool) -> None:
+        try:
+            widget.state(["!disabled"] if enabled else ["disabled"])
+            return
+        except Exception:
+            pass
+        try:
+            widget.configure(state="normal" if enabled else "disabled")
+        except Exception:
+            pass
+
+    def _sync_coaching_settings_widget_states() -> None:
+        master_enabled = bool(coaching_recording_enabled_var.get())
+        retention_enabled = master_enabled and bool(coaching_retention_months_enabled_var.get())
+        low_disk_enabled = master_enabled and bool(coaching_low_disk_warning_enabled_var.get())
+
+        _set_coaching_widget_enabled(ent_coaching_storage, master_enabled)
+        _set_coaching_widget_enabled(btn_coaching_storage_browse, master_enabled)
+        _set_coaching_widget_enabled(spn_irsdk_sample_hz, master_enabled)
+        _set_coaching_widget_enabled(chk_coaching_retention_enabled, master_enabled)
+        _set_coaching_widget_enabled(spn_coaching_retention_months, retention_enabled)
+        _set_coaching_widget_enabled(chk_coaching_low_disk_enabled, master_enabled)
+        _set_coaching_widget_enabled(spn_coaching_low_disk_gb, low_disk_enabled)
+        _set_coaching_widget_enabled(chk_coaching_auto_delete_enabled, low_disk_enabled)
+
+    _sync_coaching_settings_widget_states()
 
 
     def parse_preset(preset: str) -> tuple[int, int]:
