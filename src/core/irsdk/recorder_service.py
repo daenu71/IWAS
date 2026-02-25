@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from core.coaching.models import SessionMeta
+from core.coaching.run_detector import RunDetector
 from core.irsdk.channels import REQUESTED_CHANNELS
 from core.irsdk.irsdk_client import IRSDKClient
 from core.irsdk.sessioninfo_parser import extract_session_meta
@@ -36,6 +37,11 @@ class RecorderService:
         self._session_info_yaml_saved = False
         self._session_info_wait_logged = False
         self._session_info_artifacts_logged = False
+        self._session_type: str | None = None
+        self._run_detector: RunDetector | None = None
+        self._run_id_seq = 0
+        self._active_run_id: int | None = None
+        self._run_events: deque[dict[str, Any]] = deque(maxlen=200)
 
     @property
     def running(self) -> bool:
@@ -75,6 +81,11 @@ class RecorderService:
             self._session_info_yaml_saved = False
             self._session_info_wait_logged = False
             self._session_info_artifacts_logged = False
+            self._session_type = None
+            self._run_detector = None
+            self._run_id_seq = 0
+            self._active_run_id = None
+            self._run_events = deque(maxlen=200)
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -133,6 +144,7 @@ class RecorderService:
                     # Connection may have dropped in read_sample().
                     self._sleep_interruptible(0.05)
                     continue
+                self._process_run_detector(sample)
 
                 with self._lock:
                     self._buffer.append(sample)
@@ -273,6 +285,7 @@ class RecorderService:
                     existing = json.loads(meta_path.read_text(encoding="utf-8"))
                     if isinstance(existing, dict):
                         base = existing
+                        self._ensure_run_detector_from_session_type(base.get("SessionType"))
                 except Exception:
                     _LOG.warning("irsdk session_meta.json exists but could not be parsed; overwriting")
             meta_path.write_text(json.dumps(meta.to_dict(base), indent=2), encoding="utf-8")
@@ -381,6 +394,7 @@ class RecorderService:
                     "recorder_start_ts": recorder_start_ts,
                     "session_info_saved_ts": session_info_saved_ts,
                 }
+            self._ensure_run_detector_from_session_type(extracted.get("SessionType"))
             self._merge_session_meta_fields(extracted)
             return True
         except Exception as exc:
@@ -405,6 +419,82 @@ class RecorderService:
             meta_path.write_text(json.dumps(base, indent=2), encoding="utf-8")
         except Exception as exc:
             _LOG.warning("irsdk session meta merge failed (%s)", exc)
+
+    def _ensure_run_detector_from_session_type(self, session_type: Any) -> None:
+        if session_type is None:
+            return
+        normalized = str(session_type).strip().lower()
+        if not normalized:
+            return
+        with self._lock:
+            current = self._session_type
+            detector = self._run_detector
+            if detector is not None:
+                if current != normalized:
+                    _LOG.info(
+                        "irsdk run detector session_type already set (%s), ignoring later value (%s)",
+                        current,
+                        normalized,
+                    )
+                return
+            self._session_type = normalized
+            self._run_detector = RunDetector(normalized)
+        _LOG.info("irsdk run detector ready (session_type=%s)", normalized)
+
+    def _process_run_detector(self, sample: dict[str, Any]) -> None:
+        with self._lock:
+            detector = self._run_detector
+            session_type = self._session_type or "unknown"
+        if detector is None:
+            return
+
+        try:
+            now_ts = float(sample.get("timestamp_monotonic", time.monotonic()))
+        except Exception:
+            now_ts = time.monotonic()
+        try:
+            events = detector.update(sample, now_ts)
+        except Exception as exc:
+            _LOG.warning("irsdk run detector update failed (%s)", exc)
+            return
+        if not events:
+            return
+
+        for event in events:
+            self._handle_run_event(event, session_type=session_type)
+
+    def _handle_run_event(self, event: dict[str, Any], *, session_type: str) -> None:
+        event_type = str(event.get("type") or "")
+        reason = str(event.get("reason") or "unknown")
+        ts = event.get("timestamp")
+
+        with self._lock:
+            active_run_id = self._active_run_id
+            if event_type == "RUN_START":
+                if active_run_id is not None:
+                    return
+                self._run_id_seq += 1
+                active_run_id = self._run_id_seq
+                self._active_run_id = active_run_id
+            elif event_type == "RUN_END":
+                if active_run_id is None:
+                    return
+                self._active_run_id = None
+            else:
+                return
+
+            stored_event = dict(event)
+            stored_event["run_id"] = active_run_id
+            self._run_events.append(stored_event)
+
+        _LOG.info(
+            "irsdk %s run_id=%s reason=%s session_type=%s ts=%s",
+            event_type.lower(),
+            active_run_id,
+            reason,
+            session_type,
+            ts,
+        )
 
     @staticmethod
     def _buffer_capacity_for_hz(sample_hz: int) -> int:
