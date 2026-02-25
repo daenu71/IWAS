@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any
 
+from core.coaching.lap_segmenter import LapSegmenter
 from core.coaching.models import SessionMeta
 from core.coaching.parquet_writer import ParquetRunWriter
 from core.coaching.run_detector import RunDetector
@@ -54,6 +55,9 @@ class RecorderService:
         self._run_events: deque[dict[str, Any]] = deque(maxlen=200)
         self._active_run_writer: ParquetRunWriter | None = None
         self._active_run_meta: dict[str, Any] | None = None
+        self._active_lap_segmenter: LapSegmenter | None = None
+        self._active_run_last_sample_index: int | None = None
+        self._active_run_last_sample_ts: float | None = None
         self._active_run_write_error_logged = False
         self._session_identity_fields: dict[str, Any] = {}
         self._session_finalized_marked = False
@@ -103,6 +107,9 @@ class RecorderService:
             self._run_events = deque(maxlen=200)
             self._active_run_writer = None
             self._active_run_meta = None
+            self._active_lap_segmenter = None
+            self._active_run_last_sample_index = None
+            self._active_run_last_sample_ts = None
             self._active_run_write_error_logged = False
             self._session_identity_fields = {}
             self._session_finalized_marked = False
@@ -538,15 +545,20 @@ class RecorderService:
         raw = sample.get("raw")
         raw_dict = raw if isinstance(raw, dict) else {}
         session_time = self._coerce_optional_float(raw_dict.get("SessionTime"))
+        sample_now_ts = self._coerce_optional_float(sample.get("timestamp_monotonic"))
         lap_value = self._coerce_optional_int(raw_dict.get("Lap"))
         if lap_value is None:
             lap_value = self._coerce_optional_int(raw_dict.get("LapCompleted"))
 
+        segmenter: LapSegmenter | None = None
+        sample_index = 0
         with self._lock:
             current_run_id = self._active_run_id
             current_meta = self._active_run_meta
             if current_run_id != active_run_id or not isinstance(current_meta, dict):
                 return
+            sample_index = int(current_meta.get("sample_count", 0))
+            segmenter = self._active_lap_segmenter
             current_meta["sample_count"] = int(current_meta.get("sample_count", 0)) + 1
             if session_time is not None:
                 if "start_session_time" not in current_meta:
@@ -556,7 +568,15 @@ class RecorderService:
                 if "lap_start" not in current_meta:
                     current_meta["lap_start"] = lap_value
                 current_meta["lap_end"] = lap_value
+            self._active_run_last_sample_index = sample_index
+            self._active_run_last_sample_ts = sample_now_ts
             writer = self._active_run_writer
+
+        if segmenter is not None:
+            try:
+                segmenter.update(sample, sample_index, sample_now_ts)
+            except Exception as exc:
+                _LOG.warning("irsdk lap segmenter update failed for run_id=%s (%s)", active_run_id, exc)
 
         if writer is None:
             return
@@ -596,6 +616,10 @@ class RecorderService:
                 "recorded_channels": recorded_channels,
                 "dtype_decisions": dtype_decisions,
             }
+            self._active_lap_segmenter = LapSegmenter()
+            self._active_lap_segmenter.reset(run_id=run_id)
+            self._active_run_last_sample_index = None
+            self._active_run_last_sample_ts = None
             self._active_run_write_error_logged = False
 
         run_path = session_dir / f"run_{run_id:04d}.parquet"
@@ -619,6 +643,9 @@ class RecorderService:
         writer: ParquetRunWriter | None = None
         meta: dict[str, Any] | None = None
         final_run_id = run_id
+        segmenter: LapSegmenter | None = None
+        last_sample_index: int | None = None
+        last_sample_ts: float | None = None
         with self._lock:
             active_run_id = self._active_run_id
             if final_run_id is None:
@@ -629,8 +656,14 @@ class RecorderService:
                 self._active_run_id = None
             writer = self._active_run_writer
             meta = self._active_run_meta if isinstance(self._active_run_meta, dict) else None
+            segmenter = self._active_lap_segmenter
+            last_sample_index = self._active_run_last_sample_index
+            last_sample_ts = self._active_run_last_sample_ts
             self._active_run_writer = None
             self._active_run_meta = None
+            self._active_lap_segmenter = None
+            self._active_run_last_sample_index = None
+            self._active_run_last_sample_ts = None
             self._active_run_write_error_logged = False
 
         if writer is not None:
@@ -640,6 +673,38 @@ class RecorderService:
                 if isinstance(meta, dict):
                     meta.setdefault("writer_close_error", str(exc))
                 _LOG.warning("irsdk run parquet close failed for run_id=%s (%s)", final_run_id, exc)
+
+        if isinstance(meta, dict):
+            lap_segments: list[dict[str, Any]] = []
+            if segmenter is not None and last_sample_index is not None and last_sample_index >= 0:
+                try:
+                    segmenter.finalize(last_sample_index, now_ts=last_sample_ts)
+                except Exception as exc:
+                    meta.setdefault("lap_segmenter_finalize_error", str(exc))
+                    _LOG.warning("irsdk lap segmenter finalize failed for run_id=%s (%s)", final_run_id, exc)
+                for segment in segmenter.segments:
+                    if not isinstance(segment, dict):
+                        continue
+                    start_idx = self._coerce_optional_int(segment.get("start_idx"))
+                    end_idx = self._coerce_optional_int(segment.get("end_idx"))
+                    if start_idx is None or end_idx is None:
+                        continue
+                    item: dict[str, Any] = {
+                        "start_sample": start_idx,
+                        "end_sample": end_idx,
+                        "reason": str(segment.get("reason") or "unknown"),
+                    }
+                    lap_no = self._coerce_optional_int(segment.get("lap_no"))
+                    if lap_no is not None:
+                        item["lap_no"] = lap_no
+                    start_ts = self._coerce_optional_float(segment.get("start_ts"))
+                    end_ts = self._coerce_optional_float(segment.get("end_ts"))
+                    if start_ts is not None:
+                        item["start_ts"] = start_ts
+                    if end_ts is not None:
+                        item["end_ts"] = end_ts
+                    lap_segments.append(item)
+            meta["lap_segments"] = lap_segments
 
         if isinstance(meta, dict):
             if reason:

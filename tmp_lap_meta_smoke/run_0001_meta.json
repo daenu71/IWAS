@@ -1,0 +1,31 @@
+{
+  "run_id": 1,
+  "sample_count": 4,
+  "recorded_channels": [
+    "LapCompleted",
+    "LapDistPct",
+    "IsOnTrackCar"
+  ],
+  "dtype_decisions": {},
+  "lap_start": 12,
+  "lap_end": 13,
+  "lap_segments": [
+    {
+      "start_sample": 0,
+      "end_sample": 1,
+      "reason": "counter_change",
+      "lap_no": 12,
+      "start_ts": 100.0,
+      "end_ts": 100.2
+    },
+    {
+      "start_sample": 2,
+      "end_sample": 3,
+      "reason": "run_end",
+      "lap_no": 13,
+      "start_ts": 100.2,
+      "end_ts": 100.3
+    }
+  ],
+  "run_end_reason": "smoke"
+}
