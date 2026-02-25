@@ -125,6 +125,16 @@ class IRSDKClient:
         except Exception:
             return {}
 
+    def get_session_info_yaml(self) -> str | None:
+        with self._lock:
+            ir = self._ir
+        if ir is None:
+            return None
+        try:
+            return self._get_session_info_yaml_from_ir(ir)
+        except Exception:
+            return None
+
     def _runtime_is_connected(self, ir: Any) -> bool:
         checks = (
             ("is_connected", True),
@@ -236,6 +246,48 @@ class IRSDKClient:
                     return value() if callable(value) else value
                 except Exception:
                     continue
+        return None
+
+    @classmethod
+    def _get_session_info_yaml_from_ir(cls, ir: Any) -> str | None:
+        for attr_name in (
+            "session_info",
+            "sessionInfo",
+            "session_info_yaml",
+            "sessionInfoYaml",
+            "session_info_str",
+            "sessionInfoStr",
+            "_session_info",
+            "_sessionInfo",
+            "_IRSDK__session_info",
+        ):
+            value = cls._get_ir_attr_value(ir, attr_name)
+            text = cls._coerce_text(value)
+            if text and text.strip():
+                return text
+
+        try:
+            for attr_name, attr_value in vars(ir).items():
+                if "session" not in attr_name.lower() or "info" not in attr_name.lower():
+                    continue
+                text = cls._coerce_text(attr_value)
+                if text and text.strip():
+                    return text
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8", errors="replace")
+            except Exception:
+                return None
+        if isinstance(value, str):
+            return value
         return None
 
     @staticmethod

@@ -11,6 +11,7 @@ from typing import Any
 from core.coaching.models import SessionMeta
 from core.irsdk.channels import REQUESTED_CHANNELS
 from core.irsdk.irsdk_client import IRSDKClient
+from core.irsdk.sessioninfo_parser import extract_session_meta
 
 
 _LOG = logging.getLogger(__name__)
@@ -30,6 +31,11 @@ class RecorderService:
         self._channels_initialized = False
         self._dtype_decisions: dict[str, str] = {}
         self._session_meta_written = False
+        self._session_dir: Path | None = None
+        self._session_start_wall_ts: float | None = None
+        self._session_info_yaml_saved = False
+        self._session_info_wait_logged = False
+        self._session_info_artifacts_logged = False
 
     @property
     def running(self) -> bool:
@@ -64,6 +70,11 @@ class RecorderService:
             self._channels_initialized = False
             self._dtype_decisions = {}
             self._session_meta_written = False
+            self._session_dir = None
+            self._session_start_wall_ts = time.time()
+            self._session_info_yaml_saved = False
+            self._session_info_wait_logged = False
+            self._session_info_artifacts_logged = False
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -109,10 +120,13 @@ class RecorderService:
                         self._sleep_interruptible(1.0)
                         continue
                     self._initialize_channels()
+                    self._try_write_session_info_yaml()
                     next_tick = time.monotonic()
 
                 if not self._channels_initialized:
                     self._initialize_channels()
+                if not self._session_info_yaml_saved:
+                    self._try_write_session_info_yaml()
 
                 sample = self._client.read_sample(fields=self._recorded_channels)
                 if sample is None:
@@ -266,16 +280,131 @@ class RecorderService:
             _LOG.warning("irsdk session meta write failed (%s)", exc)
 
     def _resolve_session_meta_path(self) -> Path | None:
+        session_dir = self._ensure_session_dir()
+        if session_dir is not None:
+            return session_dir / "session_meta.json"
+        return Path.cwd() / "session_meta.json"
+
+    def _try_write_session_info_yaml(self) -> None:
+        if self._session_info_yaml_saved:
+            return
+
+        getter = getattr(self._client, "get_session_info_yaml", None)
+        if not callable(getter):
+            if not self._session_info_wait_logged:
+                self._session_info_wait_logged = True
+                _LOG.info("irsdk SessionInfo raw YAML not available (client has no getter)")
+            return
+
+        try:
+            raw_yaml = getter()
+        except Exception as exc:
+            if not self._session_info_wait_logged:
+                self._session_info_wait_logged = True
+                _LOG.warning("irsdk SessionInfo read failed (%s)", exc)
+            return
+
+        if not raw_yaml:
+            if not self._session_info_wait_logged:
+                self._session_info_wait_logged = True
+                _LOG.info("irsdk SessionInfo not yet available; will retry")
+            return
+
+        yaml_path = self._resolve_session_info_yaml_path()
+        if yaml_path is None:
+            return
+        try:
+            yaml_path.parent.mkdir(parents=True, exist_ok=True)
+            yaml_text = str(raw_yaml)
+            yaml_path.write_text(yaml_text, encoding="utf-8")
+            saved_ts = time.time()
+            self._session_info_yaml_saved = True
+            meta_merged = self._merge_session_info_meta_from_yaml(yaml_text, session_info_saved_ts=saved_ts)
+            if meta_merged and not self._session_info_artifacts_logged:
+                self._session_info_artifacts_logged = True
+                _LOG.info("irsdk session_info.yaml + session_meta.json saved (%s)", yaml_path.parent)
+        except Exception as exc:
+            _LOG.warning("irsdk session_info.yaml write failed (%s)", exc)
+
+    def _resolve_session_info_yaml_path(self) -> Path | None:
+        session_dir = self._ensure_session_dir()
+        if session_dir is None:
+            return None
+        return session_dir / "session_info.yaml"
+
+    def _ensure_session_dir(self) -> Path | None:
+        with self._lock:
+            if self._session_dir is not None:
+                return self._session_dir
+            start_wall_ts = self._session_start_wall_ts or time.time()
+        base_dir = self._resolve_session_root_dir()
+        if base_dir is None:
+            return None
+
+        timestamp_part = time.strftime("%Y%m%d-%H%M%S", time.localtime(start_wall_ts))
+        millis_part = int((start_wall_ts - int(start_wall_ts)) * 1000)
+        session_dir = base_dir / f"session-{timestamp_part}-{millis_part:03d}"
+        try:
+            session_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            _LOG.warning("irsdk session dir create failed (%s)", exc)
+            return None
+
+        with self._lock:
+            if self._session_dir is None:
+                self._session_dir = session_dir
+            return self._session_dir
+
+    def _resolve_session_root_dir(self) -> Path | None:
         try:
             from core.persistence import load_coaching_recording_settings
 
             settings = load_coaching_recording_settings()
             storage_dir = str(settings.get("coaching_storage_dir", "") or "").strip()
             if storage_dir:
-                return Path(storage_dir) / "session_meta.json"
+                return Path(storage_dir)
+        except Exception:
+            pass
+        return Path.cwd()
+
+    def _merge_session_info_meta_from_yaml(self, yaml_text: str, *, session_info_saved_ts: float) -> bool:
+        try:
+            with self._lock:
+                recorder_start_ts = self._session_start_wall_ts
+            extracted = extract_session_meta(
+                yaml_text,
+                recorder_start_ts=recorder_start_ts,
+                session_info_saved_ts=session_info_saved_ts,
+            )
+            if not extracted:
+                extracted = {
+                    "recorder_start_ts": recorder_start_ts,
+                    "session_info_saved_ts": session_info_saved_ts,
+                }
+            self._merge_session_meta_fields(extracted)
+            return True
         except Exception as exc:
-            _LOG.warning("irsdk session meta path via coaching settings unavailable (%s)", exc)
-        return Path.cwd() / "session_meta.json"
+            _LOG.warning("irsdk SessionInfo meta extract/merge failed (%s)", exc)
+            return False
+
+    def _merge_session_meta_fields(self, fields: dict[str, Any]) -> None:
+        meta_path = self._resolve_session_meta_path()
+        if meta_path is None:
+            return
+        try:
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            base: dict[str, Any] = {}
+            if meta_path.exists():
+                try:
+                    existing = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict):
+                        base = existing
+                except Exception:
+                    _LOG.warning("irsdk session_meta.json exists but could not be parsed; overwriting")
+            base.update(fields)
+            meta_path.write_text(json.dumps(base, indent=2), encoding="utf-8")
+        except Exception as exc:
+            _LOG.warning("irsdk session meta merge failed (%s)", exc)
 
     @staticmethod
     def _buffer_capacity_for_hz(sample_hz: int) -> int:
