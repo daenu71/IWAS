@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any
 
+from core.coaching.models import SessionMeta
+from core.irsdk.channels import REQUESTED_CHANNELS
 from core.irsdk.irsdk_client import IRSDKClient
 
 
@@ -21,6 +25,11 @@ class RecorderService:
         self._sample_hz = 120
         self._buffer: deque[dict[str, Any]] = deque(maxlen=self._buffer_capacity_for_hz(120))
         self._sample_count = 0
+        self._recorded_channels: tuple[str, ...] = tuple(REQUESTED_CHANNELS)
+        self._missing_channels: tuple[str, ...] = ()
+        self._channels_initialized = False
+        self._dtype_decisions: dict[str, str] = {}
+        self._session_meta_written = False
 
     @property
     def running(self) -> bool:
@@ -50,6 +59,11 @@ class RecorderService:
             self._sample_hz = hz
             self._sample_count = 0
             self._buffer = deque(maxlen=self._buffer_capacity_for_hz(hz))
+            self._recorded_channels = tuple(REQUESTED_CHANNELS)
+            self._missing_channels = ()
+            self._channels_initialized = False
+            self._dtype_decisions = {}
+            self._session_meta_written = False
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -94,9 +108,13 @@ class RecorderService:
                     if not self._client.is_connected:
                         self._sleep_interruptible(1.0)
                         continue
+                    self._initialize_channels()
                     next_tick = time.monotonic()
 
-                sample = self._client.read_sample()
+                if not self._channels_initialized:
+                    self._initialize_channels()
+
+                sample = self._client.read_sample(fields=self._recorded_channels)
                 if sample is None:
                     # Connection may have dropped in read_sample().
                     self._sleep_interruptible(0.05)
@@ -135,6 +153,129 @@ class RecorderService:
             self._stop_event.wait(0.0)
             return
         self._stop_event.wait(seconds)
+
+    def _initialize_channels(self) -> None:
+        if self._channels_initialized:
+            return
+
+        channel_info = self._client.describe_available_channels()
+        available_channels = set(channel_info.keys())
+        if available_channels:
+            recorded_channels = [name for name in REQUESTED_CHANNELS if name in available_channels]
+            missing_channels = [name for name in REQUESTED_CHANNELS if name not in available_channels]
+        else:
+            # Preserve current behavior if header discovery is unavailable.
+            recorded_channels = list(REQUESTED_CHANNELS)
+            missing_channels = []
+            _LOG.warning("irsdk channel discovery unavailable; falling back to requested channel list")
+
+        with self._lock:
+            self._recorded_channels = tuple(recorded_channels)
+            self._missing_channels = tuple(missing_channels)
+            self._dtype_decisions = self._build_dtype_decisions(recorded_channels, channel_info)
+            self._channels_initialized = True
+
+        if missing_channels:
+            _LOG.warning("irsdk missing channels (skipping): %s", ", ".join(missing_channels))
+        self._write_session_meta()
+
+    @classmethod
+    def _build_dtype_decisions(
+        cls,
+        recorded_channels: list[str],
+        channel_info: dict[str, dict[str, Any]],
+    ) -> dict[str, str]:
+        decisions: dict[str, str] = {}
+        for name in recorded_channels:
+            info = channel_info.get(name) or {}
+            decision = cls._format_dtype_decision(info)
+            if decision:
+                decisions[name] = decision
+        return decisions
+
+    @staticmethod
+    def _format_dtype_decision(info: dict[str, Any]) -> str | None:
+        var_type = info.get("type")
+        count = info.get("count")
+        if var_type is None and count is None:
+            return None
+
+        dtype_name = None
+        if var_type is not None:
+            raw = str(var_type).strip()
+            key = raw.lower()
+            dtype_name = {
+                "irsdk_float": "float32",
+                "float": "float32",
+                "irsdk_double": "float64",
+                "double": "float64",
+                "irsdk_int": "int32",
+                "int": "int32",
+                "irsdk_bool": "bool",
+                "bool": "bool",
+                "irsdk_char": "char",
+                "char": "char",
+                "irsdk_bitfield": "uint32",
+                "bitfield": "uint32",
+            }.get(key, raw)
+
+        if count is None:
+            return dtype_name
+        try:
+            count_int = int(count)
+        except Exception:
+            count_int = None
+        if count_int is None:
+            return f"{dtype_name}[{count}]" if dtype_name else f"[{count}]"
+        if count_int <= 1:
+            return dtype_name or f"[{count_int}]"
+        return f"{dtype_name}[{count_int}]" if dtype_name else f"[{count_int}]"
+
+    def _write_session_meta(self) -> None:
+        with self._lock:
+            if self._session_meta_written or not self._channels_initialized:
+                return
+            sample_hz = self._sample_hz
+            recorded_channels = list(self._recorded_channels)
+            missing_channels = list(self._missing_channels)
+            dtype_decisions = dict(self._dtype_decisions)
+            self._session_meta_written = True
+
+        meta = SessionMeta(
+            recorded_channels=recorded_channels,
+            missing_channels=missing_channels,
+            sample_hz=sample_hz,
+            dtype_decisions=dtype_decisions,
+        )
+        meta_path = self._resolve_session_meta_path()
+        if meta_path is None:
+            return
+
+        try:
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            base: dict[str, Any] = {}
+            if meta_path.exists():
+                try:
+                    existing = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict):
+                        base = existing
+                except Exception:
+                    _LOG.warning("irsdk session_meta.json exists but could not be parsed; overwriting")
+            meta_path.write_text(json.dumps(meta.to_dict(base), indent=2), encoding="utf-8")
+        except Exception as exc:
+            _LOG.warning("irsdk session meta write failed (%s)", exc)
+
+    def _resolve_session_meta_path(self) -> Path | None:
+        try:
+            from core.persistence import load_coaching_recording_settings
+
+            settings = load_coaching_recording_settings()
+            storage_dir = str(settings.get("coaching_storage_dir", "") or "").strip()
+            if storage_dir:
+                return Path(storage_dir) / "session_meta.json"
+        except Exception as exc:
+            _LOG.warning("irsdk session meta path via coaching settings unavailable (%s)", exc)
+        return Path.cwd() / "session_meta.json"
 
     @staticmethod
     def _buffer_capacity_for_hz(sample_hz: int) -> int:
