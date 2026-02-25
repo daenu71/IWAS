@@ -1,9 +1,12 @@
 import configparser
 import json
+import logging
 import math
 from pathlib import Path
 
 from core.resources import get_resource_path
+
+_LOG = logging.getLogger(__name__)
 
 
 def _find_project_root(script_path: Path) -> Path:
@@ -46,7 +49,7 @@ _COACHING_RECORDING_INT_RANGES: dict[str, tuple[int, int]] = {
 }
 _COACHING_RECORDING_DEFAULTS: dict[str, object] = {
     "coaching_recording_enabled": True,
-    "coaching_storage_dir": "",
+    "coaching_storage_dir": r"C:\iWAS\data\coaching",
     "irsdk_sample_hz": 120,
     "coaching_retention_months_enabled": False,
     "coaching_retention_months": 6,
@@ -54,6 +57,7 @@ _COACHING_RECORDING_DEFAULTS: dict[str, object] = {
     "coaching_low_disk_warning_gb": 20,
     "coaching_auto_delete_enabled": False,
 }
+_COACHING_STORAGE_DIR_FALLBACK = Path(r"C:\iWAS\data\coaching")
 
 _VIDEO_CUT_DEFAULTS: dict[str, float] = {
     "video_before_brake": 1.0,
@@ -163,6 +167,66 @@ def _coerce_str(raw: object, fallback: str) -> str:
         return str(fallback)
 
 
+def _persist_coaching_storage_dir_if_user_empty(effective_dir: str) -> None:
+    user_cp = configparser.ConfigParser()
+    try:
+        if user_ini.exists():
+            user_cp.read(user_ini, encoding="utf-8")
+    except Exception:
+        pass
+
+    existing = ""
+    try:
+        if user_cp.has_section(_COACHING_RECORDING_SECTION) and user_cp.has_option(
+            _COACHING_RECORDING_SECTION, "coaching_storage_dir"
+        ):
+            existing = str(user_cp.get(_COACHING_RECORDING_SECTION, "coaching_storage_dir", fallback="")).strip()
+    except Exception:
+        existing = ""
+    if existing:
+        return
+
+    try:
+        if not user_cp.has_section(_COACHING_RECORDING_SECTION):
+            user_cp.add_section(_COACHING_RECORDING_SECTION)
+        user_cp.set(_COACHING_RECORDING_SECTION, "coaching_storage_dir", effective_dir)
+        if not cfg.has_section(_COACHING_RECORDING_SECTION):
+            cfg.add_section(_COACHING_RECORDING_SECTION)
+        cfg.set(_COACHING_RECORDING_SECTION, "coaching_storage_dir", effective_dir)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with user_ini.open("w", encoding="utf-8") as fh:
+            user_cp.write(fh)
+    except Exception as exc:
+        _LOG.warning("could not persist default coaching storage dir '%s' (%s)", effective_dir, exc)
+
+
+def resolve_coaching_storage_dir(
+    raw_value: object | None = None,
+    *,
+    persist_if_user_empty: bool = False,
+) -> str:
+    if raw_value is None:
+        raw_value = cfg_get(
+            _COACHING_RECORDING_SECTION,
+            "coaching_storage_dir",
+            str(_COACHING_RECORDING_DEFAULTS["coaching_storage_dir"]),
+        )
+
+    raw_text = _coerce_str(raw_value, "")
+    path_obj = Path(raw_text) if raw_text else _COACHING_STORAGE_DIR_FALLBACK
+    effective_dir = str(path_obj)
+
+    try:
+        path_obj.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        _LOG.error("coaching storage directory unavailable '%s' (%s)", effective_dir, exc)
+
+    if persist_if_user_empty:
+        _persist_coaching_storage_dir_if_user_empty(effective_dir)
+
+    return effective_dir
+
+
 def load_coaching_recording_settings() -> dict[str, object]:
     return {
         "coaching_recording_enabled": bool(
@@ -172,14 +236,7 @@ def load_coaching_recording_settings() -> dict[str, object]:
                 bool(_COACHING_RECORDING_DEFAULTS["coaching_recording_enabled"]),
             )
         ),
-        "coaching_storage_dir": _coerce_str(
-            cfg_get(
-                _COACHING_RECORDING_SECTION,
-                "coaching_storage_dir",
-                str(_COACHING_RECORDING_DEFAULTS["coaching_storage_dir"]),
-            ),
-            str(_COACHING_RECORDING_DEFAULTS["coaching_storage_dir"]),
-        ),
+        "coaching_storage_dir": resolve_coaching_storage_dir(persist_if_user_empty=True),
         "irsdk_sample_hz": _coerce_int_in_range(
             cfg_get(
                 _COACHING_RECORDING_SECTION,
@@ -285,6 +342,7 @@ def save_coaching_recording_settings(values: dict[str, object]) -> dict[str, obj
             incoming.get("coaching_auto_delete_enabled"),
             bool(current["coaching_auto_delete_enabled"]),
         )
+    merged["coaching_storage_dir"] = resolve_coaching_storage_dir(merged.get("coaching_storage_dir"))
 
     user_cp = configparser.ConfigParser()
     try:

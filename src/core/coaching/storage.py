@@ -17,15 +17,16 @@ _SANITIZE_REPEAT_UNDERSCORE_RE = re.compile(r"_+")
 
 def get_coaching_storage_dir() -> Path:
     try:
-        from core.persistence import load_coaching_recording_settings
+        from core.persistence import resolve_coaching_storage_dir
 
-        settings = load_coaching_recording_settings()
-        storage_dir = str(settings.get("coaching_storage_dir", "") or "").strip()
-        if storage_dir:
-            return Path(storage_dir)
+        return Path(resolve_coaching_storage_dir())
     except Exception:
-        pass
-    return Path.cwd()
+        fallback = Path(r"C:\iWAS\data\coaching")
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return fallback
 
 
 def sanitize_name(s: str) -> str:

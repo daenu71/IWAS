@@ -1044,17 +1044,368 @@ class VideoAnalysisView(ttk.Frame):
         build_video_analysis_view(root=root, host=self)
 
 
+class CoachingRecordingSettingsPanel(ttk.LabelFrame):
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master, text="Coaching Recording", padding=12)
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=1)
+        self.columnconfigure(2, weight=0)
+        self._project_root = find_project_root(Path(__file__))
+
+        self._numeric_specs: dict[str, tuple[str, int, int]] = {
+            "irsdk_sample_hz": ("Sample rate (Hz)", 0, 1000),
+            "coaching_retention_months": ("Retention months", 1, 120),
+            "coaching_low_disk_warning_gb": ("Warning threshold (GB)", 1, 2000),
+        }
+
+        self._widgets: dict[str, tk.Widget] = {}
+        self._load_state()
+        self._build_ui()
+        self._sync_widget_states()
+
+    def _load_state(self) -> None:
+        sel = persistence.load_coaching_recording_settings()
+        self._recording_enabled_var = tk.BooleanVar(value=bool(sel.get("coaching_recording_enabled", True)))
+        self._storage_dir_var = tk.StringVar(value=str(sel.get("coaching_storage_dir", "")))
+        self._irsdk_sample_hz_var = tk.StringVar(value=str(int(sel.get("irsdk_sample_hz", 120))))
+        self._retention_enabled_var = tk.BooleanVar(value=bool(sel.get("coaching_retention_months_enabled", False)))
+        self._retention_months_var = tk.StringVar(value=str(int(sel.get("coaching_retention_months", 6))))
+        self._low_disk_enabled_var = tk.BooleanVar(value=bool(sel.get("coaching_low_disk_warning_enabled", False)))
+        self._low_disk_gb_var = tk.StringVar(value=str(int(sel.get("coaching_low_disk_warning_gb", 20))))
+        self._auto_delete_enabled_var = tk.BooleanVar(value=bool(sel.get("coaching_auto_delete_enabled", False)))
+        self._error_var = tk.StringVar(value="")
+
+        self._numeric_vars: dict[str, tk.StringVar] = {
+            "irsdk_sample_hz": self._irsdk_sample_hz_var,
+            "coaching_retention_months": self._retention_months_var,
+            "coaching_low_disk_warning_gb": self._low_disk_gb_var,
+        }
+        self._last_valid_ints: dict[str, int] = {
+            "irsdk_sample_hz": int(sel.get("irsdk_sample_hz", 120)),
+            "coaching_retention_months": int(sel.get("coaching_retention_months", 6)),
+            "coaching_low_disk_warning_gb": int(sel.get("coaching_low_disk_warning_gb", 20)),
+        }
+
+    def _build_ui(self) -> None:
+        row = 0
+        chk_recording_enabled = ttk.Checkbutton(
+            self,
+            text="Enable recording",
+            variable=self._recording_enabled_var,
+            command=self._commit_flag_settings,
+        )
+        chk_recording_enabled.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        self._widgets["recording_enabled"] = chk_recording_enabled
+
+        row += 1
+        ttk.Label(self, text="Storage directory").grid(row=row, column=0, sticky="w", pady=2)
+        storage_frame = ttk.Frame(self)
+        storage_frame.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(10, 0), pady=2)
+        storage_frame.columnconfigure(0, weight=1)
+        ent_storage = ttk.Entry(storage_frame, textvariable=self._storage_dir_var)
+        ent_storage.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        btn_browse = ttk.Button(storage_frame, text="Browse...", command=self._browse_storage_dir)
+        btn_browse.grid(row=0, column=1, sticky="w")
+        self._widgets["storage_entry"] = ent_storage
+        self._widgets["storage_browse"] = btn_browse
+        ent_storage.bind("<Return>", self._commit_storage_dir)
+        ent_storage.bind("<FocusOut>", self._commit_storage_dir)
+
+        vcmd_nonneg_int = (self.register(self._validate_nonnegative_int_entry_text), "%P")
+
+        row += 1
+        ttk.Label(self, text="Sample rate (Hz)").grid(row=row, column=0, sticky="w", pady=2)
+        sample_frame = ttk.Frame(self)
+        sample_frame.grid(row=row, column=1, columnspan=2, sticky="w", padx=(10, 0), pady=2)
+        spn_sample_hz = ttk.Spinbox(
+            sample_frame,
+            from_=0,
+            to=1000,
+            increment=1,
+            width=8,
+            textvariable=self._irsdk_sample_hz_var,
+            validate="key",
+            validatecommand=vcmd_nonneg_int,
+            command=lambda: self._commit_single_numeric_setting("irsdk_sample_hz"),
+        )
+        spn_sample_hz.grid(row=0, column=0, sticky="w")
+        ttk.Label(sample_frame, text="0 = unthrottled").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self._widgets["sample_hz"] = spn_sample_hz
+
+        row += 1
+        chk_retention_enabled = ttk.Checkbutton(
+            self,
+            text="Retention: delete recordings older than (months)",
+            variable=self._retention_enabled_var,
+            command=self._commit_flag_settings,
+        )
+        chk_retention_enabled.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._widgets["retention_enabled"] = chk_retention_enabled
+
+        row += 1
+        ttk.Label(self, text="Retention months").grid(row=row, column=0, sticky="w", pady=2)
+        spn_retention_months = ttk.Spinbox(
+            self,
+            from_=1,
+            to=120,
+            increment=1,
+            width=8,
+            textvariable=self._retention_months_var,
+            validate="key",
+            validatecommand=vcmd_nonneg_int,
+            command=lambda: self._commit_single_numeric_setting("coaching_retention_months"),
+        )
+        spn_retention_months.grid(row=row, column=1, sticky="w", padx=(10, 0), pady=2)
+        ttk.Label(self, text="Range: 1..120").grid(row=row, column=2, sticky="w", padx=(10, 0), pady=2)
+        self._widgets["retention_months"] = spn_retention_months
+
+        row += 1
+        chk_low_disk_enabled = ttk.Checkbutton(
+            self,
+            text="Warn when free disk < (GB)",
+            variable=self._low_disk_enabled_var,
+            command=self._commit_flag_settings,
+        )
+        chk_low_disk_enabled.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._widgets["low_disk_enabled"] = chk_low_disk_enabled
+
+        row += 1
+        ttk.Label(self, text="Warning threshold (GB)").grid(row=row, column=0, sticky="w", pady=2)
+        spn_low_disk_gb = ttk.Spinbox(
+            self,
+            from_=1,
+            to=2000,
+            increment=1,
+            width=8,
+            textvariable=self._low_disk_gb_var,
+            validate="key",
+            validatecommand=vcmd_nonneg_int,
+            command=lambda: self._commit_single_numeric_setting("coaching_low_disk_warning_gb"),
+        )
+        spn_low_disk_gb.grid(row=row, column=1, sticky="w", padx=(10, 0), pady=2)
+        ttk.Label(self, text="Range: 1..2000").grid(row=row, column=2, sticky="w", padx=(10, 0), pady=2)
+        self._widgets["low_disk_gb"] = spn_low_disk_gb
+
+        row += 1
+        chk_auto_delete = ttk.Checkbutton(
+            self,
+            text="Auto-delete oldest recordings when threshold reached",
+            variable=self._auto_delete_enabled_var,
+            command=self._commit_flag_settings,
+        )
+        chk_auto_delete.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._widgets["auto_delete"] = chk_auto_delete
+
+        row += 1
+        lbl_error = ttk.Label(self, textvariable=self._error_var, foreground="#b00020")
+        lbl_error.grid(row=row, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        self._widgets["error_label"] = lbl_error
+
+        for spn, key in (
+            (spn_sample_hz, "irsdk_sample_hz"),
+            (spn_retention_months, "coaching_retention_months"),
+            (spn_low_disk_gb, "coaching_low_disk_warning_gb"),
+        ):
+            spn.bind("<Return>", lambda _e, k=key: self._commit_single_numeric_setting(k))
+            spn.bind("<FocusOut>", lambda _e, k=key: self._commit_single_numeric_setting(k))
+
+    @staticmethod
+    def _validate_nonnegative_int_entry_text(proposed: str) -> bool:
+        s = str(proposed)
+        return (s == "") or s.isdigit()
+
+    def _set_error(self, message: str) -> None:
+        text = str(message or "").strip()
+        try:
+            self._error_var.set(text)
+        except Exception:
+            pass
+        if not text:
+            return
+        try:
+            self.bell()
+        except Exception:
+            pass
+
+    def _clear_error(self) -> None:
+        self._set_error("")
+
+    def _parse_numeric_value(self, key: str) -> tuple[int | None, str | None]:
+        label, min_value, max_value = self._numeric_specs[key]
+        try:
+            raw = str(self._numeric_vars[key].get()).strip()
+        except Exception:
+            raw = ""
+        if raw == "":
+            return None, f"{label}: please enter an integer in range {min_value}..{max_value}."
+        if not raw.isdigit():
+            return None, f"{label}: only integers are allowed ({min_value}..{max_value})."
+        value = int(raw)
+        if value < min_value or value > max_value:
+            return None, f"{label}: allowed range is {min_value}..{max_value}."
+        return int(value), None
+
+    def _build_payload(self, *, include_numeric: bool) -> tuple[dict[str, object] | None, str | None]:
+        payload: dict[str, object] = {
+            "coaching_recording_enabled": bool(self._recording_enabled_var.get()),
+            "coaching_storage_dir": str(self._storage_dir_var.get()).strip(),
+            "coaching_retention_months_enabled": bool(self._retention_enabled_var.get()),
+            "coaching_low_disk_warning_enabled": bool(self._low_disk_enabled_var.get()),
+            "coaching_auto_delete_enabled": bool(self._auto_delete_enabled_var.get()),
+        }
+        if not include_numeric:
+            return payload, None
+        for key in ("irsdk_sample_hz", "coaching_retention_months", "coaching_low_disk_warning_gb"):
+            value, err = self._parse_numeric_value(key)
+            if err is not None or value is None:
+                return None, err
+            payload[key] = int(value)
+        return payload, None
+
+    def _save_payload(self, payload: dict[str, object]) -> bool:
+        try:
+            saved = persistence.save_coaching_recording_settings(payload)
+        except Exception:
+            self._set_error("Could not save coaching settings.")
+            return False
+
+        for key, var in (
+            ("coaching_recording_enabled", self._recording_enabled_var),
+            ("coaching_retention_months_enabled", self._retention_enabled_var),
+            ("coaching_low_disk_warning_enabled", self._low_disk_enabled_var),
+            ("coaching_auto_delete_enabled", self._auto_delete_enabled_var),
+        ):
+            try:
+                var.set(bool(saved.get(key, bool(var.get()))))
+            except Exception:
+                pass
+        try:
+            self._storage_dir_var.set(str(saved.get("coaching_storage_dir", self._storage_dir_var.get())))
+        except Exception:
+            pass
+        for key in ("irsdk_sample_hz", "coaching_retention_months", "coaching_low_disk_warning_gb"):
+            try:
+                self._last_valid_ints[key] = int(saved.get(key, self._last_valid_ints[key]))
+                self._numeric_vars[key].set(str(self._last_valid_ints[key]))
+            except Exception:
+                pass
+
+        self._sync_widget_states()
+        self._clear_error()
+        return True
+
+    def _commit_flag_settings(self) -> None:
+        payload, _err = self._build_payload(include_numeric=False)
+        if payload is None:
+            return
+        self._sync_widget_states()
+        self._save_payload(payload)
+
+    def _commit_storage_dir(self, _event=None) -> None:
+        payload, _err = self._build_payload(include_numeric=False)
+        if payload is None:
+            return
+        self._save_payload(payload)
+
+    def _commit_single_numeric_setting(self, key: str, _event=None) -> None:
+        value, err = self._parse_numeric_value(key)
+        if err is not None or value is None:
+            try:
+                self._numeric_vars[key].set(str(self._last_valid_ints[key]))
+            except Exception:
+                pass
+            self._set_error(str(err or "Invalid coaching value."))
+            return
+        try:
+            self._numeric_vars[key].set(str(int(value)))
+        except Exception:
+            pass
+        payload, payload_err = self._build_payload(include_numeric=True)
+        if payload_err is not None or payload is None:
+            self._set_error(str(payload_err or "Invalid coaching settings."))
+            return
+        self._save_payload(payload)
+
+    def _browse_storage_dir(self) -> None:
+        try:
+            root = self.winfo_toplevel()
+        except Exception:
+            root = None
+        try:
+            initial_dir = str(self._storage_dir_var.get()).strip()
+        except Exception:
+            initial_dir = ""
+        try:
+            chosen = filedialog.askdirectory(
+                parent=root,
+                title="Choose Coaching Storage Folder",
+                initialdir=initial_dir if initial_dir else str(self._project_root),
+                mustexist=False,
+            )
+        except TypeError:
+            chosen = filedialog.askdirectory(
+                parent=root,
+                title="Choose Coaching Storage Folder",
+                initialdir=initial_dir if initial_dir else str(self._project_root),
+            )
+        except Exception:
+            chosen = ""
+        if not chosen:
+            return
+        try:
+            self._storage_dir_var.set(str(chosen))
+        except Exception:
+            pass
+        self._commit_storage_dir()
+
+    def _set_widget_enabled(self, widget: tk.Widget | None, enabled: bool) -> None:
+        if widget is None:
+            return
+        try:
+            widget.state(["!disabled"] if enabled else ["disabled"])
+            return
+        except Exception:
+            pass
+        try:
+            widget.configure(state="normal" if enabled else "disabled")
+        except Exception:
+            pass
+
+    def _sync_widget_states(self) -> None:
+        master_enabled = bool(self._recording_enabled_var.get())
+        retention_enabled = master_enabled and bool(self._retention_enabled_var.get())
+        low_disk_enabled = master_enabled and bool(self._low_disk_enabled_var.get())
+
+        self._set_widget_enabled(self._widgets.get("storage_entry"), master_enabled)
+        self._set_widget_enabled(self._widgets.get("storage_browse"), master_enabled)
+        self._set_widget_enabled(self._widgets.get("sample_hz"), master_enabled)
+        self._set_widget_enabled(self._widgets.get("retention_enabled"), master_enabled)
+        self._set_widget_enabled(self._widgets.get("retention_months"), retention_enabled)
+        self._set_widget_enabled(self._widgets.get("low_disk_enabled"), master_enabled)
+        self._set_widget_enabled(self._widgets.get("low_disk_gb"), low_disk_enabled)
+        self._set_widget_enabled(self._widgets.get("auto_delete"), low_disk_enabled)
+
+
 class SettingsView(ttk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
         frm = ttk.Frame(self, padding=20)
-        frm.pack(anchor="center", expand=True)
+        frm.grid(row=0, column=0, sticky="nsew")
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(2, weight=1)
 
-        lbl = ttk.Label(frm, text="Settings")
-        lbl.pack(anchor="center", pady=(0, 10))
+        ttk.Label(frm, text="Settings").grid(row=0, column=0, sticky="w", pady=(0, 10))
 
-        btn_updates = ttk.Button(frm, text="Check for Updates", command=self._on_check_for_updates)
-        btn_updates.pack(anchor="center")
+        app_panel = ttk.LabelFrame(frm, text="General", padding=12)
+        app_panel.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        btn_updates = ttk.Button(app_panel, text="Check for Updates", command=self._on_check_for_updates)
+        btn_updates.grid(row=0, column=0, sticky="w")
+
+        coaching_panel = CoachingRecordingSettingsPanel(frm)
+        coaching_panel.grid(row=2, column=0, sticky="new")
 
     def _on_check_for_updates(self) -> None:
         try:
@@ -3254,148 +3605,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
     spn_video_shift_y.bind("<Return>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
     spn_video_shift_y.bind("<FocusOut>", lambda _e: _apply_video_transform_from_vars(refresh_preview=True))
 
-    coaching_row = video_place_row + 6
-    ttk.Separator(frame_settings, orient="horizontal").grid(
-        row=coaching_row, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 6)
-    )
-    ttk.Label(frame_settings, text="Coaching Recording", font=("Segoe UI", 10, "bold")).grid(
-        row=coaching_row + 1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 6)
-    )
-
-    chk_coaching_recording_enabled = ttk.Checkbutton(
-        frame_settings,
-        text="Enable coaching recording",
-        variable=coaching_recording_enabled_var,
-        command=_commit_coaching_flag_settings,
-    )
-    chk_coaching_recording_enabled.grid(row=coaching_row + 2, column=0, columnspan=3, sticky="w", padx=10, pady=2)
-
-    ttk.Label(frame_settings, text="Storage Folder:").grid(row=coaching_row + 3, column=0, sticky="w", padx=10, pady=2)
-    frm_coaching_storage = ttk.Frame(frame_settings)
-    frm_coaching_storage.grid(row=coaching_row + 3, column=1, columnspan=2, sticky="ew", padx=10, pady=2)
-    frm_coaching_storage.columnconfigure(0, weight=1)
-    ent_coaching_storage = ttk.Entry(frm_coaching_storage, textvariable=coaching_storage_dir_var)
-    ent_coaching_storage.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-    btn_coaching_storage_browse = ttk.Button(frm_coaching_storage, text="Browse...", command=_browse_coaching_storage_dir)
-    btn_coaching_storage_browse.grid(row=0, column=1, sticky="w")
-
-    vcmd_nonneg_int = (root.register(_validate_nonnegative_int_entry_text), "%P")
-
-    ttk.Label(frame_settings, text="IRSDK Sample Hz:").grid(row=coaching_row + 4, column=0, sticky="w", padx=10, pady=2)
-    frm_irsdk_sample = ttk.Frame(frame_settings)
-    frm_irsdk_sample.grid(row=coaching_row + 4, column=1, columnspan=2, sticky="w", padx=10, pady=2)
-    spn_irsdk_sample_hz = ttk.Spinbox(
-        frm_irsdk_sample,
-        from_=0,
-        to=1000,
-        increment=1,
-        width=8,
-        textvariable=irsdk_sample_hz_var,
-        validate="key",
-        validatecommand=vcmd_nonneg_int,
-        command=lambda: _commit_single_coaching_numeric_setting("irsdk_sample_hz"),
-    )
-    spn_irsdk_sample_hz.grid(row=0, column=0, sticky="w")
-    ttk.Label(frm_irsdk_sample, text="0 = unthrottled").grid(row=0, column=1, sticky="w", padx=(8, 0))
-
-    chk_coaching_retention_enabled = ttk.Checkbutton(
-        frame_settings,
-        text="Enable retention by months",
-        variable=coaching_retention_months_enabled_var,
-        command=_commit_coaching_flag_settings,
-    )
-    chk_coaching_retention_enabled.grid(row=coaching_row + 5, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 2))
-    ttk.Label(frame_settings, text="Retention Months:").grid(row=coaching_row + 6, column=0, sticky="w", padx=10, pady=2)
-    spn_coaching_retention_months = ttk.Spinbox(
-        frame_settings,
-        from_=1,
-        to=120,
-        increment=1,
-        width=8,
-        textvariable=coaching_retention_months_var,
-        validate="key",
-        validatecommand=vcmd_nonneg_int,
-        command=lambda: _commit_single_coaching_numeric_setting("coaching_retention_months"),
-    )
-    spn_coaching_retention_months.grid(row=coaching_row + 6, column=1, sticky="w", padx=10, pady=2)
-    ttk.Label(frame_settings, text="Range: 1..120").grid(row=coaching_row + 6, column=2, sticky="w", padx=(10, 10), pady=2)
-
-    chk_coaching_low_disk_enabled = ttk.Checkbutton(
-        frame_settings,
-        text="Enable low disk warning",
-        variable=coaching_low_disk_warning_enabled_var,
-        command=_commit_coaching_flag_settings,
-    )
-    chk_coaching_low_disk_enabled.grid(row=coaching_row + 7, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 2))
-    ttk.Label(frame_settings, text="Low Disk Warning (GB):").grid(row=coaching_row + 8, column=0, sticky="w", padx=10, pady=2)
-    spn_coaching_low_disk_gb = ttk.Spinbox(
-        frame_settings,
-        from_=1,
-        to=2000,
-        increment=1,
-        width=8,
-        textvariable=coaching_low_disk_warning_gb_var,
-        validate="key",
-        validatecommand=vcmd_nonneg_int,
-        command=lambda: _commit_single_coaching_numeric_setting("coaching_low_disk_warning_gb"),
-    )
-    spn_coaching_low_disk_gb.grid(row=coaching_row + 8, column=1, sticky="w", padx=10, pady=2)
-    ttk.Label(frame_settings, text="Range: 1..2000").grid(row=coaching_row + 8, column=2, sticky="w", padx=(10, 10), pady=2)
-
-    chk_coaching_auto_delete_enabled = ttk.Checkbutton(
-        frame_settings,
-        text="Enable auto delete",
-        variable=coaching_auto_delete_enabled_var,
-        command=_commit_coaching_flag_settings,
-    )
-    chk_coaching_auto_delete_enabled.grid(row=coaching_row + 9, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 2))
-
-    lbl_coaching_settings_error = ttk.Label(
-        frame_settings,
-        textvariable=coaching_settings_error_var,
-        foreground="#b00020",
-    )
-    lbl_coaching_settings_error.grid(
-        row=coaching_row + 10, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 6)
-    )
-
-    for _spn, _key in (
-        (spn_irsdk_sample_hz, "irsdk_sample_hz"),
-        (spn_coaching_retention_months, "coaching_retention_months"),
-        (spn_coaching_low_disk_gb, "coaching_low_disk_warning_gb"),
-    ):
-        _spn.bind("<Return>", lambda _e, k=_key: _commit_single_coaching_numeric_setting(k))
-        _spn.bind("<FocusOut>", lambda _e, k=_key: _commit_single_coaching_numeric_setting(k))
-
-    ent_coaching_storage.bind("<Return>", _commit_coaching_storage_dir)
-    ent_coaching_storage.bind("<FocusOut>", _commit_coaching_storage_dir)
-
-    def _set_coaching_widget_enabled(widget, enabled: bool) -> None:
-        try:
-            widget.state(["!disabled"] if enabled else ["disabled"])
-            return
-        except Exception:
-            pass
-        try:
-            widget.configure(state="normal" if enabled else "disabled")
-        except Exception:
-            pass
-
-    def _sync_coaching_settings_widget_states() -> None:
-        master_enabled = bool(coaching_recording_enabled_var.get())
-        retention_enabled = master_enabled and bool(coaching_retention_months_enabled_var.get())
-        low_disk_enabled = master_enabled and bool(coaching_low_disk_warning_enabled_var.get())
-
-        _set_coaching_widget_enabled(ent_coaching_storage, master_enabled)
-        _set_coaching_widget_enabled(btn_coaching_storage_browse, master_enabled)
-        _set_coaching_widget_enabled(spn_irsdk_sample_hz, master_enabled)
-        _set_coaching_widget_enabled(chk_coaching_retention_enabled, master_enabled)
-        _set_coaching_widget_enabled(spn_coaching_retention_months, retention_enabled)
-        _set_coaching_widget_enabled(chk_coaching_low_disk_enabled, master_enabled)
-        _set_coaching_widget_enabled(spn_coaching_low_disk_gb, low_disk_enabled)
-        _set_coaching_widget_enabled(chk_coaching_auto_delete_enabled, low_disk_enabled)
-
-    _sync_coaching_settings_widget_states()
+    # Coaching Recording settings live in the ribbon "Settings" view (not in Video Analysis).
 
 
     def parse_preset(preset: str) -> tuple[int, int]:
