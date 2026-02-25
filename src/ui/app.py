@@ -68,6 +68,26 @@ UPDATE_RELEASE_LATEST_URL = "https://github.com/daenu71/IWAS/releases/latest"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5.0
 
 
+def _sync_irsdk_recorder_service_from_settings() -> None:
+    try:
+        settings = persistence.load_coaching_recording_settings()
+        enabled = bool(settings.get("coaching_recording_enabled", True))
+    except Exception:
+        enabled = True
+
+    try:
+        start_hook = globals().get("start_irsdk_recorder_service")
+        stop_hook = globals().get("stop_irsdk_recorder_service")
+        if enabled:
+            if callable(start_hook):
+                start_hook()
+        else:
+            if callable(stop_hook):
+                stop_hook()
+    except Exception as exc:
+        _LOG.warning("irsdk recorder service sync failed (%s)", exc)
+
+
 def _parse_semver_triplet(version_text: str) -> tuple[int, int, int]:
     raw = str(version_text or "").strip()
     if raw.lower().startswith("v"):
@@ -1291,6 +1311,10 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
                 pass
 
         self._sync_widget_states()
+        try:
+            _sync_irsdk_recorder_service_from_settings()
+        except Exception:
+            pass
         self._clear_error()
         return True
 
@@ -5385,6 +5409,10 @@ def main() -> None:
         buttons[label] = btn
 
     show_view(DEFAULT_VIEW_LABEL)
+    try:
+        _sync_irsdk_recorder_service_from_settings()
+    except Exception:
+        pass
     root.mainloop()
 
 
