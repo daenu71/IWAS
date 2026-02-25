@@ -1,5 +1,8 @@
-﻿import tkinter as tk
+﻿from __future__ import annotations
+
+import tkinter as tk
 from tkinter import ttk, filedialog, font as tkfont, messagebox
+import logging
 import math
 import re
 from pathlib import Path
@@ -11,7 +14,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from core.models import (
     AppModel,
@@ -28,6 +31,7 @@ from core.models import (
 from core.cfg import APP_NAME, APP_VERSION
 from core import persistence, filesvc, profile_service, render_service
 from core.ffmpeg_tools import ffprobe_exists as _ffprobe_exists_bundled, resolve_ffprobe_bin
+from core.optional_deps import has_cv2, try_import_cv2
 from core.resources import get_resource_path
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 from core.output_geometry import (
@@ -40,8 +44,13 @@ from core.output_geometry import (
 )
 from ui.preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from ui.preview.png_preview import PngPreviewController
-from ui.preview.video_preview import VideoPreviewController
 from ui.controller import Controller, UIContext
+
+if TYPE_CHECKING:
+    from ui.preview.video_preview import VideoPreviewController
+
+
+_LOG = logging.getLogger(__name__)
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -1091,6 +1100,20 @@ VIEW_REGISTRY: dict[str, ViewEntry] = {
 
 
 def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
+    if not has_cv2():
+        _ok, err_msg = try_import_cv2()
+        msg = err_msg or "Video features unavailable: OpenCV (cv2) not installed."
+        _LOG.warning("Video Analysis unavailable: %s", msg.replace("\n", " | "))
+        info = ttk.Frame(host, padding=20)
+        info.pack(fill="both", expand=True)
+        info.columnconfigure(0, weight=1)
+        panel = ttk.LabelFrame(info, text="Video Analysis", padding=14)
+        panel.grid(row=0, column=0, sticky="nw")
+        ttk.Label(panel, text=msg, justify="left").grid(row=0, column=0, sticky="w")
+        return
+
+    from ui.preview.video_preview import VideoPreviewController
+
     project_root = find_project_root(Path(__file__))
     theme = CURRENT_THEME
     colors = theme.colors

@@ -12,12 +12,23 @@ from typing import Callable
 import tkinter as tk
 from tkinter import ttk
 
-import cv2
 from PIL import Image, ImageTk
 from core.encoders import detect_available_encoders
 from core.ffmpeg_tools import ffmpeg_exists as _ffmpeg_exists_bundled, resolve_ffmpeg_bin, resolve_ffprobe_bin
 from core.log import make_logger
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
+
+
+_CV2 = None
+
+
+def _require_cv2():
+    global _CV2
+    if _CV2 is None:
+        import cv2 as _cv2
+
+        _CV2 = _cv2
+    return _CV2
 
 
 class VideoPreviewController:
@@ -1442,6 +1453,7 @@ class VideoPreviewController:
         return None
 
     def try_open_for_png(self, p: Path) -> cv2.VideoCapture | None:
+        cv2 = _require_cv2()
         c = cv2.VideoCapture(str(p))
         if c is not None and c.isOpened():
             return c
@@ -1464,6 +1476,7 @@ class VideoPreviewController:
         return None
 
     def read_frame_as_pil(self, p: Path, frame_idx: int) -> Image.Image | None:
+        cv2 = _require_cv2()
         c = self.try_open_for_png(p)
         if c is None:
             return None
@@ -1560,6 +1573,7 @@ class VideoPreviewController:
 
     @staticmethod
     def try_open_video(path: Path) -> tuple[cv2.VideoCapture | None, str]:
+        cv2 = _require_cv2()
         c = cv2.VideoCapture(str(path))
         if c is None or not c.isOpened():
             return None, "open_failed"
@@ -1574,6 +1588,7 @@ class VideoPreviewController:
         return c, "ok"
 
     def render_image_from_frame(self, frame) -> None:
+        cv2 = _require_cv2()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
 
@@ -1585,6 +1600,7 @@ class VideoPreviewController:
         self.preview_label.config(image=self.tk_img, text="")
 
     def seek_and_read(self, idx: int) -> bool:
+        cv2 = _require_cv2()
         if self.cap is None:
             return False
 
@@ -1614,6 +1630,7 @@ class VideoPreviewController:
         return True
 
     def read_next_frame(self) -> bool:
+        cv2 = _require_cv2()
         if self.cap is None:
             return False
 
@@ -1884,6 +1901,7 @@ class VideoPreviewController:
             self.lbl_loaded.config(text=cut_fail_msg)
 
     def start_crop_for_video(self, video_path: Path) -> None:
+        cv2 = _require_cv2()
         self.close_preview_video()
 
         self.current_video_original = video_path
