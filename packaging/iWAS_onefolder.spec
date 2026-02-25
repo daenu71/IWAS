@@ -65,7 +65,7 @@ a = Analysis(
         (os.path.join(project_root, "THIRD_PARTY_LICENSES.md"), "."),
         *FFMPEG_LICENSES,
     ],
-    hiddenimports=[],
+    hiddenimports=["irsdk"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

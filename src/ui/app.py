@@ -88,6 +88,34 @@ def _sync_irsdk_recorder_service_from_settings() -> None:
         _LOG.warning("irsdk recorder service sync failed (%s)", exc)
 
 
+def _ensure_irsdk_recorder_service_hooks_bootstrapped() -> object | None:
+    existing = globals().get("irsdk_recorder_service")
+    if existing is not None:
+        return None
+    try:
+        from core.irsdk.recorder_service import RecorderService
+    except Exception as exc:
+        _LOG.warning("irsdk recorder service unavailable (%s)", exc)
+        return None
+
+    recorder_service = RecorderService()
+
+    def _current_irsdk_sample_hz() -> int:
+        try:
+            settings = persistence.load_coaching_recording_settings()
+            return int(settings.get("irsdk_sample_hz", 120))
+        except Exception:
+            return 120
+
+    try:
+        globals()["irsdk_recorder_service"] = recorder_service
+        globals()["start_irsdk_recorder_service"] = lambda: recorder_service.start(_current_irsdk_sample_hz())
+        globals()["stop_irsdk_recorder_service"] = recorder_service.stop
+        return recorder_service
+    except Exception:
+        return None
+
+
 def _parse_semver_triplet(version_text: str) -> tuple[int, int, int]:
     raw = str(version_text or "").strip()
     if raw.lower().startswith("v"):
@@ -5236,6 +5264,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
 
 def main() -> None:
+    owned_recorder_service = _ensure_irsdk_recorder_service_hooks_bootstrapped()
     _enable_windows_dpi_awareness_best_effort()
     _set_windows_app_user_model_id_best_effort("iWAS")
     root = tk.Tk()
@@ -5413,7 +5442,14 @@ def main() -> None:
         _sync_irsdk_recorder_service_from_settings()
     except Exception:
         pass
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        if owned_recorder_service is not None:
+            try:
+                owned_recorder_service.stop()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
