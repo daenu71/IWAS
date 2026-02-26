@@ -431,12 +431,18 @@ class IRSDKClient:
     def _decode_text_best_effort(data: bytes) -> str | None:
         if not isinstance(data, (bytes, bytearray)):
             return None
+        raw = bytes(data)
+        # Prefer strict decoding first so we do not silently inject replacement characters
+        # and miss a later codec (e.g. pyirsdk uses cp1252 for SessionInfo text).
         for encoding in ("utf-8", "cp1252", "latin-1"):
             try:
-                return bytes(data).decode(encoding, errors="replace")
+                return raw.decode(encoding)
             except Exception:
                 continue
-        return None
+        try:
+            return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return None
 
     @staticmethod
     def _coerce_text(value: Any) -> str | None:
