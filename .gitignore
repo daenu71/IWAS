@@ -29,3 +29,4 @@ config/ui_last_run.json
 assets/
 .cache/
 third_party/
+/data
