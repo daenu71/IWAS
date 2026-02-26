@@ -43,7 +43,7 @@ class RecorderService:
         self._buffer: deque[dict[str, Any]] = deque(maxlen=self._buffer_capacity_for_hz(120))
         self._sample_count = 0
         self._recorded_channels: tuple[str, ...] = tuple(REQUESTED_CHANNELS)
-        self._missing_channels: tuple[str, ...] = ()
+        self._missing_channels: tuple[Any, ...] = ()
         self._channels_initialized = False
         self._dtype_decisions: dict[str, str] = {}
         self._session_meta_written = False
@@ -210,6 +210,7 @@ class RecorderService:
                     # Connection may have dropped in read_sample().
                     self._sleep_interruptible(0.05)
                     continue
+                self._inject_broadcast_fields(sample)
                 self._process_run_detector(sample)
                 self._append_active_run_sample(sample)
 
@@ -254,31 +255,57 @@ class RecorderService:
         if self._channels_initialized:
             return
 
-        channel_info = self._client.describe_available_channels()
-        available_channels = set(channel_info.keys())
-        if available_channels:
-            recorded_channels = [name for name in REQUESTED_CHANNELS if name in available_channels]
-            missing_channels = [name for name in REQUESTED_CHANNELS if name not in available_channels]
-        else:
-            # Preserve current behavior if header discovery is unavailable.
-            recorded_channels = list(REQUESTED_CHANNELS)
-            missing_channels = []
-            _LOG.warning("irsdk channel discovery unavailable; falling back to requested channel list")
+        resolution = self._client.resolve_requested_channels(REQUESTED_CHANNELS)
+        channel_info = dict(resolution.get("channel_info") or {})
+        recorded_channels = [str(name) for name in (resolution.get("recorded_channels") or [])]
+        missing_channels_raw = list(resolution.get("missing_channels") or [])
+        telemetry_recorded_count = len(recorded_channels)
+
+        # Sprint-1 requires SessionUniqueID as a recorded value. If telemetry does not expose it,
+        # store it as a broadcast constant column once SessionInfo meta becomes available.
+        if "SessionUniqueID" not in recorded_channels:
+            recorded_channels.append("SessionUniqueID")
+            channel_info["SessionUniqueID"] = {
+                "dtype": "int64",
+                "count": 1,
+                "virtual_source": "session_meta.SessionUniqueID",
+            }
+            filtered_missing: list[Any] = []
+            for item in missing_channels_raw:
+                if isinstance(item, dict) and str(item.get("request_spec") or "") == "SessionUniqueID":
+                    continue
+                if str(item) == "SessionUniqueID":
+                    continue
+                filtered_missing.append(item)
+            missing_channels_raw = filtered_missing
+
+        if telemetry_recorded_count == 0:
+            # Preserve best-effort behavior if discovery APIs are unavailable or resolution fails.
+            recorded_channels = [name for name in REQUESTED_CHANNELS if "[" not in name]
+            missing_channels_raw = [
+                {"request_spec": spec, "reason": "channel_discovery_unavailable"}
+                for spec in REQUESTED_CHANNELS
+                if "[" in spec
+            ]
+            _LOG.warning("irsdk channel discovery unavailable; falling back to scalar requested channel list")
 
         with self._lock:
             self._recorded_channels = tuple(recorded_channels)
-            self._missing_channels = tuple(missing_channels)
+            self._missing_channels = tuple(missing_channels_raw)
             self._dtype_decisions = self._build_dtype_decisions(recorded_channels, channel_info)
             self._channels_initialized = True
 
-        if missing_channels:
-            _LOG.warning("irsdk missing channels (skipping): %s", ", ".join(missing_channels))
+        if missing_channels_raw:
+            _LOG.warning(
+                "irsdk missing channel specs (skipping unavailable): %s",
+                self._format_missing_channels_for_log(missing_channels_raw),
+            )
         self._debug_log_line(
             "channels_initialized "
-            f"requested={len(REQUESTED_CHANNELS)} recorded={len(recorded_channels)} missing={len(missing_channels)}"
+            f"requested_specs={len(REQUESTED_CHANNELS)} recorded={len(recorded_channels)} missing={len(missing_channels_raw)}"
         )
-        if missing_channels:
-            self._debug_log_line("missing_channels " + ",".join(missing_channels))
+        if missing_channels_raw:
+            self._debug_log_line("missing_channels " + self._format_missing_channels_for_log(missing_channels_raw))
         self._write_session_meta()
 
     @classmethod
@@ -297,6 +324,11 @@ class RecorderService:
 
     @staticmethod
     def _format_dtype_decision(info: dict[str, Any]) -> str | None:
+        explicit = info.get("dtype")
+        if explicit is not None:
+            text = str(explicit).strip()
+            if text:
+                return text
         var_type = info.get("type")
         count = info.get("count")
         if var_type is None and count is None:
@@ -332,6 +364,41 @@ class RecorderService:
         if count_int <= 1:
             return dtype_name or f"[{count_int}]"
         return f"{dtype_name}[{count_int}]" if dtype_name else f"[{count_int}]"
+
+    @staticmethod
+    def _format_missing_channels_for_log(items: list[Any]) -> str:
+        parts: list[str] = []
+        for item in items:
+            if isinstance(item, dict):
+                spec = str(item.get("request_spec") or "?")
+                reason = str(item.get("reason") or "unknown")
+                detail = ""
+                if item.get("missing_wheels"):
+                    detail = f" missing_wheels={','.join(str(x) for x in item.get('missing_wheels') or [])}"
+                elif item.get("missing_components"):
+                    missing_components = list(item.get("missing_components") or [])
+                    preview = ",".join(str(x) for x in missing_components[:4])
+                    suffix = "..." if len(missing_components) > 4 else ""
+                    detail = f" missing_components={preview}{suffix}"
+                parts.append(f"{spec}({reason}{detail})")
+                continue
+            parts.append(str(item))
+        return ", ".join(parts)
+
+    def _inject_broadcast_fields(self, sample: dict[str, Any]) -> None:
+        if not isinstance(sample, dict):
+            return
+        raw = sample.get("raw")
+        if not isinstance(raw, dict):
+            return
+        existing = raw.get("SessionUniqueID")
+        if existing not in (None, ""):
+            return
+        with self._lock:
+            session_unique_id = self._session_identity_fields.get("SessionUniqueID")
+        if session_unique_id in (None, ""):
+            return
+        raw["SessionUniqueID"] = session_unique_id
 
     def _write_session_meta(self) -> None:
         with self._lock:

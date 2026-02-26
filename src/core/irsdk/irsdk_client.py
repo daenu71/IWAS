@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import threading
 import time
 from typing import Any, Sequence
@@ -23,6 +24,7 @@ class IRSDKClient:
         self._last_error_key: str | None = None
         self._last_session_info_source: str | None = None
         self._last_session_info_len: int | None = None
+        self._resolved_field_reads: dict[str, tuple[str, int | None]] = {}
 
     @property
     def state(self) -> str:
@@ -86,6 +88,7 @@ class IRSDKClient:
             was_connected = self._state == "connected"
             self._ir = None
             self._state = "disconnected"
+            self._resolved_field_reads = {}
         if ir is not None:
             self._safe_shutdown(ir)
         if was_connected:
@@ -94,6 +97,7 @@ class IRSDKClient:
     def read_sample(self, fields: Sequence[str] | None = None) -> dict[str, Any] | None:
         with self._lock:
             ir = self._ir
+            resolved_field_reads = dict(self._resolved_field_reads)
         if ir is None:
             return None
         if not self._runtime_is_connected(ir):
@@ -102,11 +106,31 @@ class IRSDKClient:
 
         try:
             raw: dict[str, Any] = {}
-            for field in (tuple(fields) if fields is not None else _DEFAULT_SAMPLE_FIELDS):
-                try:
-                    value = ir[field]
-                except Exception:
+            field_list = tuple(fields) if fields is not None else _DEFAULT_SAMPLE_FIELDS
+            source_cache: dict[str, Any] = {}
+            missing_sources: set[str] = set()
+            for field in field_list:
+                source_name = field
+                source_index: int | None = None
+                resolved = resolved_field_reads.get(field)
+                if resolved is not None:
+                    source_name, source_index = resolved
+                if source_name in missing_sources:
                     continue
+                try:
+                    if source_name in source_cache:
+                        value = source_cache[source_name]
+                    else:
+                        value = ir[source_name]
+                        source_cache[source_name] = value
+                except Exception:
+                    missing_sources.add(source_name)
+                    continue
+                if source_index is not None:
+                    try:
+                        value = self._extract_indexed_value(value, source_index)
+                    except Exception:
+                        continue
                 raw[field] = self._to_simple_value(value)
             return {
                 "timestamp_monotonic": time.monotonic(),
@@ -126,6 +150,27 @@ class IRSDKClient:
             return self._describe_available_channels_from_ir(ir)
         except Exception:
             return {}
+
+    def list_available_vars(self) -> list[dict[str, Any]]:
+        channel_info = self.describe_available_channels()
+        items: list[dict[str, Any]] = []
+        for name, info in channel_info.items():
+            item = {"name": str(name)}
+            if isinstance(info, dict):
+                if "type" in info:
+                    item["type"] = info.get("type")
+                if "count" in info:
+                    item["count"] = info.get("count")
+            items.append(item)
+        return items
+
+    def resolve_requested_channels(self, request_specs: Sequence[str]) -> dict[str, Any]:
+        channel_info = self.describe_available_channels()
+        resolved = self._resolve_requested_channels_from_available(request_specs, channel_info)
+        with self._lock:
+            self._resolved_field_reads = dict(resolved.get("read_field_map") or {})
+        resolved.pop("read_field_map", None)
+        return resolved
 
     def get_session_info_yaml(self) -> str | None:
         with self._lock:
@@ -303,6 +348,399 @@ class IRSDKClient:
             result[name] = {}
         return result
 
+    @classmethod
+    def _resolve_requested_channels_from_available(
+        cls,
+        request_specs: Sequence[str],
+        available_channels: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "recorded_channels": [],
+            "missing_channels": [],
+            "channel_info": {},
+            "read_field_map": {},
+        }
+        available = dict(available_channels or {})
+        discovery_available = bool(available)
+
+        for raw_spec in request_specs:
+            spec = str(raw_spec)
+            if spec == "ShockDefl[4]":
+                cls._resolve_wheel_group_request_spec(
+                    result,
+                    spec=spec,
+                    output_prefix="ShockDefl",
+                    available=available,
+                    aliases=("ShockDefl",),
+                    expected_wheels=("LF", "RF", "LR", "RR"),
+                    discovery_available=discovery_available,
+                )
+                continue
+            if spec == "RideHeight[4]":
+                cls._resolve_wheel_group_request_spec(
+                    result,
+                    spec=spec,
+                    output_prefix="RideHeight",
+                    available=available,
+                    aliases=("RideHeight",),
+                    expected_wheels=("LF", "RF", "LR", "RR"),
+                    discovery_available=discovery_available,
+                )
+                continue
+            if spec == "TirePressure[4]":
+                cls._resolve_wheel_group_request_spec(
+                    result,
+                    spec=spec,
+                    output_prefix="TirePressure",
+                    available=available,
+                    aliases=("TirePressure", "Pressure"),
+                    expected_wheels=("LF", "RF", "LR", "RR"),
+                    discovery_available=discovery_available,
+                )
+                continue
+            if spec == "TireTemp[4][L/M/R]":
+                cls._resolve_tire_temp_group_request_spec(
+                    result,
+                    spec=spec,
+                    available=available,
+                    discovery_available=discovery_available,
+                )
+                continue
+
+            info = available.get(spec)
+            if info is None:
+                result["missing_channels"].append(
+                    cls._build_missing_spec_entry(
+                        spec,
+                        "not_found" if discovery_available else "channel_discovery_unavailable",
+                    )
+                )
+                continue
+            cls._register_concrete_channel(
+                result,
+                column_name=spec,
+                source_name=spec,
+                source_index=None,
+                source_info=info,
+            )
+
+        return result
+
+    @classmethod
+    def _resolve_wheel_group_request_spec(
+        cls,
+        result: dict[str, Any],
+        *,
+        spec: str,
+        output_prefix: str,
+        available: dict[str, dict[str, Any]],
+        aliases: Sequence[str],
+        expected_wheels: Sequence[str],
+        discovery_available: bool,
+    ) -> None:
+        exact_expanded = cls._try_expand_exact_array_header(
+            result,
+            spec=spec,
+            available=available,
+            base_names=(output_prefix,),
+            output_prefix=output_prefix,
+            expected_count=len(tuple(expected_wheels)),
+        )
+        if exact_expanded:
+            return
+
+        winners = cls._select_best_wheel_scalar_sources(available, aliases=aliases)
+        missing_wheels: list[str] = []
+        for wheel in expected_wheels:
+            picked = winners.get(wheel)
+            if picked is None:
+                missing_wheels.append(str(wheel))
+                continue
+            source_name, source_info = picked
+            cls._register_concrete_channel(
+                result,
+                column_name=f"{output_prefix}{wheel}",
+                source_name=source_name,
+                source_index=None,
+                source_info=source_info,
+            )
+        if missing_wheels:
+            entry = cls._build_missing_spec_entry(
+                spec,
+                "partial_match" if winners else ("not_found" if discovery_available else "channel_discovery_unavailable"),
+                missing_wheels=missing_wheels,
+            )
+            if winners:
+                entry["matched_wheels"] = [wheel for wheel in expected_wheels if wheel not in missing_wheels]
+            result["missing_channels"].append(entry)
+
+    @classmethod
+    def _resolve_tire_temp_group_request_spec(
+        cls,
+        result: dict[str, Any],
+        *,
+        spec: str,
+        available: dict[str, dict[str, Any]],
+        discovery_available: bool,
+    ) -> None:
+        exact_expanded = cls._try_expand_exact_array_header(
+            result,
+            spec=spec,
+            available=available,
+            base_names=("TireTemp", "TireTemps"),
+            output_prefix="TireTemp",
+            expected_count=12,
+        )
+        if exact_expanded:
+            return
+
+        wheel_order = ("LF", "RF", "LR", "RR")
+        segment_order = ("L", "M", "R")
+        winners = cls._select_best_tire_temp_scalar_sources(available)
+        missing_pairs: list[str] = []
+        for wheel in wheel_order:
+            for segment in segment_order:
+                picked = winners.get((wheel, segment))
+                if picked is None:
+                    missing_pairs.append(f"{wheel}:{segment}")
+                    continue
+                source_name, source_info = picked
+                cls._register_concrete_channel(
+                    result,
+                    column_name=f"TireTemp{wheel}_{segment}",
+                    source_name=source_name,
+                    source_index=None,
+                    source_info=source_info,
+                )
+        if missing_pairs:
+            entry = cls._build_missing_spec_entry(
+                spec,
+                "partial_match" if winners else ("not_found" if discovery_available else "channel_discovery_unavailable"),
+                missing_components=missing_pairs,
+            )
+            if winners:
+                entry["matched_components"] = len(winners)
+            result["missing_channels"].append(entry)
+
+    @classmethod
+    def _try_expand_exact_array_header(
+        cls,
+        result: dict[str, Any],
+        *,
+        spec: str,
+        available: dict[str, dict[str, Any]],
+        base_names: Sequence[str],
+        output_prefix: str,
+        expected_count: int,
+    ) -> bool:
+        for base_name in base_names:
+            info = available.get(base_name)
+            if info is None:
+                continue
+            count = cls._coerce_int((info or {}).get("count"))
+            if count is not None and count < expected_count:
+                result["missing_channels"].append(
+                    cls._build_missing_spec_entry(
+                        spec,
+                        "array_too_short",
+                        source_name=base_name,
+                        expected_count=expected_count,
+                        actual_count=count,
+                    )
+                )
+                return True
+
+            for index in range(expected_count):
+                cls._register_concrete_channel(
+                    result,
+                    column_name=f"{output_prefix}_{index}",
+                    source_name=base_name,
+                    source_index=index,
+                    source_info=info,
+                )
+            return True
+        return False
+
+    @classmethod
+    def _select_best_wheel_scalar_sources(
+        cls,
+        available: dict[str, dict[str, Any]],
+        *,
+        aliases: Sequence[str],
+    ) -> dict[str, tuple[str, dict[str, Any]]]:
+        alias_keys = [cls._normalize_var_key(alias) for alias in aliases if str(alias).strip()]
+        best: dict[str, tuple[int, str, dict[str, Any]]] = {}
+        for name, info in available.items():
+            wheel, remainder = cls._wheel_parts_from_var_name(name)
+            if wheel is None:
+                continue
+            full_key = cls._normalize_var_key(name)
+            score = -1
+            for alias in alias_keys:
+                if not alias:
+                    continue
+                if remainder == alias:
+                    score = max(score, 300)
+                elif alias in remainder:
+                    score = max(score, 240)
+                elif alias in full_key:
+                    score = max(score, 180)
+            if score < 0:
+                continue
+            count = cls._coerce_int((info or {}).get("count"))
+            if count is None or count == 1:
+                score += 10
+            else:
+                score -= 40
+            score -= len(remainder)
+            current = best.get(wheel)
+            if current is None or score > current[0]:
+                best[wheel] = (score, str(name), dict(info or {}))
+        return {wheel: (name, info) for wheel, (_score, name, info) in best.items()}
+
+    @classmethod
+    def _select_best_tire_temp_scalar_sources(
+        cls,
+        available: dict[str, dict[str, Any]],
+    ) -> dict[tuple[str, str], tuple[str, dict[str, Any]]]:
+        best: dict[tuple[str, str], tuple[int, str, dict[str, Any]]] = {}
+        for name, info in available.items():
+            wheel, remainder = cls._wheel_parts_from_var_name(name)
+            if wheel is None:
+                continue
+            full_key = cls._normalize_var_key(name)
+            if "temp" not in remainder and "temp" not in full_key:
+                continue
+            segment, seg_score = cls._tire_temp_segment_from_remainder(remainder)
+            if segment is None:
+                continue
+            score = 150 + int(seg_score)
+            if "temp" in remainder:
+                score += 40
+            count = cls._coerce_int((info or {}).get("count"))
+            if count is None or count == 1:
+                score += 10
+            else:
+                score -= 40
+            score -= len(remainder)
+            key = (wheel, segment)
+            current = best.get(key)
+            if current is None or score > current[0]:
+                best[key] = (score, str(name), dict(info or {}))
+        return {key: (name, info) for key, (_score, name, info) in best.items()}
+
+    @classmethod
+    def _register_concrete_channel(
+        cls,
+        result: dict[str, Any],
+        *,
+        column_name: str,
+        source_name: str,
+        source_index: int | None,
+        source_info: dict[str, Any] | None,
+    ) -> None:
+        concrete_name = str(column_name)
+        if concrete_name in result["channel_info"]:
+            return
+        result["recorded_channels"].append(concrete_name)
+        result["read_field_map"][concrete_name] = (str(source_name), source_index)
+        info = cls._copy_concrete_channel_info(source_info or {}, source_name=source_name, source_index=source_index)
+        result["channel_info"][concrete_name] = info
+
+    @classmethod
+    def _copy_concrete_channel_info(
+        cls,
+        source_info: dict[str, Any],
+        *,
+        source_name: str,
+        source_index: int | None,
+    ) -> dict[str, Any]:
+        info: dict[str, Any] = {}
+        if "type" in source_info:
+            info["type"] = source_info.get("type")
+        count = source_info.get("count")
+        if source_index is None:
+            if count is not None:
+                info["count"] = count
+        else:
+            info["count"] = 1
+            info["source_index"] = int(source_index)
+        info["source_name"] = str(source_name)
+        return info
+
+    @staticmethod
+    def _build_missing_spec_entry(spec: str, reason: str, **extra: Any) -> dict[str, Any]:
+        entry: dict[str, Any] = {"request_spec": str(spec), "reason": str(reason)}
+        for key, value in extra.items():
+            entry[key] = value
+        return entry
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_var_key(value: Any) -> str:
+        return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
+
+    @classmethod
+    def _wheel_parts_from_var_name(cls, name: Any) -> tuple[str | None, str]:
+        norm = cls._normalize_var_key(name)
+        if not norm:
+            return None, ""
+        wheel_tokens = (
+            ("lf", "LF"),
+            ("rf", "RF"),
+            ("lr", "LR"),
+            ("rr", "RR"),
+            ("leftfront", "LF"),
+            ("rightfront", "RF"),
+            ("leftrear", "LR"),
+            ("rightrear", "RR"),
+        )
+        for token, wheel in wheel_tokens:
+            if norm.startswith(token):
+                return wheel, norm[len(token) :]
+        for token, wheel in wheel_tokens:
+            if norm.endswith(token):
+                return wheel, norm[: -len(token)]
+        return None, norm
+
+    @classmethod
+    def _tire_temp_segment_from_remainder(cls, remainder: str) -> tuple[str | None, int]:
+        key = cls._normalize_var_key(remainder)
+        if "temp" not in key:
+            return None, 0
+        suffix_map: tuple[tuple[str, str, int], ...] = (
+            ("tempcl", "L", 140),
+            ("tempcm", "M", 140),
+            ("tempcr", "R", 140),
+            ("templ", "L", 120),
+            ("tempm", "M", 120),
+            ("tempr", "R", 120),
+            ("inner", "L", 90),
+            ("middle", "M", 90),
+            ("mid", "M", 85),
+            ("center", "M", 90),
+            ("centre", "M", 90),
+            ("outer", "R", 90),
+            ("left", "L", 85),
+            ("right", "R", 85),
+            ("cl", "L", 70),
+            ("cm", "M", 70),
+            ("cr", "R", 70),
+        )
+        for suffix, segment, score in suffix_map:
+            if key.endswith(suffix):
+                return segment, score
+        match = re.search(r"temp[a-z0-9]*([lmr])$", key)
+        if match:
+            return str(match.group(1)).upper(), 60
+        return None, 0
+
     @staticmethod
     def _get_ir_attr_value(ir: Any, attr_name: str) -> Any:
         if not hasattr(ir, attr_name):
@@ -477,6 +915,22 @@ class IRSDKClient:
             except Exception:
                 pass
         return info
+
+    @staticmethod
+    def _extract_indexed_value(value: Any, index: int) -> Any:
+        if index < 0:
+            raise IndexError(index)
+        if isinstance(value, (list, tuple)):
+            return value[index]
+        try:
+            return value[index]  # type: ignore[index]
+        except Exception:
+            pass
+        try:
+            seq = list(value)
+        except Exception as exc:
+            raise TypeError("value is not indexable") from exc
+        return seq[index]
 
     @staticmethod
     def _to_simple_value(value: Any) -> Any:

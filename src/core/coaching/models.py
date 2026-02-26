@@ -7,7 +7,7 @@ from typing import Any
 @dataclass
 class SessionMeta:
     recorded_channels: list[str] = field(default_factory=list)
-    missing_channels: list[str] = field(default_factory=list)
+    missing_channels: list[Any] = field(default_factory=list)
     sample_hz: float | int = 0
     dtype_decisions: dict[str, str] = field(default_factory=dict)
 
