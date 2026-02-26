@@ -424,6 +424,20 @@ class RecorderService:
         try:
             yaml_path.parent.mkdir(parents=True, exist_ok=True)
             yaml_text = str(raw_yaml)
+            source_getter = getattr(self._client, "get_last_session_info_source", None)
+            source = None
+            if callable(source_getter):
+                try:
+                    source = source_getter()
+                except Exception:
+                    source = None
+            source_text = str(source or "unknown")
+            if source_text.startswith("primary_"):
+                self._debug_log_line(f"sessioninfo_source primary_ok source={source_text}")
+            elif source_text.startswith("fallback_"):
+                self._debug_log_line(f"sessioninfo_source fallback_used source={source_text}")
+            else:
+                self._debug_log_line(f"sessioninfo_source source={source_text}")
             yaml_path.write_text(yaml_text, encoding="utf-8")
             self._debug_log_line(f"sessioninfo_yaml_saved attempt={attempt} bytes={len(yaml_text.encode('utf-8'))}")
             saved_ts = time.time()

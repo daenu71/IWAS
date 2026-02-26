@@ -21,6 +21,8 @@ class IRSDKClient:
         self._irsdk_module: Any | None = None
         self._ir: Any | None = None
         self._last_error_key: str | None = None
+        self._last_session_info_source: str | None = None
+        self._last_session_info_len: int | None = None
 
     @property
     def state(self) -> str:
@@ -131,9 +133,19 @@ class IRSDKClient:
         if ir is None:
             return None
         try:
-            return self._get_session_info_yaml_from_ir(ir)
+            text, source = self._get_session_info_yaml_with_source_from_ir(ir)
+            with self._lock:
+                self._last_session_info_source = source
+                self._last_session_info_len = len(text) if isinstance(text, str) else None
+            if text and source:
+                _LOG.info("irsdk SessionInfo raw YAML source=%s", source)
+            return text
         except Exception:
             return None
+
+    def get_last_session_info_source(self) -> str | None:
+        with self._lock:
+            return self._last_session_info_source
 
     def get_debug_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -143,6 +155,9 @@ class IRSDKClient:
             "state": state,
             "has_ir_object": ir is not None,
         }
+        with self._lock:
+            snapshot["last_session_info_source"] = self._last_session_info_source
+            snapshot["last_session_info_len"] = self._last_session_info_len
         if ir is None:
             return snapshot
 
@@ -319,7 +334,22 @@ class IRSDKClient:
         return None
 
     @classmethod
+    def _get_session_info_yaml_with_source_from_ir(cls, ir: Any) -> tuple[str | None, str | None]:
+        text, source = cls._get_session_info_yaml_primary_from_ir(ir)
+        if text and source:
+            return text, source
+        text = cls._get_session_info_yaml_shared_mem_fallback_from_ir(ir)
+        if text:
+            return text, "fallback_shared_mem"
+        return None, None
+
+    @classmethod
     def _get_session_info_yaml_from_ir(cls, ir: Any) -> str | None:
+        text, _source = cls._get_session_info_yaml_with_source_from_ir(ir)
+        return text
+
+    @classmethod
+    def _get_session_info_yaml_primary_from_ir(cls, ir: Any) -> tuple[str | None, str | None]:
         for attr_name in (
             "session_info",
             "sessionInfo",
@@ -334,7 +364,7 @@ class IRSDKClient:
             value = cls._get_ir_attr_value(ir, attr_name)
             text = cls._coerce_text(value)
             if text and text.strip():
-                return text
+                return text, f"primary_attr:{attr_name}"
 
         try:
             for attr_name, attr_value in vars(ir).items():
@@ -342,9 +372,70 @@ class IRSDKClient:
                     continue
                 text = cls._coerce_text(attr_value)
                 if text and text.strip():
-                    return text
+                    return text, f"primary_vars_scan:{attr_name}"
         except Exception:
             pass
+        return None, None
+
+    @classmethod
+    def _get_session_info_yaml_shared_mem_fallback_from_ir(cls, ir: Any) -> str | None:
+        header = cls._get_ir_attr_value(ir, "_header")
+        shared_mem = cls._get_ir_attr_value(ir, "_shared_mem")
+        if header is None or shared_mem is None:
+            return None
+
+        try:
+            offset = getattr(header, "session_info_offset")
+            length = getattr(header, "session_info_len")
+            offset = int(offset() if callable(offset) else offset)
+            length = int(length() if callable(length) else length)
+        except Exception:
+            return None
+        if offset < 0 or length <= 0:
+            return None
+
+        end = offset + length
+        try:
+            chunk = shared_mem[offset:end]
+        except Exception:
+            try:
+                chunk = bytes(shared_mem)[offset:end]
+            except Exception:
+                return None
+        try:
+            if isinstance(chunk, memoryview):
+                data = chunk.tobytes()
+            elif isinstance(chunk, bytearray):
+                data = bytes(chunk)
+            elif isinstance(chunk, bytes):
+                data = chunk
+            else:
+                data = bytes(chunk)
+        except Exception:
+            return None
+        if not data:
+            return None
+
+        # iRacing session info is a NUL-terminated YAML blob inside the shared memory segment.
+        data = data.split(b"\x00", 1)[0]
+        if not data:
+            return None
+        text = cls._decode_text_best_effort(data)
+        if not text or not text.strip():
+            return None
+        if ":" not in text:
+            return None
+        return text
+
+    @staticmethod
+    def _decode_text_best_effort(data: bytes) -> str | None:
+        if not isinstance(data, (bytes, bytearray)):
+            return None
+        for encoding in ("utf-8", "cp1252", "latin-1"):
+            try:
+                return bytes(data).decode(encoding, errors="replace")
+            except Exception:
+                continue
         return None
 
     @staticmethod
