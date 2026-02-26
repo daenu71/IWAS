@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import importlib.util
 import json
 import logging
 from pathlib import Path
@@ -27,6 +28,9 @@ from core.irsdk.sessioninfo_parser import extract_session_meta
 
 
 _LOG = logging.getLogger(__name__)
+_DEBUG_RECORDER_LOG_FILENAME = "debug_recorder.log"
+_DEBUG_SAMPLE_DUMP_FILENAME = "debug_samples.jsonl"
+_DEBUG_SESSIONINFO_PROBE_FILENAME = "debug_sessioninfo_probe.json"
 
 
 class RecorderService:
@@ -61,6 +65,11 @@ class RecorderService:
         self._active_run_write_error_logged = False
         self._session_identity_fields: dict[str, Any] = {}
         self._session_finalized_marked = False
+        self._debug_session_info_attempts = 0
+        self._debug_session_info_probe_writes = 0
+        self._debug_prev_sample_probe: dict[str, Any] = {}
+        self._debug_sample_dump_entries = 0
+        self._debug_pyarrow_probe_logged = False
 
     @property
     def running(self) -> bool:
@@ -129,6 +138,11 @@ class RecorderService:
             self._active_run_write_error_logged = False
             self._session_identity_fields = {}
             self._session_finalized_marked = False
+            self._debug_session_info_attempts = 0
+            self._debug_session_info_probe_writes = 0
+            self._debug_prev_sample_probe = {}
+            self._debug_sample_dump_entries = 0
+            self._debug_pyarrow_probe_logged = False
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -169,15 +183,19 @@ class RecorderService:
         interval = (1.0 / sample_hz) if sample_hz > 0 else 0.0
         next_tick = time.monotonic()
         last_sample_log_at = 0
+        self._debug_log_pyarrow_probe_once()
 
         try:
             while not self._stop_event.is_set():
                 if not self._client.is_connected:
                     _LOG.info("irsdk reconnect attempt")
+                    self._debug_log_line("reconnect_attempt")
                     self._client.connect()
                     if not self._client.is_connected:
+                        self._debug_log_line("reconnect_failed")
                         self._sleep_interruptible(1.0)
                         continue
+                    self._debug_log_line("connect_ok")
                     self._initialize_channels()
                     self._try_write_session_info_yaml()
                     next_tick = time.monotonic()
@@ -199,6 +217,7 @@ class RecorderService:
                     self._buffer.append(sample)
                     self._sample_count += 1
                     count = self._sample_count
+                self._debug_maybe_dump_sample(sample, count)
 
                 if count == 1 or (count - last_sample_log_at) >= log_every_samples:
                     last_sample_log_at = count
@@ -254,6 +273,12 @@ class RecorderService:
 
         if missing_channels:
             _LOG.warning("irsdk missing channels (skipping): %s", ", ".join(missing_channels))
+        self._debug_log_line(
+            "channels_initialized "
+            f"requested={len(REQUESTED_CHANNELS)} recorded={len(recorded_channels)} missing={len(missing_channels)}"
+        )
+        if missing_channels:
+            self._debug_log_line("missing_channels " + ",".join(missing_channels))
         self._write_session_meta()
 
     @classmethod
@@ -345,8 +370,12 @@ class RecorderService:
             merged = meta.to_dict(base)
             self._update_session_identity_fields(merged)
             meta_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+            self._debug_log_line(
+                f"session_meta_written path={meta_path.name} recorded_channels={len(recorded_channels)} sample_hz={sample_hz}"
+            )
         except Exception as exc:
             _LOG.warning("irsdk session meta write failed (%s)", exc)
+            self._debug_log_line(f"session_meta_write_failed error={type(exc).__name__}:{exc}")
 
     def _resolve_session_meta_path(self) -> Path | None:
         session_dir = self._ensure_session_dir()
@@ -357,12 +386,17 @@ class RecorderService:
     def _try_write_session_info_yaml(self) -> None:
         if self._session_info_yaml_saved:
             return
+        with self._lock:
+            self._debug_session_info_attempts += 1
+            attempt = self._debug_session_info_attempts
 
         getter = getattr(self._client, "get_session_info_yaml", None)
         if not callable(getter):
             if not self._session_info_wait_logged:
                 self._session_info_wait_logged = True
                 _LOG.info("irsdk SessionInfo raw YAML not available (client has no getter)")
+            self._debug_log_line(f"sessioninfo_unavailable_no_getter attempt={attempt}")
+            self._debug_dump_session_info_probe(reason="no_getter", attempt=attempt)
             return
 
         try:
@@ -371,12 +405,17 @@ class RecorderService:
             if not self._session_info_wait_logged:
                 self._session_info_wait_logged = True
                 _LOG.warning("irsdk SessionInfo read failed (%s)", exc)
+            self._debug_log_line(f"sessioninfo_read_failed attempt={attempt} error={type(exc).__name__}:{exc}")
+            self._debug_dump_session_info_probe(reason=f"read_failed:{type(exc).__name__}", attempt=attempt)
             return
 
         if not raw_yaml:
             if not self._session_info_wait_logged:
                 self._session_info_wait_logged = True
                 _LOG.info("irsdk SessionInfo not yet available; will retry")
+            if attempt <= 5 or attempt % 50 == 0:
+                self._debug_log_line(f"sessioninfo_empty attempt={attempt}")
+                self._debug_dump_session_info_probe(reason="empty", attempt=attempt)
             return
 
         yaml_path = self._resolve_session_info_yaml_path()
@@ -386,6 +425,7 @@ class RecorderService:
             yaml_path.parent.mkdir(parents=True, exist_ok=True)
             yaml_text = str(raw_yaml)
             yaml_path.write_text(yaml_text, encoding="utf-8")
+            self._debug_log_line(f"sessioninfo_yaml_saved attempt={attempt} bytes={len(yaml_text.encode('utf-8'))}")
             saved_ts = time.time()
             self._session_info_yaml_saved = True
             meta_merged = self._merge_session_info_meta_from_yaml(yaml_text, session_info_saved_ts=saved_ts)
@@ -394,6 +434,7 @@ class RecorderService:
                 _LOG.info("irsdk session_info.yaml + session_meta.json saved (%s)", yaml_path.parent)
         except Exception as exc:
             _LOG.warning("irsdk session_info.yaml write failed (%s)", exc)
+            self._debug_log_line(f"sessioninfo_yaml_write_failed attempt={attempt} error={type(exc).__name__}:{exc}")
 
     def _resolve_session_info_yaml_path(self) -> Path | None:
         session_dir = self._ensure_session_dir()
@@ -435,13 +476,150 @@ class RecorderService:
         with self._lock:
             if self._session_dir is None:
                 self._session_dir = session_dir
-            return self._session_dir
+                should_log_create = True
+            else:
+                should_log_create = False
+            resolved = self._session_dir
+        if should_log_create:
+            self._debug_log_line(f"session_dir_created path={session_dir}")
+        return resolved
 
     def _resolve_session_root_dir(self) -> Path | None:
         try:
             return get_coaching_storage_dir()
         except Exception:
             return Path.cwd()
+
+    def _debug_log_pyarrow_probe_once(self) -> None:
+        with self._lock:
+            if self._debug_pyarrow_probe_logged:
+                return
+            self._debug_pyarrow_probe_logged = True
+        ok = importlib.util.find_spec("pyarrow") is not None
+        message = f"pyarrow_available={ok}"
+        self._debug_log_line(message)
+        if not ok:
+            _LOG.warning("irsdk parquet backend unavailable: pyarrow not installed in current interpreter")
+
+    def _debug_log_line(self, message: str) -> None:
+        path = self._debug_artifact_path(_DEBUG_RECORDER_LOG_FILENAME)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(f"{ts} {message}\n")
+        except Exception:
+            return
+
+    def _debug_write_json(self, filename: str, payload: dict[str, Any]) -> None:
+        path = self._debug_artifact_path(filename)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        except Exception:
+            return
+
+    def _debug_append_jsonl(self, filename: str, payload: dict[str, Any]) -> None:
+        path = self._debug_artifact_path(filename)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, default=str))
+                fh.write("\n")
+        except Exception:
+            return
+
+    def _debug_artifact_path(self, filename: str) -> Path | None:
+        with self._lock:
+            session_dir = self._session_dir
+        if session_dir is None:
+            return None
+        return session_dir / filename
+
+    def _debug_dump_session_info_probe(self, *, reason: str, attempt: int) -> None:
+        with self._lock:
+            self._debug_session_info_probe_writes += 1
+            probe_writes = self._debug_session_info_probe_writes
+        if probe_writes > 3 and attempt % 50 != 0:
+            return
+        client_snapshot_getter = getattr(self._client, "get_debug_snapshot", None)
+        client_snapshot: dict[str, Any] | None = None
+        if callable(client_snapshot_getter):
+            try:
+                snapshot = client_snapshot_getter()
+                if isinstance(snapshot, dict):
+                    client_snapshot = snapshot
+            except Exception as exc:
+                client_snapshot = {"error": f"{type(exc).__name__}: {exc}"}
+        payload: dict[str, Any] = {
+            "reason": reason,
+            "attempt": attempt,
+            "timestamp": time.time(),
+            "client_debug": client_snapshot,
+        }
+        self._debug_write_json(_DEBUG_SESSIONINFO_PROBE_FILENAME, payload)
+        self._debug_log_line(f"sessioninfo_probe reason={reason} attempt={attempt}")
+
+    def _debug_maybe_dump_sample(self, sample: dict[str, Any], sample_count: int) -> None:
+        raw = sample.get("raw")
+        if not isinstance(raw, dict):
+            return
+        probe_keys = (
+            "SessionTime",
+            "SessionState",
+            "SessionFlags",
+            "Lap",
+            "LapCompleted",
+            "LapDistPct",
+            "OnPitRoad",
+            "IsOnTrackCar",
+            "Speed",
+            "Throttle",
+            "Brake",
+            "Gear",
+            "RPM",
+        )
+        probe_snapshot = {key: raw.get(key) for key in probe_keys if key in raw}
+        with self._lock:
+            prev = dict(self._debug_prev_sample_probe)
+            self._debug_prev_sample_probe = probe_snapshot
+        changed_keys = [key for key, value in probe_snapshot.items() if prev.get(key) != value]
+
+        should_write = False
+        if sample_count <= 300:
+            should_write = True
+        elif sample_count % 50 == 0:
+            should_write = True
+        elif any(
+            key in {"OnPitRoad", "IsOnTrackCar", "LapCompleted", "Lap", "SessionFlags", "SessionState"}
+            for key in changed_keys
+        ):
+            should_write = True
+        if not should_write:
+            return
+
+        with self._lock:
+            self._debug_sample_dump_entries += 1
+            dump_seq = self._debug_sample_dump_entries
+        self._debug_append_jsonl(
+            _DEBUG_SAMPLE_DUMP_FILENAME,
+            {
+                "kind": "sample",
+                "seq": dump_seq,
+                "sample_count": sample_count,
+                "timestamp_wall": sample.get("timestamp_wall"),
+                "timestamp_monotonic": sample.get("timestamp_monotonic"),
+                "changed_probe_keys": changed_keys,
+                "probe": probe_snapshot,
+                "raw": raw,
+            },
+        )
 
     def _merge_session_info_meta_from_yaml(self, yaml_text: str, *, session_info_saved_ts: float) -> bool:
         try:
@@ -461,9 +639,14 @@ class RecorderService:
             self._maybe_rename_session_dir_from_identity()
             self._ensure_run_detector_from_session_type(extracted.get("SessionType"))
             self._merge_session_meta_fields(extracted)
+            self._debug_log_line(
+                "sessioninfo_meta_merged "
+                f"keys={','.join(sorted(str(k) for k in extracted.keys()))}"
+            )
             return True
         except Exception as exc:
             _LOG.warning("irsdk SessionInfo meta extract/merge failed (%s)", exc)
+            self._debug_log_line(f"sessioninfo_meta_merge_failed error={type(exc).__name__}:{exc}")
             return False
 
     def _merge_session_meta_fields(self, fields: dict[str, Any]) -> None:
@@ -486,8 +669,12 @@ class RecorderService:
             base.setdefault("session_finalized_marker", SESSION_FINALIZED_FILENAME)
             self._update_session_identity_fields(base)
             meta_path.write_text(json.dumps(base, indent=2), encoding="utf-8")
+            self._debug_log_line(
+                f"session_meta_merged path={meta_path.name} keys={','.join(sorted(str(k) for k in fields.keys()))}"
+            )
         except Exception as exc:
             _LOG.warning("irsdk session meta merge failed (%s)", exc)
+            self._debug_log_line(f"session_meta_merge_failed error={type(exc).__name__}:{exc}")
 
     def _update_session_identity_fields(self, fields: dict[str, Any]) -> None:
         if not isinstance(fields, dict):
@@ -542,10 +729,12 @@ class RecorderService:
             current_dir.rename(target_dir)
         except Exception as exc:
             _LOG.debug("irsdk session dir rename skipped (%s)", exc)
+            self._debug_log_line(f"session_dir_rename_skipped from={current_dir.name} to={target_dir.name} error={type(exc).__name__}:{exc}")
             return
         with self._lock:
             if self._session_dir == current_dir:
                 self._session_dir = target_dir
+        self._debug_log_line(f"session_dir_renamed from={current_dir.name} to={target_dir.name}")
 
     def _append_active_run_sample(self, sample: dict[str, Any]) -> None:
         if not isinstance(sample, dict):
@@ -615,6 +804,9 @@ class RecorderService:
                 pass
             if should_log:
                 _LOG.warning("irsdk run parquet write disabled for run_id=%s (%s)", active_run_id, exc)
+                self._debug_log_line(
+                    f"run_parquet_write_disabled run_id={active_run_id} error={type(exc).__name__}:{exc}"
+                )
 
     def _start_run_storage(self, run_id: int) -> None:
         session_dir = self._ensure_session_dir()
@@ -645,6 +837,9 @@ class RecorderService:
             dtype_decisions=dtype_decisions,
             chunk_seconds=1.0,
             sample_hz=sample_hz,
+        )
+        self._debug_log_line(
+            f"run_storage_started run_id={run_id} file={run_path.name} recorded_channels={len(recorded_channels)}"
         )
         with self._lock:
             if self._active_run_id != run_id:
@@ -726,6 +921,9 @@ class RecorderService:
             if reason:
                 meta.setdefault("run_end_reason", reason)
             self._write_run_meta_file(final_run_id, meta)
+            self._debug_log_line(
+                f"run_finalized run_id={final_run_id} reason={reason or 'unknown'} sample_count={meta.get('sample_count')}"
+            )
 
     def _finalize_active_run_if_any(self, *, reason: str | None = None) -> None:
         with self._lock:
@@ -743,8 +941,10 @@ class RecorderService:
         try:
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+            self._debug_log_line(f"run_meta_written run_id={run_id} file={meta_path.name}")
         except Exception as exc:
             _LOG.warning("irsdk run meta write failed for run_id=%s (%s)", run_id, exc)
+            self._debug_log_line(f"run_meta_write_failed run_id={run_id} error={type(exc).__name__}:{exc}")
 
     def _resolve_run_meta_path(self, run_id: int) -> Path | None:
         session_dir = self._ensure_session_dir()
@@ -764,8 +964,10 @@ class RecorderService:
             self._merge_session_meta_fields({"session_finalized_ts": time.time()})
             with self._lock:
                 self._session_finalized_marked = True
+            self._debug_log_line(f"session_finalized path={session_dir}")
         except Exception as exc:
             _LOG.warning("irsdk session finalized marker write failed (%s)", exc)
+            self._debug_log_line(f"session_finalized_failed error={type(exc).__name__}:{exc}")
 
     @staticmethod
     def _coerce_optional_float(value: Any) -> float | None:
@@ -801,6 +1003,7 @@ class RecorderService:
             self._session_type = normalized
             self._run_detector = RunDetector(normalized)
         _LOG.info("irsdk run detector ready (session_type=%s)", normalized)
+        self._debug_log_line(f"run_detector_ready session_type={normalized}")
 
     def _process_run_detector(self, sample: dict[str, Any]) -> None:
         with self._lock:
@@ -860,6 +1063,9 @@ class RecorderService:
             reason,
             session_type,
             ts,
+        )
+        self._debug_log_line(
+            f"run_event type={event_type} run_id={active_run_id} reason={reason} session_type={session_type} ts={ts}"
         )
 
     @staticmethod

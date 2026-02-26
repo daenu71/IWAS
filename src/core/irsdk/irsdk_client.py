@@ -135,6 +135,76 @@ class IRSDKClient:
         except Exception:
             return None
 
+    def get_debug_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            ir = self._ir
+            state = self._state
+        snapshot: dict[str, Any] = {
+            "state": state,
+            "has_ir_object": ir is not None,
+        }
+        if ir is None:
+            return snapshot
+
+        snapshot["ir_class"] = f"{type(ir).__module__}.{type(ir).__name__}"
+        try:
+            snapshot["runtime_connected"] = bool(self._runtime_is_connected(ir))
+        except Exception:
+            snapshot["runtime_connected"] = None
+
+        known_attrs: list[dict[str, Any]] = []
+        for attr_name in (
+            "session_info",
+            "sessionInfo",
+            "session_info_yaml",
+            "sessionInfoYaml",
+            "session_info_str",
+            "sessionInfoStr",
+            "_session_info",
+            "_sessionInfo",
+            "_IRSDK__session_info",
+            "session_info_update",
+            "var_headers_names",
+            "_header",
+            "_shared_mem",
+        ):
+            item: dict[str, Any] = {"name": attr_name, "present": hasattr(ir, attr_name)}
+            if item["present"]:
+                try:
+                    raw = getattr(ir, attr_name)
+                    value = raw() if callable(raw) else raw
+                    item.update(self._summarize_debug_value(value))
+                except Exception as exc:
+                    item["error"] = f"{type(exc).__name__}: {exc}"
+            known_attrs.append(item)
+        snapshot["known_attrs"] = known_attrs
+
+        header_info: dict[str, Any] = {}
+        header = self._get_ir_attr_value(ir, "_header")
+        if header is not None:
+            for name in ("session_info_update", "session_info_offset", "session_info_len", "status", "version"):
+                try:
+                    value = getattr(header, name)
+                    header_info[name] = value() if callable(value) else value
+                except Exception:
+                    continue
+        if header_info:
+            snapshot["header"] = header_info
+
+        try:
+            matches: list[dict[str, Any]] = []
+            for attr_name, attr_value in vars(ir).items():
+                key = attr_name.lower()
+                if "session" not in key and "info" not in key:
+                    continue
+                item = {"name": attr_name}
+                item.update(self._summarize_debug_value(attr_value))
+                matches.append(item)
+            snapshot["vars_session_related"] = sorted(matches, key=lambda x: str(x.get("name", "")))[:40]
+        except Exception as exc:
+            snapshot["vars_session_related_error"] = f"{type(exc).__name__}: {exc}"
+        return snapshot
+
     def _runtime_is_connected(self, ir: Any) -> bool:
         checks = (
             ("is_connected", True),
@@ -289,6 +359,27 @@ class IRSDKClient:
         if isinstance(value, str):
             return value
         return None
+
+    @staticmethod
+    def _summarize_debug_value(value: Any) -> dict[str, Any]:
+        info: dict[str, Any] = {"type": type(value).__name__}
+        try:
+            if isinstance(value, (str, bytes, bytearray)):
+                info["len"] = len(value)
+            elif isinstance(value, (list, tuple, set, dict)):
+                info["len"] = len(value)
+        except Exception:
+            pass
+        text = IRSDKClient._coerce_text(value)
+        if text is not None:
+            info["text_len"] = len(text)
+            info["text_preview"] = text[:200]
+        else:
+            try:
+                info["repr"] = repr(value)[:200]
+            except Exception:
+                pass
+        return info
 
     @staticmethod
     def _to_simple_value(value: Any) -> Any:
