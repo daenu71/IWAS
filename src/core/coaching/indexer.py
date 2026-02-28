@@ -15,6 +15,7 @@ from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZE
 _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
 _RUN_PARQUET_RE = re.compile(r"^run_(\d{4})\.parquet$", re.IGNORECASE)
 _LOG = logging.getLogger(__name__)
+_DEBUG_SAMPLES_FILENAME = "debug_samples.jsonl"
 
 
 @dataclass
@@ -288,6 +289,8 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             )
         )
 
+    _augment_single_run_from_debug_samples(session_dir=session_dir, runs=runs)
+
     runs.sort(
         key=lambda r: (
             -(r.summary.last_driven_ts or 0.0),
@@ -465,6 +468,159 @@ def _compute_session_summary(runs: list[_RunScan], *, fallback_last_ts: float | 
         fastest_lap_s=min(fastest_values) if fastest_values else None,
         last_driven_ts=max(last_values) if last_values else fallback_last_ts,
     )
+
+
+def _augment_single_run_from_debug_samples(*, session_dir: Path, runs: list[_RunScan]) -> None:
+    # Backfill for sessions where recorder produced only one run file but debug stream shows more laps.
+    if len(runs) != 1:
+        return
+    snapshot = _read_debug_lap_snapshot(session_dir)
+    if not snapshot:
+        return
+
+    run = runs[0]
+    observed_completed = _coerce_optional_int(snapshot.get("lap_completed"))
+    observed_lap = _coerce_optional_int(snapshot.get("lap"))
+    if observed_completed is None and observed_lap is None:
+        return
+
+    current_completed = int(run.summary.laps or 0)
+    current_total = int(run.summary.laps_total_display if run.summary.laps_total_display is not None else (run.summary.laps or 0))
+    target_completed = max(current_completed, observed_completed or 0)
+    target_total = max(current_total, target_completed, observed_lap or 0)
+    if target_total <= current_total and target_completed <= current_completed:
+        return
+
+    run.lap_segments = _expand_lap_segments_from_counters(
+        existing_segments=run.lap_segments,
+        target_completed=target_completed,
+        target_total=target_total,
+    )
+    run.summary.laps = target_completed
+    run.summary.laps_total_display = target_total
+
+    observed_best = _coerce_optional_float(snapshot.get("lap_best_lap_time_s"))
+    if observed_best is not None and observed_best > 0:
+        if run.summary.fastest_lap_s is None:
+            run.summary.fastest_lap_s = observed_best
+        else:
+            run.summary.fastest_lap_s = min(run.summary.fastest_lap_s, observed_best)
+
+
+def _expand_lap_segments_from_counters(
+    *,
+    existing_segments: list[dict[str, Any]],
+    target_completed: int,
+    target_total: int,
+) -> list[dict[str, Any]]:
+    by_lap_no: dict[int, dict[str, Any]] = {}
+    for seg in existing_segments:
+        if not isinstance(seg, dict):
+            continue
+        lap_no = _coerce_optional_int(seg.get("lap_no"))
+        if lap_no is None or lap_no <= 0:
+            continue
+        by_lap_no.setdefault(lap_no, dict(seg))
+
+    expanded: list[dict[str, Any]] = []
+    for lap_no in range(1, target_total + 1):
+        seg = by_lap_no.get(lap_no)
+        if seg is None:
+            expanded.append(
+                {
+                    "lap_no": lap_no,
+                    "start_idx": None,
+                    "end_idx": None,
+                    "start_ts": None,
+                    "end_ts": None,
+                    "duration_s": None,
+                    "sample_count": 0,
+                    "reason": "debug_samples_counter_backfill"
+                    if lap_no <= target_completed
+                    else "current_incomplete(debug_samples)",
+                    "is_complete": lap_no <= target_completed,
+                    "is_valid": None,
+                }
+            )
+            continue
+
+        seg = dict(seg)
+        seg["lap_no"] = lap_no
+        if lap_no <= target_completed:
+            seg["is_complete"] = True
+            reason = str(seg.get("reason") or "")
+            if reason.lower().startswith("current_incomplete"):
+                seg["reason"] = "debug_samples_counter_backfill"
+        else:
+            seg["is_complete"] = False
+            seg["reason"] = "current_incomplete(debug_samples)"
+        expanded.append(seg)
+    return expanded
+
+
+def _read_debug_lap_snapshot(session_dir: Path) -> dict[str, Any] | None:
+    path = session_dir / _DEBUG_SAMPLES_FILENAME
+    if not path.exists():
+        return None
+    try:
+        size = int(path.stat().st_size)
+    except Exception:
+        return None
+    if size <= 0:
+        return None
+
+    for window_size in (256 * 1024, 1024 * 1024, 4 * 1024 * 1024):
+        start = max(0, size - window_size)
+        try:
+            with path.open("rb") as fh:
+                if start > 0:
+                    fh.seek(start)
+                raw = fh.read()
+        except Exception:
+            return None
+        text = raw.decode("utf-8", errors="ignore")
+        lines = text.splitlines()
+        if start > 0 and lines:
+            lines = lines[1:]
+        snapshot = _extract_debug_lap_snapshot_from_lines(lines)
+        if snapshot is not None:
+            return snapshot
+    return None
+
+
+def _extract_debug_lap_snapshot_from_lines(lines: list[str]) -> dict[str, Any] | None:
+    for line in reversed(lines):
+        text = str(line or "").strip()
+        if not text:
+            continue
+        try:
+            obj = json.loads(text)
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+
+        probe = obj.get("probe")
+        raw = obj.get("raw")
+        probe_dict = probe if isinstance(probe, dict) else {}
+        raw_dict = raw if isinstance(raw, dict) else {}
+        lap = _coerce_optional_int(probe_dict.get("Lap"))
+        if lap is None:
+            lap = _coerce_optional_int(raw_dict.get("Lap"))
+        lap_completed = _coerce_optional_int(probe_dict.get("LapCompleted"))
+        if lap_completed is None:
+            lap_completed = _coerce_optional_int(raw_dict.get("LapCompleted"))
+        if lap is None and lap_completed is None:
+            continue
+        lap_best = _coerce_optional_float(probe_dict.get("LapBestLapTime"))
+        if lap_best is None:
+            lap_best = _coerce_optional_float(raw_dict.get("LapBestLapTime"))
+        return {
+            "lap": lap,
+            "lap_completed": lap_completed,
+            "lap_best_lap_time_s": lap_best,
+        }
+    return None
 
 
 def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
@@ -704,6 +860,7 @@ def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None,
             _RUN_META_RE.match(name)
             or _RUN_PARQUET_RE.match(name)
             or lower == "session_meta.json"
+            or lower == _DEBUG_SAMPLES_FILENAME
             or lower == ACTIVE_SESSION_LOCK_FILENAME.lower()
             or lower == SESSION_FINALIZED_FILENAME.lower()
         ):
