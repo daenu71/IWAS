@@ -4,6 +4,7 @@ from collections import deque
 import importlib.util
 import json
 import logging
+import os
 from pathlib import Path
 import threading
 import time
@@ -75,6 +76,9 @@ class RecorderService:
         self._debug_pyarrow_probe_logged = False
         self._vars_dump_written = False
         self._target_field_probe_written = False
+        self._io_summary_debug_enabled = self._is_env_flag_enabled("IRVC_DEBUG_IO_SUMMARY")
+        self._last_io_summary: dict[str, Any] | None = None
+        self._last_io_error: str | None = None
 
     @property
     def running(self) -> bool:
@@ -109,6 +113,8 @@ class RecorderService:
                 # Counters are optional in the UI; expose None when not tracked.
                 "dropped": None,
                 "write_lag": None,
+                "last_io": self._format_io_summary_for_status(self._last_io_summary),
+                "writer_error": self._last_io_error,
             }
         return status
 
@@ -151,6 +157,8 @@ class RecorderService:
             self._debug_pyarrow_probe_logged = False
             self._vars_dump_written = False
             self._target_field_probe_written = False
+            self._last_io_summary = None
+            self._last_io_error = None
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -1208,9 +1216,14 @@ class RecorderService:
             return
 
         try:
-            writer.append(sample, now_ts=self._coerce_optional_float(sample.get("timestamp_monotonic")))
+            flushed = writer.append(sample, now_ts=self._coerce_optional_float(sample.get("timestamp_monotonic")))
+            if flushed:
+                flush_summary = writer.consume_last_flush_summary()
+                if isinstance(flush_summary, dict):
+                    self._record_chunk_io_summary(active_run_id=active_run_id, summary=flush_summary)
         except Exception as exc:
             should_log = False
+            error_text = f"{type(exc).__name__}: {exc}"
             with self._lock:
                 if self._active_run_id == active_run_id:
                     if isinstance(self._active_run_meta, dict):
@@ -1219,6 +1232,14 @@ class RecorderService:
                         self._active_run_write_error_logged = True
                         should_log = True
                     self._active_run_writer = None
+                self._last_io_error = error_text
+                self._last_io_summary = {
+                    "ok": False,
+                    "run_id": active_run_id,
+                    "path": str(getattr(writer, "run_path", "")),
+                    "error": error_text,
+                    "ts_wall": time.time(),
+                }
             try:
                 writer.close(final=False)
             except Exception:
@@ -1250,6 +1271,7 @@ class RecorderService:
             self._active_run_last_sample_index = None
             self._active_run_last_sample_ts = None
             self._active_run_write_error_logged = False
+            self._last_io_error = None
 
         run_path = session_dir / f"run_{run_id:04d}.parquet"
         writer = ParquetRunWriter(
@@ -1301,6 +1323,9 @@ class RecorderService:
         if writer is not None:
             try:
                 writer.close(final=True)
+                flush_summary = writer.consume_last_flush_summary()
+                if isinstance(flush_summary, dict):
+                    self._record_chunk_io_summary(active_run_id=final_run_id or -1, summary=flush_summary)
             except Exception as exc:
                 if isinstance(meta, dict):
                     meta.setdefault("writer_close_error", str(exc))
@@ -1389,6 +1414,79 @@ class RecorderService:
         except Exception as exc:
             _LOG.warning("irsdk session finalized marker write failed (%s)", exc)
             self._debug_log_line(f"session_finalized_failed error={type(exc).__name__}:{exc}")
+
+    def _record_chunk_io_summary(self, *, active_run_id: int, summary: dict[str, Any]) -> None:
+        if not isinstance(summary, dict):
+            return
+        run_id_value = active_run_id if active_run_id is not None else -1
+        merged = dict(summary)
+        merged["run_id"] = int(run_id_value)
+        error_text = str(merged.get("error") or "").strip() if not bool(merged.get("ok")) else ""
+        with self._lock:
+            self._last_io_summary = merged
+            self._last_io_error = error_text or self._last_io_error
+            if bool(merged.get("ok")):
+                self._last_io_error = None
+        rows = self._coerce_optional_int(merged.get("rows"))
+        duration_ms = self._coerce_optional_float(merged.get("duration_ms"))
+        duration_token = f"{duration_ms:.2f}" if duration_ms is not None else "na"
+        path_text = str(merged.get("path") or "")
+        table_nbytes = self._coerce_optional_int(merged.get("table_nbytes"))
+        file_size_bytes = self._coerce_optional_int(merged.get("file_size_bytes"))
+        if bool(merged.get("ok")):
+            self._debug_log_line(
+                "run_chunk_flush "
+                f"run_id={run_id_value} rows={rows if rows is not None else 'na'} "
+                f"duration_ms={duration_token} "
+                f"table_nbytes={table_nbytes if table_nbytes is not None else 'na'} "
+                f"file_size={file_size_bytes if file_size_bytes is not None else 'na'} "
+                f"path={path_text}"
+            )
+            if self._io_summary_debug_enabled:
+                _LOG.info(
+                    "irsdk chunk flush run_id=%s rows=%s duration_ms=%.2f table_nbytes=%s file_size=%s path=%s",
+                    run_id_value,
+                    rows if rows is not None else "na",
+                    duration_ms if duration_ms is not None else -1.0,
+                    table_nbytes if table_nbytes is not None else "na",
+                    file_size_bytes if file_size_bytes is not None else "na",
+                    path_text,
+                )
+            return
+        self._debug_log_line(
+            "run_chunk_flush_failed "
+            f"run_id={run_id_value} error={error_text or 'unknown'} path={path_text}"
+        )
+
+    @staticmethod
+    def _format_io_summary_for_status(summary: dict[str, Any] | None) -> str | None:
+        if not isinstance(summary, dict):
+            return None
+        ok = bool(summary.get("ok"))
+        run_id = summary.get("run_id")
+        rows = summary.get("rows")
+        duration_ms = summary.get("duration_ms")
+        path_text = str(summary.get("path") or "")
+        path_name = Path(path_text).name if path_text else ""
+        if ok:
+            try:
+                duration = f"{float(duration_ms):.1f}ms"
+            except Exception:
+                duration = "na"
+            run_token = f"run {run_id}" if run_id is not None else "run na"
+            rows_token = f"rows {rows}" if rows is not None else "rows na"
+            if path_name:
+                return f"{run_token}, {rows_token}, {duration}, {path_name}"
+            return f"{run_token}, {rows_token}, {duration}"
+        error_text = str(summary.get("error") or "").strip() or "write failed"
+        if len(error_text) > 120:
+            error_text = error_text[:117] + "..."
+        return error_text
+
+    @staticmethod
+    def _is_env_flag_enabled(name: str) -> bool:
+        raw = str(os.environ.get(name, "") or "").strip().lower()
+        return raw in ("1", "true", "yes", "on")
 
     @staticmethod
     def _coerce_optional_float(value: Any) -> float | None:

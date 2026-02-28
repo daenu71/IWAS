@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, font as tkfont, messagebox
 import logging
 import math
+import queue
 import re
 from pathlib import Path
 import json
@@ -11,6 +12,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -30,6 +32,7 @@ from core.models import (
     migrate_ui_last_run_contract_dict,
 )
 from core.cfg import APP_NAME, APP_VERSION
+from core.diagnostics import detect_onedrive_risky_paths, export_diagnostics_bundle
 from core import persistence, filesvc, profile_service, render_service
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, scan_storage
 from core.coaching.storage import (
@@ -1099,6 +1102,10 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=0)
         self._project_root = find_project_root(Path(__file__))
+        self._diag_export_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._diag_export_poll_after_id: str | None = None
+        self._diag_export_in_progress = False
+        self._diag_export_button: ttk.Button | None = None
 
         self._numeric_specs: dict[str, tuple[str, int, int]] = {
             "irsdk_sample_hz": ("Sample rate (Hz)", 0, 1000),
@@ -1110,6 +1117,8 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         self._load_state()
         self._build_ui()
         self._sync_widget_states()
+        self._update_cloud_sync_warning()
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
     def _load_state(self) -> None:
         sel = persistence.load_coaching_recording_settings()
@@ -1122,6 +1131,8 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         self._low_disk_gb_var = tk.StringVar(value=str(int(sel.get("coaching_low_disk_warning_gb", 20))))
         self._auto_delete_enabled_var = tk.BooleanVar(value=bool(sel.get("coaching_auto_delete_enabled", False)))
         self._error_var = tk.StringVar(value="")
+        self._cloud_warning_var = tk.StringVar(value="")
+        self._diag_export_status_var = tk.StringVar(value="")
 
         self._numeric_vars: dict[str, tk.StringVar] = {
             "irsdk_sample_hz": self._irsdk_sample_hz_var,
@@ -1158,6 +1169,17 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         self._widgets["storage_browse"] = btn_browse
         ent_storage.bind("<Return>", self._commit_storage_dir)
         ent_storage.bind("<FocusOut>", self._commit_storage_dir)
+
+        row += 1
+        lbl_cloud_warning = ttk.Label(
+            self,
+            textvariable=self._cloud_warning_var,
+            foreground="#a66200",
+            justify="left",
+            wraplength=760,
+        )
+        lbl_cloud_warning.grid(row=row, column=0, columnspan=3, sticky="w", pady=(2, 4))
+        self._widgets["cloud_warning"] = lbl_cloud_warning
 
         vcmd_nonneg_int = (self.register(self._validate_nonnegative_int_entry_text), "%P")
 
@@ -1243,6 +1265,15 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         )
         chk_auto_delete.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6, 2))
         self._widgets["auto_delete"] = chk_auto_delete
+
+        row += 1
+        diagnostics_row = ttk.Frame(self)
+        diagnostics_row.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 2))
+        diagnostics_row.columnconfigure(1, weight=1)
+        btn_export_diag = ttk.Button(diagnostics_row, text="Export Diagnostics", command=self._start_diagnostics_export)
+        btn_export_diag.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self._diag_export_button = btn_export_diag
+        ttk.Label(diagnostics_row, textvariable=self._diag_export_status_var).grid(row=0, column=1, sticky="w")
 
         row += 1
         lbl_error = ttk.Label(self, textvariable=self._error_var, foreground="#b00020")
@@ -1343,6 +1374,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
             _sync_irsdk_recorder_service_from_settings()
         except Exception:
             pass
+        self._update_cloud_sync_warning()
         self._clear_error()
         return True
 
@@ -1354,6 +1386,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         self._save_payload(payload)
 
     def _commit_storage_dir(self, _event=None) -> None:
+        self._update_cloud_sync_warning()
         payload, _err = self._build_payload(include_numeric=False)
         if payload is None:
             return
@@ -1410,6 +1443,123 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
             pass
         self._commit_storage_dir()
 
+    def _start_diagnostics_export(self) -> None:
+        if self._diag_export_in_progress:
+            return
+        default_dir = self._project_root / "_logs"
+        try:
+            default_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        default_name = f"iwas_diagnostics_{ts}.zip"
+        try:
+            root = self.winfo_toplevel()
+        except Exception:
+            root = None
+        try:
+            chosen = filedialog.asksaveasfilename(
+                parent=root,
+                title="Export Diagnostics",
+                defaultextension=".zip",
+                filetypes=[("ZIP archive", "*.zip"), ("All files", "*.*")],
+                initialdir=str(default_dir),
+                initialfile=default_name,
+            )
+        except Exception:
+            chosen = ""
+        if not chosen:
+            return
+        target_path = Path(str(chosen))
+        self._diag_export_in_progress = True
+        self._diag_export_status_var.set("Preparing diagnostics export...")
+        self._sync_widget_states()
+
+        storage_dir = str(self._storage_dir_var.get()).strip()
+        output_video_dir = self._project_root / "output" / "video"
+
+        def _worker() -> None:
+            def _progress(text: str) -> None:
+                try:
+                    self._diag_export_queue.put(("progress", str(text)))
+                except Exception:
+                    pass
+
+            try:
+                out_path = export_diagnostics_bundle(
+                    target_path,
+                    project_root=self._project_root,
+                    coaching_storage_dir=storage_dir,
+                    output_video_dir=output_video_dir,
+                    progress_cb=_progress,
+                )
+                self._diag_export_queue.put(("done", str(out_path)))
+            except Exception as exc:
+                self._diag_export_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+        thread = threading.Thread(target=_worker, name="diagnostics-export", daemon=True)
+        thread.start()
+        self._schedule_diag_export_queue_poll()
+
+    def _schedule_diag_export_queue_poll(self) -> None:
+        if self._diag_export_poll_after_id is not None:
+            return
+        try:
+            self._diag_export_poll_after_id = self.after(120, self._poll_diag_export_queue)
+        except Exception:
+            self._diag_export_poll_after_id = None
+
+    def _poll_diag_export_queue(self) -> None:
+        self._diag_export_poll_after_id = None
+        while True:
+            try:
+                kind, payload = self._diag_export_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "progress":
+                self._diag_export_status_var.set(str(payload))
+                continue
+            if kind == "done":
+                self._diag_export_status_var.set(f"Saved: {payload}")
+                self._diag_export_in_progress = False
+                self._sync_widget_states()
+                try:
+                    messagebox.showinfo(
+                        "Diagnostics Export",
+                        f"Diagnostics bundle created:\n{payload}",
+                        parent=self.winfo_toplevel(),
+                    )
+                except Exception:
+                    pass
+                continue
+            if kind == "error":
+                self._diag_export_status_var.set(f"Export failed: {payload}")
+                self._diag_export_in_progress = False
+                self._sync_widget_states()
+                try:
+                    messagebox.showwarning(
+                        "Diagnostics Export",
+                        f"Could not export diagnostics:\n{payload}",
+                        parent=self.winfo_toplevel(),
+                    )
+                except Exception:
+                    pass
+                continue
+        if self._diag_export_in_progress:
+            self._schedule_diag_export_queue_poll()
+
+    def _update_cloud_sync_warning(self) -> None:
+        storage_dir = str(self._storage_dir_var.get()).strip()
+        output_video_dir = self._project_root / "output" / "video"
+        risky_paths = detect_onedrive_risky_paths((storage_dir, output_video_dir))
+        if risky_paths:
+            self._cloud_warning_var.set(
+                "Storage/Output liegt in OneDrive-Sync. Bei hoher IO kann das zu Treiberproblemen "
+                "fuehren (cldflt.sys). Empfehlung: lokalen Ordner ausserhalb OneDrive waehlen."
+            )
+            return
+        self._cloud_warning_var.set("")
+
     def _set_widget_enabled(self, widget: tk.Widget | None, enabled: bool) -> None:
         if widget is None:
             return
@@ -1436,6 +1586,18 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         self._set_widget_enabled(self._widgets.get("low_disk_enabled"), master_enabled)
         self._set_widget_enabled(self._widgets.get("low_disk_gb"), low_disk_enabled)
         self._set_widget_enabled(self._widgets.get("auto_delete"), low_disk_enabled)
+        self._set_widget_enabled(self._diag_export_button, not self._diag_export_in_progress)
+
+    def _on_destroy(self, event) -> None:
+        if event.widget is not self:
+            return
+        after_id = self._diag_export_poll_after_id
+        self._diag_export_poll_after_id = None
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
 
 
 class SettingsView(ttk.Frame):
@@ -1477,6 +1639,7 @@ class CoachingView(ttk.Frame):
         self._details_var = tk.StringVar(value="Select a node to see details.")
         self._status_vars: dict[str, tk.StringVar] = {}
         self._status_poll_after_id: str | None = None
+        self._last_writer_error_seen: str | None = None
 
         layout = ttk.Frame(self, padding=12)
         layout.grid(row=0, column=0, sticky="nsew")
@@ -1506,7 +1669,7 @@ class CoachingView(ttk.Frame):
         status.grid(row=1, column=0, sticky="nsew")
         status.columnconfigure(1, weight=1)
         for row_idx, key in enumerate(
-            ("connection", "session_type", "run_active", "sample_count", "dropped", "write_lag")
+            ("connection", "session_type", "run_active", "sample_count", "dropped", "write_lag", "last_io", "writer_error")
         ):
             label_text = {
                 "connection": "connected",
@@ -1515,6 +1678,8 @@ class CoachingView(ttk.Frame):
                 "sample_count": "sample count",
                 "dropped": "dropped",
                 "write_lag": "write lag",
+                "last_io": "last io",
+                "writer_error": "write error",
             }[key]
             ttk.Label(status, text=f"{label_text}:").grid(row=row_idx, column=0, sticky="w", padx=(0, 8), pady=1)
             var = tk.StringVar(value="na")
@@ -1667,6 +1832,8 @@ class CoachingView(ttk.Frame):
             self._status_vars["sample_count"].set("0")
             self._status_vars["dropped"].set("na")
             self._status_vars["write_lag"].set("na")
+            self._status_vars["last_io"].set("na")
+            self._status_vars["writer_error"].set("na")
         else:
             try:
                 status = service.get_status() if hasattr(service, "get_status") else {}
@@ -1686,6 +1853,15 @@ class CoachingView(ttk.Frame):
             self._status_vars["dropped"].set(str(dropped if dropped is not None else "na"))
             write_lag = status.get("write_lag")
             self._status_vars["write_lag"].set(str(write_lag if write_lag is not None else "na"))
+            last_io = status.get("last_io")
+            self._status_vars["last_io"].set(str(last_io if last_io else "na"))
+            writer_error = str(status.get("writer_error") or "").strip()
+            self._status_vars["writer_error"].set(writer_error if writer_error else "na")
+            if writer_error and writer_error != self._last_writer_error_seen:
+                self._last_writer_error_seen = writer_error
+                self._browser_widget.set_message(f"Recorder write error: {writer_error}")
+            if not writer_error:
+                self._last_writer_error_seen = None
 
         try:
             self._status_poll_after_id = self.after(400, self._poll_recorder_status)

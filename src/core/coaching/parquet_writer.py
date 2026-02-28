@@ -35,6 +35,7 @@ class ParquetRunWriter:
         self._pa: Any | None = None
         self._pq: Any | None = None
         self._closed = False
+        self._last_flush_summary: dict[str, Any] | None = None
 
     def append(self, sample: Mapping[str, Any], now_ts: float | None = None) -> bool:
         raw = sample.get("raw")
@@ -64,6 +65,8 @@ class ParquetRunWriter:
     def flush(self) -> None:
         if self._closed or not self._buffer:
             return
+        started = time.perf_counter()
+        rows_in_chunk = len(self._buffer)
         self._ensure_backend()
         if self._schema is None:
             self._schema = self._build_schema(self._buffer)
@@ -71,13 +74,48 @@ class ParquetRunWriter:
             self.run_path.parent.mkdir(parents=True, exist_ok=True)
             self._writer = self._pq.ParquetWriter(self.run_path, self._schema)
 
-        arrays = []
-        for field in self._schema:
-            values = [self._coerce_value(row.get(field.name), field.type) for row in self._buffer]
-            arrays.append(self._pa.array(values, type=field.type))
-        table = self._pa.Table.from_arrays(arrays, schema=self._schema)
-        self._writer.write_table(table)
-        self._buffer.clear()
+        try:
+            arrays = []
+            for field in self._schema:
+                values = [self._coerce_value(row.get(field.name), field.type) for row in self._buffer]
+                arrays.append(self._pa.array(values, type=field.type))
+            table = self._pa.Table.from_arrays(arrays, schema=self._schema)
+            table_nbytes = None
+            try:
+                table_nbytes = int(getattr(table, "nbytes"))
+            except Exception:
+                table_nbytes = None
+            self._writer.write_table(table)
+            self._buffer.clear()
+            file_size_bytes = None
+            try:
+                file_size_bytes = int(self.run_path.stat().st_size)
+            except Exception:
+                file_size_bytes = None
+            self._last_flush_summary = {
+                "ok": True,
+                "path": str(self.run_path),
+                "rows": int(rows_in_chunk),
+                "duration_ms": float((time.perf_counter() - started) * 1000.0),
+                "chunk_rows_target": int(self.chunk_rows),
+                "chunk_seconds": float(self.chunk_seconds),
+                "table_nbytes": table_nbytes,
+                "file_size_bytes": file_size_bytes,
+                "ts_wall": float(time.time()),
+            }
+        except Exception as exc:
+            self._last_flush_summary = {
+                "ok": False,
+                "path": str(self.run_path),
+                "rows": int(rows_in_chunk),
+                "duration_ms": float((time.perf_counter() - started) * 1000.0),
+                "chunk_rows_target": int(self.chunk_rows),
+                "chunk_seconds": float(self.chunk_seconds),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "ts_wall": float(time.time()),
+            }
+            raise
 
     def close(self, final: bool = True) -> None:
         if self._closed:
@@ -89,6 +127,11 @@ class ParquetRunWriter:
         self._closed = True
         if writer is not None:
             writer.close()
+
+    def consume_last_flush_summary(self) -> dict[str, Any] | None:
+        summary = self._last_flush_summary
+        self._last_flush_summary = None
+        return dict(summary) if isinstance(summary, dict) else None
 
     def _ensure_backend(self) -> None:
         if self._pa is not None and self._pq is not None:
