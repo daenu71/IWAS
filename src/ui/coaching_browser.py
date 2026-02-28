@@ -211,7 +211,7 @@ class CoachingBrowser(ttk.Frame):
 def _format_summary(node: CoachingTreeNode) -> str:
     summary = node.summary
     if node.kind == "lap":
-        return _format_lap_summary(summary)
+        return _format_lap_summary(summary, lap_summary=_node_lap_summary(node))
 
     parts: list[str] = []
     if summary.total_time_s is not None:
@@ -229,21 +229,66 @@ def _format_summary(node: CoachingTreeNode) -> str:
     return "  ".join(parts) if parts else "-"
 
 
-def _format_lap_summary(summary: NodeSummary) -> str:
+def _format_lap_summary(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str:
     parts: list[str] = []
-    parts.append(_format_lap_seconds(summary.total_time_s))
-    status = _lap_status(summary)
+    lap_time_s = summary.total_time_s
+    if lap_time_s is None:
+        lap_time_s = _coerce_optional_float(lap_summary.get("lap_time_s"))
+    if lap_time_s is None:
+        start_ts = _coerce_optional_float(lap_summary.get("start_ts"))
+        end_ts = _coerce_optional_float(lap_summary.get("end_ts"))
+        if start_ts is not None and end_ts is not None and end_ts >= start_ts:
+            lap_time_s = end_ts - start_ts
+    parts.append(_format_lap_seconds(lap_time_s))
+    status = _lap_status(summary, lap_summary=lap_summary)
     if status is not None:
         parts.append(status)
     return " ".join(parts)
 
 
-def _lap_status(summary: NodeSummary) -> str | None:
-    if bool(getattr(summary, "lap_incomplete", False)):
+def _lap_status(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str | None:
+    if _lap_is_incomplete(summary, lap_summary=lap_summary):
         return "incomplete"
-    if bool(getattr(summary, "lap_offtrack", False)):
+    if _lap_is_offtrack(summary, lap_summary=lap_summary):
         return "offtrack"
     return None
+
+
+def _node_lap_summary(node: CoachingTreeNode) -> dict[str, object]:
+    meta = getattr(node, "meta", {})
+    if isinstance(meta, dict):
+        summary = meta.get("lap_summary")
+        if isinstance(summary, dict):
+            return summary
+    return {}
+
+
+def _lap_is_incomplete(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
+    if bool(getattr(summary, "lap_incomplete", False)):
+        return True
+    if "incomplete" in lap_summary:
+        explicit = _coerce_optional_bool(lap_summary.get("incomplete"))
+        if explicit is not None:
+            return bool(explicit)
+    if "lap_incomplete" in lap_summary:
+        explicit = _coerce_optional_bool(lap_summary.get("lap_incomplete"))
+        if explicit is not None:
+            return bool(explicit)
+    lap_complete = _coerce_optional_bool(lap_summary.get("lap_complete"))
+    if lap_complete is not None:
+        return not bool(lap_complete)
+    return False
+
+
+def _lap_is_offtrack(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
+    if bool(getattr(summary, "lap_offtrack", False)):
+        return True
+    for key in ("offtrack_surface", "lap_offtrack"):
+        if key in lap_summary:
+            explicit = _coerce_optional_bool(lap_summary.get(key))
+            if explicit is not None:
+                return bool(explicit)
+    return False
 
 
 def _format_seconds(seconds: float) -> str:
@@ -283,3 +328,29 @@ def _format_last_driven(ts: float | None) -> str:
         return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return "-"
+
+
+def _coerce_optional_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _coerce_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value == 0:
+            return False
+        if value == 1:
+            return True
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+    return None

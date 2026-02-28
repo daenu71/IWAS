@@ -15,7 +15,8 @@ from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZE
 
 _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
 _RUN_PARQUET_RE = re.compile(r"^run_(\d{4})\.parquet$", re.IGNORECASE)
-_RUN_LAP_META_RE = re.compile(r"^run_(\d{4})_lap_(\d{4})_meta\.json$", re.IGNORECASE)
+_RUN_LAP_META_WITH_RUN_RE = re.compile(r"^run_(\d+)_lap_(\d+)_meta\.json$", re.IGNORECASE)
+_LAP_META_RE = re.compile(r"^lap_(\d+)_meta\.json$", re.IGNORECASE)
 _LOG = logging.getLogger(__name__)
 _DEBUG_SAMPLES_FILENAME = "debug_samples.jsonl"
 
@@ -220,8 +221,10 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     run_meta_map: dict[int, Path] = {}
     run_parquet_map: dict[int, Path] = {}
     run_lap_meta_map: dict[int, dict[int, Path]] = {}
+    shared_lap_meta_map: dict[int, Path] = {}
     run_extra_map: dict[int, list[Path]] = {}
-    for child in children:
+    scan_children = sorted(children, key=lambda p: _sort_key_text(p.name))
+    for child in scan_children:
         name = child.name
         meta_match = _RUN_META_RE.match(name)
         if meta_match:
@@ -233,16 +236,30 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             run_id = int(parquet_match.group(1))
             run_parquet_map[run_id] = child
             continue
-        lap_meta_match = _RUN_LAP_META_RE.match(name)
-        if lap_meta_match:
-            run_id = int(lap_meta_match.group(1))
-            lap_seq = int(lap_meta_match.group(2))
-            lap_idx = max(0, lap_seq - 1)
-            run_lap_meta_map.setdefault(run_id, {})[lap_idx] = child
+        lap_meta_info = _parse_lap_meta_filename(name)
+        if lap_meta_info is not None:
+            lap_run_id, lap_seq = lap_meta_info
+            if lap_run_id is None:
+                shared_lap_meta_map[lap_seq] = child
+            else:
+                run_lap_meta_map.setdefault(lap_run_id, {})[lap_seq] = child
             continue
 
     known_run_ids = sorted(set(run_meta_map.keys()) | set(run_parquet_map.keys()) | set(run_lap_meta_map.keys()))
-    for child in children:
+    if shared_lap_meta_map:
+        if len(known_run_ids) == 1:
+            only_run_id = known_run_ids[0]
+            run_map = run_lap_meta_map.setdefault(only_run_id, {})
+            for lap_seq, path in shared_lap_meta_map.items():
+                run_map.setdefault(lap_seq, path)
+        elif _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+            _LOG.debug(
+                "coaching.indexer lap-meta shared_ignored session=%s shared_files=%s known_runs=%s",
+                session_dir.name,
+                len(shared_lap_meta_map),
+                known_run_ids,
+            )
+    for child in scan_children:
         for run_id in known_run_ids:
             prefix = f"run_{run_id:04d}"
             if not child.name.lower().startswith(prefix.lower()):
@@ -268,9 +285,20 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             meta_path=meta_path,
         )
         lap_segments = [seg.to_dict() for seg in run_metrics.lap_slices]
+        lap_meta_paths = run_lap_meta_map.get(run_id, {})
+        if _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+            _LOG.debug(
+                "coaching.indexer lap-meta run=%s/%04d lap_segments=%s lap_meta_files=%s",
+                session_dir.name,
+                run_id,
+                len(lap_segments),
+                len(lap_meta_paths),
+            )
         lap_meta_status = _apply_lap_meta_to_segments(
+            run_id=run_id,
+            run_dir=session_dir,
             lap_segments=lap_segments,
-            lap_meta_paths=run_lap_meta_map.get(run_id, {}),
+            lap_meta_paths=lap_meta_paths,
         )
         run_meta["lap_meta_status"] = lap_meta_status
         run_summary = _compute_run_summary(
@@ -376,6 +404,26 @@ def _parse_session_folder_name(folder_name: str) -> _ParsedFolderName:
         session_id=str(folder_name or "Unknown"),
         folder_ts=None,
     )
+
+
+def _parse_lap_meta_filename(filename: str) -> tuple[int | None, int] | None:
+    name = str(filename or "")
+    with_run = _RUN_LAP_META_WITH_RUN_RE.match(name)
+    if with_run:
+        try:
+            run_id = int(with_run.group(1))
+            lap_seq = int(with_run.group(2))
+        except Exception:
+            return None
+        return (run_id, lap_seq)
+    without_run = _LAP_META_RE.match(name)
+    if without_run:
+        try:
+            lap_seq = int(without_run.group(1))
+        except Exception:
+            return None
+        return (None, lap_seq)
+    return None
 
 
 def _maybe_rename_offline_testing_unknown_session_dir(session_dir: Path) -> Path:
@@ -767,6 +815,13 @@ def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dic
     lap_meta = dict(segment)
     lap_meta["lap_incomplete"] = lap_incomplete
     lap_meta["lap_offtrack"] = lap_offtrack
+    lap_meta["lap_summary"] = _build_normalized_lap_summary(
+        segment=segment,
+        lap_time_s=duration,
+        lap_incomplete=lap_incomplete,
+        lap_offtrack=lap_offtrack,
+        lap_valid=lap_valid,
+    )
     return CoachingTreeNode(
         id=f"lap::{session_id_str}::{run.run_id:04d}::{idx}",
         kind="lap",
@@ -893,31 +948,47 @@ def _has_valid_lap_metadata(lap_segments: list[dict[str, Any]]) -> bool:
 
 def _apply_lap_meta_to_segments(
     *,
+    run_id: int,
+    run_dir: Path,
     lap_segments: list[dict[str, Any]],
     lap_meta_paths: dict[int, Path],
 ) -> dict[str, Any]:
     found_files = 0
     applied_segments = 0
     validity_applied = 0
-    for lap_index, path in sorted(lap_meta_paths.items(), key=lambda item: int(item[0])):
+    unresolved_files = 0
+    merged_paths_by_index: dict[int, Path] = {}
+    for lap_seq, path in sorted(lap_meta_paths.items(), key=lambda item: int(item[0])):
         data = _read_json_dict(path)
         if not isinstance(data, dict) or not data:
             continue
         found_files += 1
+        lap_index = _resolve_lap_meta_segment_index(
+            lap_segments=lap_segments,
+            lap_seq=lap_seq,
+            data=data,
+        )
+        if lap_index is None:
+            unresolved_files += 1
+            continue
         if lap_index < 0 or lap_index >= len(lap_segments):
+            unresolved_files += 1
             continue
         segment = lap_segments[lap_index]
         if not isinstance(segment, dict):
             continue
         applied_segments += 1
+        merged_paths_by_index[lap_index] = path
         segment["lap_meta_path"] = str(path)
-        segment["lap_index"] = int(lap_index)
+        if _coerce_optional_int(segment.get("lap_index")) is None:
+            segment["lap_index"] = int(lap_index)
 
         lap_num = _coerce_optional_int(data.get("lap_num"))
         if lap_num is None:
             lap_num = _coerce_optional_int(data.get("lap_no"))
         if lap_num is not None:
-            segment["lap_no"] = int(lap_num)
+            if _coerce_optional_int(segment.get("lap_no")) is None:
+                segment["lap_no"] = int(lap_num)
             segment["lap_num"] = int(lap_num)
 
         for source_key, target_key in (
@@ -926,8 +997,9 @@ def _apply_lap_meta_to_segments(
             ("lap_start_ts", "start_ts"),
             ("lap_end_ts", "end_ts"),
         ):
-            if source_key in data:
-                segment[target_key] = data.get(source_key)
+            source_value = data.get(source_key)
+            if source_value is not None:
+                segment[target_key] = source_value
 
         lap_complete = _coerce_optional_bool(data.get("lap_complete"))
         offtrack_surface = _coerce_optional_bool(data.get("offtrack_surface"))
@@ -941,7 +1013,8 @@ def _apply_lap_meta_to_segments(
         if lap_complete is not None:
             segment["lap_complete"] = bool(lap_complete)
             segment["is_complete"] = bool(lap_complete)
-            segment["lap_incomplete"] = not bool(lap_complete)
+            if _coerce_optional_bool(segment.get("lap_incomplete")) is None:
+                segment["lap_incomplete"] = not bool(lap_complete)
         if offtrack_surface is not None:
             segment["offtrack_surface"] = bool(offtrack_surface)
             segment["lap_offtrack"] = bool(offtrack_surface)
@@ -951,11 +1024,137 @@ def _apply_lap_meta_to_segments(
             segment["valid_lap"] = bool(valid_lap)
             segment["is_valid"] = bool(valid_lap)
             validity_applied += 1
+    if _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+        missing_logged = 0
+        for idx, segment in enumerate(lap_segments):
+            has_meta = idx in merged_paths_by_index
+            should_log = idx < 3
+            if not has_meta and missing_logged < 3:
+                should_log = True
+                missing_logged += 1
+            if not should_log:
+                continue
+            lap_no = _coerce_optional_int(segment.get("lap_no")) if isinstance(segment, dict) else None
+            expected_path = merged_paths_by_index.get(idx)
+            if expected_path is None:
+                expected_path = run_dir / f"run_{run_id:04d}_lap_{idx + 1:04d}_meta.json"
+            expected_exists = False
+            try:
+                expected_exists = expected_path.exists()
+            except Exception:
+                expected_exists = False
+            present_keys: list[str] = []
+            if isinstance(segment, dict):
+                present_keys = [
+                    key
+                    for key in (
+                        "duration_s",
+                        "start_ts",
+                        "end_ts",
+                        "lap_complete",
+                        "offtrack_surface",
+                        "incident_delta",
+                        "valid_lap",
+                        "lap_incomplete",
+                        "lap_offtrack",
+                    )
+                    if key in segment
+                ]
+            _LOG.debug(
+                "coaching.indexer lap-meta merge run=%s/%04d lap_no=%s lap_idx=%s expected=%s exists=%s keys=%s",
+                run_dir.name,
+                run_id,
+                lap_no,
+                idx,
+                str(expected_path),
+                expected_exists,
+                ",".join(present_keys),
+            )
 
     return {
         "found_files": found_files,
         "applied_segments": applied_segments,
         "validity_applied": validity_applied,
+        "unresolved_files": unresolved_files,
+    }
+
+
+def _resolve_lap_meta_segment_index(
+    *,
+    lap_segments: list[dict[str, Any]],
+    lap_seq: int,
+    data: dict[str, Any],
+) -> int | None:
+    explicit_index = _coerce_optional_int(data.get("lap_index"))
+    if explicit_index is not None and 0 <= explicit_index < len(lap_segments):
+        return explicit_index
+    if explicit_index is not None and explicit_index == len(lap_segments) and len(lap_segments) > 0:
+        return len(lap_segments) - 1
+
+    candidate_lap_values: list[int] = []
+    for key in ("lap_no", "lap_num"):
+        value = _coerce_optional_int(data.get(key))
+        if value is not None:
+            candidate_lap_values.append(int(value))
+    for value in candidate_lap_values:
+        matched = _match_segment_index_by_lap_no(lap_segments=lap_segments, lap_value=value)
+        if matched is not None:
+            return matched
+    for value in candidate_lap_values:
+        matched = _match_segment_index_by_lap_no(lap_segments=lap_segments, lap_value=(value + 1))
+        if matched is not None:
+            return matched
+    for value in candidate_lap_values:
+        matched = _match_segment_index_by_lap_no(lap_segments=lap_segments, lap_value=(value - 1))
+        if matched is not None:
+            return matched
+
+    for fallback_idx in (lap_seq - 1, lap_seq):
+        if 0 <= fallback_idx < len(lap_segments):
+            return fallback_idx
+    return None
+
+
+def _match_segment_index_by_lap_no(*, lap_segments: list[dict[str, Any]], lap_value: int) -> int | None:
+    for idx, segment in enumerate(lap_segments):
+        if not isinstance(segment, dict):
+            continue
+        seg_lap_no = _coerce_optional_int(segment.get("lap_no"))
+        seg_lap_num = _coerce_optional_int(segment.get("lap_num"))
+        if seg_lap_no == lap_value or seg_lap_num == lap_value:
+            return idx
+    return None
+
+
+def _build_normalized_lap_summary(
+    *,
+    segment: dict[str, Any],
+    lap_time_s: float | None,
+    lap_incomplete: bool,
+    lap_offtrack: bool,
+    lap_valid: bool,
+) -> dict[str, Any]:
+    lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
+    offtrack_surface = _coerce_optional_bool(segment.get("offtrack_surface"))
+    incident_delta = _coerce_optional_int(segment.get("incident_delta"))
+    valid_lap = _coerce_optional_bool(segment.get("valid_lap"))
+    if lap_complete is None:
+        lap_complete = not bool(lap_incomplete)
+    if offtrack_surface is None:
+        offtrack_surface = bool(lap_offtrack)
+    if incident_delta is None:
+        incident_delta = 0
+    if valid_lap is None:
+        valid_lap = bool(lap_valid)
+    return {
+        "lap_time_s": lap_time_s,
+        "lap_complete": bool(lap_complete),
+        "offtrack_surface": bool(offtrack_surface),
+        "incident_delta": int(incident_delta),
+        "valid_lap": bool(valid_lap),
+        "incomplete": bool(lap_incomplete),
+        "lap_incomplete": bool(lap_incomplete),
+        "lap_offtrack": bool(lap_offtrack),
     }
 
 
@@ -1077,7 +1276,7 @@ def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None,
         if not (
             _RUN_META_RE.match(name)
             or _RUN_PARQUET_RE.match(name)
-            or _RUN_LAP_META_RE.match(name)
+            or _parse_lap_meta_filename(name) is not None
             or lower == "session_meta.json"
             or lower == _DEBUG_SAMPLES_FILENAME
             or lower == ACTIVE_SESSION_LOCK_FILENAME.lower()
