@@ -69,6 +69,8 @@ REQUESTED_CHANNELS: list[str] = [
     "OnPitRoad",
     "IsOnTrack",
     "IsOnTrackCar",
+    "PlayerTrackSurface",
+    "PlayerCarMyIncidentCount",
 ]
 
 # Optional exact aliases per request spec.

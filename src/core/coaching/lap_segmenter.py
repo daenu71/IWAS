@@ -3,6 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 
+_TRACK_SURFACE_OFFTRACK_ENUMS: set[int] = {0, 1}
+_TRACK_SURFACE_OFFTRACK_NAMES: set[str] = {
+    "offtrack",
+    "notinworld",
+    "off",
+    "offworld",
+}
+
+
 class LapSegmenter:
     def __init__(
         self,
@@ -23,6 +32,9 @@ class LapSegmenter:
         self.current_lap_start_index: int | None = None
         self.current_lap_start_ts: float | None = None
         self.current_lap_no: int | None = None
+        self.current_offtrack_surface = False
+        self.current_incident_min: int | None = None
+        self.current_incident_max: int | None = None
         self.segments: list[dict[str, Any]] = []
 
         self._counter_change_seen = False
@@ -40,6 +52,8 @@ class LapSegmenter:
         counter_key, counter_value = self._select_lap_counter(sample_dict)
         lapdistpct = self._coerce_float(self._read_value(sample_dict, "LapDistPct"))
         is_on_track = self._coerce_bool(self._read_value(sample_dict, "IsOnTrackCar"))
+        track_surface = self._read_value(sample_dict, "PlayerTrackSurface")
+        incident_count = self._coerce_int(self._read_value(sample_dict, "PlayerCarMyIncidentCount"))
 
         if self.current_lap_start_index is None:
             self._start_segment(sample_index, now_ts, lap_no=counter_value)
@@ -80,6 +94,7 @@ class LapSegmenter:
                 self._start_segment(sample_index, now_ts, lap_no=next_lap_no)
                 self._wrap_cooldown_active = True
 
+        self._accumulate_current_lap_sample(track_surface=track_surface, incident_count=incident_count)
         self.last_lapdistpct = lapdistpct
         return events
 
@@ -132,6 +147,7 @@ class LapSegmenter:
         self.current_lap_start_index = int(sample_index)
         self.current_lap_start_ts = now_ts
         self.current_lap_no = lap_no
+        self._reset_current_lap_meta()
 
     def _close_segment(
         self,
@@ -146,10 +162,26 @@ class LapSegmenter:
         if end_sample_index < start_index:
             return None
 
+        lap_complete = reason in {"counter_change", "distpct_wrap"}
+        incident_delta = 0
+        if self.current_incident_min is not None and self.current_incident_max is not None:
+            incident_delta = max(0, int(self.current_incident_max) - int(self.current_incident_min))
+        offtrack_surface = bool(self.current_offtrack_surface)
+        valid_lap = bool(lap_complete and not offtrack_surface and incident_delta == 0)
+        lap_index = len(self.segments)
         segment: dict[str, Any] = {
+            "lap_index": int(lap_index),
             "start_idx": int(start_index),
             "end_idx": int(end_sample_index),
             "reason": str(reason),
+            "lap_complete": bool(lap_complete),
+            "offtrack_surface": offtrack_surface,
+            "incident_delta": int(incident_delta),
+            "valid_lap": valid_lap,
+            "is_complete": bool(lap_complete),
+            "lap_incomplete": not bool(lap_complete),
+            "lap_offtrack": offtrack_surface,
+            "is_valid": valid_lap,
         }
         if self.current_lap_no is not None:
             segment["lap_no"] = int(self.current_lap_no)
@@ -165,6 +197,10 @@ class LapSegmenter:
             "start_sample_index": int(start_index),
             "end_sample_index": int(end_sample_index),
             "lap_index": self.current_lap_no,
+            "lap_complete": bool(lap_complete),
+            "offtrack_surface": offtrack_surface,
+            "incident_delta": int(incident_delta),
+            "valid_lap": valid_lap,
         }
         if self.current_lap_start_ts is not None:
             event["start_ts"] = float(self.current_lap_start_ts)
@@ -173,7 +209,25 @@ class LapSegmenter:
         self.current_lap_start_index = None
         self.current_lap_start_ts = None
         self.current_lap_no = None
+        self._reset_current_lap_meta()
         return event
+
+    def _accumulate_current_lap_sample(self, *, track_surface: Any, incident_count: int | None) -> None:
+        if self.current_lap_start_index is None:
+            return
+        if self._is_offtrack_track_surface(track_surface):
+            self.current_offtrack_surface = True
+        if incident_count is None:
+            return
+        if self.current_incident_min is None or incident_count < self.current_incident_min:
+            self.current_incident_min = int(incident_count)
+        if self.current_incident_max is None or incident_count > self.current_incident_max:
+            self.current_incident_max = int(incident_count)
+
+    def _reset_current_lap_meta(self) -> None:
+        self.current_offtrack_surface = False
+        self.current_incident_min = None
+        self.current_incident_max = None
 
     @staticmethod
     def _read_value(sample: dict[str, Any], key: str) -> Any:
@@ -216,3 +270,19 @@ class LapSegmenter:
             return bool(value)
         except Exception:
             return None
+
+    @classmethod
+    def _is_offtrack_track_surface(cls, value: Any) -> bool:
+        normalized = cls._normalize_enum_text(value)
+        if normalized and normalized in _TRACK_SURFACE_OFFTRACK_NAMES:
+            return True
+        enum_value = cls._coerce_int(value)
+        if enum_value is None:
+            return False
+        return enum_value in _TRACK_SURFACE_OFFTRACK_ENUMS
+
+    @staticmethod
+    def _normalize_enum_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return "".join(ch.lower() for ch in str(value) if ch.isalnum())

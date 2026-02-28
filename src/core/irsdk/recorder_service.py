@@ -34,6 +34,7 @@ _DEBUG_SAMPLE_DUMP_FILENAME = "debug_samples.jsonl"
 _DEBUG_SESSIONINFO_PROBE_FILENAME = "debug_sessioninfo_probe.json"
 _VARS_DUMP_FILENAME = "vars_dump.json"
 _PENDING_RENAME_FILENAME = "rename_on_next_start.json"
+_LAP_META_SIGNAL_NAMES: tuple[str, ...] = ("PlayerTrackSurface", "PlayerCarMyIncidentCount")
 
 
 class RecorderService:
@@ -1177,7 +1178,13 @@ class RecorderService:
             return
 
         raw = sample.get("raw")
-        raw_dict = raw if isinstance(raw, dict) else {}
+        if isinstance(raw, dict):
+            raw_dict = raw
+        else:
+            raw_dict = {}
+            sample["raw"] = raw_dict
+        for key in _LAP_META_SIGNAL_NAMES:
+            raw_dict.setdefault(key, None)
         session_time = self._coerce_optional_float(raw_dict.get("SessionTime"))
         sample_now_ts = self._coerce_optional_float(sample.get("timestamp_monotonic"))
         lap_value = self._coerce_optional_int(raw_dict.get("Lap"))
@@ -1333,27 +1340,58 @@ class RecorderService:
 
         if isinstance(meta, dict):
             lap_segments: list[dict[str, Any]] = []
+            lap_meta_files: list[str] = []
             if segmenter is not None and last_sample_index is not None and last_sample_index >= 0:
                 try:
                     segmenter.finalize(last_sample_index, now_ts=last_sample_ts)
                 except Exception as exc:
                     meta.setdefault("lap_segmenter_finalize_error", str(exc))
                     _LOG.warning("irsdk lap segmenter finalize failed for run_id=%s (%s)", final_run_id, exc)
-                for segment in segmenter.segments:
+                for segment_index, segment in enumerate(segmenter.segments):
                     if not isinstance(segment, dict):
                         continue
                     start_idx = self._coerce_optional_int(segment.get("start_idx"))
                     end_idx = self._coerce_optional_int(segment.get("end_idx"))
                     if start_idx is None or end_idx is None:
                         continue
+                    lap_index = self._coerce_optional_int(segment.get("lap_index"))
+                    if lap_index is None:
+                        lap_index = int(segment_index)
+                    if lap_index < 0:
+                        lap_index = int(segment_index)
+                    lap_complete_raw = self._coerce_optional_bool(segment.get("lap_complete"))
+                    if lap_complete_raw is None:
+                        reason_lower = str(segment.get("reason") or "").strip().lower()
+                        lap_complete_raw = reason_lower in {"counter_change", "distpct_wrap"}
+                    lap_complete = bool(lap_complete_raw)
+                    offtrack_surface = bool(self._coerce_optional_bool(segment.get("offtrack_surface")))
+                    incident_delta = self._coerce_optional_int(segment.get("incident_delta"))
+                    if incident_delta is None or incident_delta < 0:
+                        incident_delta = 0
+                    valid_lap_raw = self._coerce_optional_bool(segment.get("valid_lap"))
+                    valid_lap = bool(
+                        valid_lap_raw
+                        if valid_lap_raw is not None
+                        else (lap_complete and not offtrack_surface and incident_delta == 0)
+                    )
                     item: dict[str, Any] = {
+                        "lap_index": int(lap_index),
                         "start_sample": start_idx,
                         "end_sample": end_idx,
                         "reason": str(segment.get("reason") or "unknown"),
+                        "lap_complete": lap_complete,
+                        "offtrack_surface": offtrack_surface,
+                        "incident_delta": int(incident_delta),
+                        "valid_lap": valid_lap,
+                        "is_complete": lap_complete,
+                        "lap_incomplete": not lap_complete,
+                        "lap_offtrack": offtrack_surface,
+                        "is_valid": valid_lap,
                     }
                     lap_no = self._coerce_optional_int(segment.get("lap_no"))
                     if lap_no is not None:
                         item["lap_no"] = lap_no
+                        item["lap_num"] = lap_no
                     start_ts = self._coerce_optional_float(segment.get("start_ts"))
                     end_ts = self._coerce_optional_float(segment.get("end_ts"))
                     if start_ts is not None:
@@ -1361,7 +1399,30 @@ class RecorderService:
                     if end_ts is not None:
                         item["end_ts"] = end_ts
                     lap_segments.append(item)
+                    if final_run_id is not None:
+                        lap_meta_path = self._resolve_lap_meta_path(final_run_id, lap_index)
+                        if lap_meta_path is not None:
+                            lap_meta_payload: dict[str, Any] = {
+                                "run_id": int(final_run_id),
+                                "lap_index": int(lap_index),
+                                "lap_start_sample": start_idx,
+                                "lap_end_sample": end_idx,
+                                "lap_complete": lap_complete,
+                                "offtrack_surface": offtrack_surface,
+                                "incident_delta": int(incident_delta),
+                                "valid_lap": valid_lap,
+                                "reason": str(item.get("reason") or "unknown"),
+                            }
+                            if lap_no is not None:
+                                lap_meta_payload["lap_num"] = int(lap_no)
+                            if start_ts is not None:
+                                lap_meta_payload["lap_start_ts"] = float(start_ts)
+                            if end_ts is not None:
+                                lap_meta_payload["lap_end_ts"] = float(end_ts)
+                            if self._write_json_atomic(lap_meta_path, lap_meta_payload):
+                                lap_meta_files.append(lap_meta_path.name)
             meta["lap_segments"] = lap_segments
+            meta["lap_meta_files"] = lap_meta_files
 
         if isinstance(meta, dict):
             if reason:
@@ -1397,6 +1458,28 @@ class RecorderService:
         if session_dir is not None:
             return session_dir / f"run_{run_id:04d}_meta.json"
         return Path.cwd() / f"run_{run_id:04d}_meta.json"
+
+    def _resolve_lap_meta_path(self, run_id: int, lap_index: int) -> Path | None:
+        session_dir = self._ensure_session_dir()
+        lap_seq = max(1, int(lap_index) + 1)
+        if session_dir is not None:
+            return session_dir / f"run_{run_id:04d}_lap_{lap_seq:04d}_meta.json"
+        return Path.cwd() / f"run_{run_id:04d}_lap_{lap_seq:04d}_meta.json"
+
+    def _write_json_atomic(self, path: Path, payload: dict[str, Any]) -> bool:
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp_path, path)
+            return True
+        except Exception as exc:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            _LOG.warning("irsdk atomic json write failed for path=%s (%s)", path, exc)
+            return False
 
     def _mark_session_finalized_if_possible(self) -> None:
         with self._lock:
@@ -1501,6 +1584,25 @@ class RecorderService:
             return int(value)
         except Exception:
             return None
+
+    @staticmethod
+    def _coerce_optional_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            if value == 0:
+                return False
+            if value == 1:
+                return True
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"0", "false", "no", "n", "off"}:
+                return False
+            if text in {"1", "true", "yes", "y", "on"}:
+                return True
+        return None
 
     def _ensure_run_detector_from_session_type(self, session_type: Any) -> None:
         if session_type is None:

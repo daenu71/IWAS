@@ -110,6 +110,7 @@ class IRSDKClient:
             source_cache: dict[str, Any] = {}
             missing_sources: set[str] = set()
             for field in field_list:
+                raw[field] = None
                 source_name = field
                 source_index: int | None = None
                 resolved = resolved_field_reads.get(field)

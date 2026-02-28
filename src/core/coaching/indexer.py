@@ -15,6 +15,7 @@ from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZE
 
 _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
 _RUN_PARQUET_RE = re.compile(r"^run_(\d{4})\.parquet$", re.IGNORECASE)
+_RUN_LAP_META_RE = re.compile(r"^run_(\d{4})_lap_(\d{4})_meta\.json$", re.IGNORECASE)
 _LOG = logging.getLogger(__name__)
 _DEBUG_SAMPLES_FILENAME = "debug_samples.jsonl"
 
@@ -218,6 +219,7 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
 
     run_meta_map: dict[int, Path] = {}
     run_parquet_map: dict[int, Path] = {}
+    run_lap_meta_map: dict[int, dict[int, Path]] = {}
     run_extra_map: dict[int, list[Path]] = {}
     for child in children:
         name = child.name
@@ -231,8 +233,15 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             run_id = int(parquet_match.group(1))
             run_parquet_map[run_id] = child
             continue
+        lap_meta_match = _RUN_LAP_META_RE.match(name)
+        if lap_meta_match:
+            run_id = int(lap_meta_match.group(1))
+            lap_seq = int(lap_meta_match.group(2))
+            lap_idx = max(0, lap_seq - 1)
+            run_lap_meta_map.setdefault(run_id, {})[lap_idx] = child
+            continue
 
-    known_run_ids = sorted(set(run_meta_map.keys()) | set(run_parquet_map.keys()))
+    known_run_ids = sorted(set(run_meta_map.keys()) | set(run_parquet_map.keys()) | set(run_lap_meta_map.keys()))
     for child in children:
         for run_id in known_run_ids:
             prefix = f"run_{run_id:04d}"
@@ -259,6 +268,11 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             meta_path=meta_path,
         )
         lap_segments = [seg.to_dict() for seg in run_metrics.lap_slices]
+        lap_meta_status = _apply_lap_meta_to_segments(
+            lap_segments=lap_segments,
+            lap_meta_paths=run_lap_meta_map.get(run_id, {}),
+        )
+        run_meta["lap_meta_status"] = lap_meta_status
         run_summary = _compute_run_summary(
             run_meta,
             lap_segments=lap_segments,
@@ -690,6 +704,14 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
         delete_paths.append(run.meta_path)
     delete_paths.extend(run.extra_paths)
 
+    has_validity_meta = _has_valid_lap_metadata(run.lap_segments)
+    best_valid_display: float | str
+    if run.summary.fastest_lap_s is not None:
+        best_valid_display = run.summary.fastest_lap_s
+    elif has_validity_meta:
+        best_valid_display = "na"
+    else:
+        best_valid_display = "na / unknown validity"
     return CoachingTreeNode(
         id=f"run::{session_id_str}::{run.run_id:04d}",
         kind="run",
@@ -712,7 +734,8 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
             "laps_including_current": int(
                 run.summary.laps_total_display if run.summary.laps_total_display is not None else (run.summary.laps or 0)
             ),
-            "best_valid_lap_s": run.summary.fastest_lap_s if run.summary.fastest_lap_s is not None else "na",
+            "best_valid_lap_s": best_valid_display,
+            "lap_meta_available": has_validity_meta,
         },
     )
 
@@ -730,7 +753,8 @@ def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dic
     else:
         lap_label = f"Lap {lap_no}" if lap_no is not None else f"Lap {idx + 1}"
     duration = _lap_duration_seconds(segment)
-    best_valid = duration if (duration is not None and not lap_incomplete and not lap_offtrack) else None
+    lap_valid = _segment_lap_valid(segment)
+    best_valid = duration if (duration is not None and lap_valid) else None
     summary = NodeSummary(
         total_time_s=duration,
         laps=0 if lap_incomplete else 1,
@@ -787,6 +811,9 @@ def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
 # - lap_offtrack: lap had at least one offtrack sample.
 # - best(valid): only laps with lap_incomplete=False and lap_offtrack=False.
 def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
+    lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
+    if lap_complete is not None:
+        return not lap_complete
     explicit = _coerce_optional_bool(segment.get("lap_incomplete"))
     if explicit is not None:
         return explicit
@@ -794,12 +821,22 @@ def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
 
 
 def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
+    surface = _coerce_optional_bool(segment.get("offtrack_surface"))
+    if surface is not None:
+        return surface
     explicit = _coerce_optional_bool(segment.get("lap_offtrack"))
     if explicit is not None:
         return explicit
     # Backward-compatible fallback: if only validity exists, treat explicit invalid as offtrack.
     is_valid = _coerce_optional_bool(segment.get("is_valid"))
     return is_valid is False
+
+
+def _segment_lap_valid(segment: dict[str, Any]) -> bool:
+    explicit = _coerce_optional_bool(segment.get("valid_lap"))
+    if explicit is not None:
+        return bool(explicit and not _segment_lap_incomplete(segment))
+    return not _segment_lap_incomplete(segment) and not _segment_lap_offtrack(segment)
 
 
 def _count_completed_laps(lap_segments: list[dict[str, Any]]) -> int:
@@ -812,7 +849,7 @@ def _best_valid_lap_from_segments(lap_segments: list[dict[str, Any]]) -> float |
         for segment in lap_segments
         if isinstance(segment, dict)
         for duration in [_lap_duration_seconds(segment)]
-        if duration is not None and duration >= 0.0 and not _segment_lap_incomplete(segment) and not _segment_lap_offtrack(segment)
+        if duration is not None and duration >= 0.0 and _segment_lap_valid(segment)
     ]
     if not valid_times:
         return None
@@ -834,7 +871,7 @@ def _lap_validity_stats(lap_segments: list[dict[str, Any]]) -> dict[str, Any]:
             incomplete += 1
         if is_offtrack:
             offtrack += 1
-        if not is_incomplete and not is_offtrack:
+        if _segment_lap_valid(segment):
             valid += 1
     return {
         "laps_total": total,
@@ -842,6 +879,83 @@ def _lap_validity_stats(lap_segments: list[dict[str, Any]]) -> dict[str, Any]:
         "laps_incomplete": incomplete,
         "laps_offtrack": offtrack,
         "best_valid_lap_s": _best_valid_lap_from_segments(lap_segments) if total > 0 else None,
+    }
+
+
+def _has_valid_lap_metadata(lap_segments: list[dict[str, Any]]) -> bool:
+    for segment in lap_segments:
+        if not isinstance(segment, dict):
+            continue
+        if _coerce_optional_bool(segment.get("valid_lap")) is not None:
+            return True
+    return False
+
+
+def _apply_lap_meta_to_segments(
+    *,
+    lap_segments: list[dict[str, Any]],
+    lap_meta_paths: dict[int, Path],
+) -> dict[str, Any]:
+    found_files = 0
+    applied_segments = 0
+    validity_applied = 0
+    for lap_index, path in sorted(lap_meta_paths.items(), key=lambda item: int(item[0])):
+        data = _read_json_dict(path)
+        if not isinstance(data, dict) or not data:
+            continue
+        found_files += 1
+        if lap_index < 0 or lap_index >= len(lap_segments):
+            continue
+        segment = lap_segments[lap_index]
+        if not isinstance(segment, dict):
+            continue
+        applied_segments += 1
+        segment["lap_meta_path"] = str(path)
+        segment["lap_index"] = int(lap_index)
+
+        lap_num = _coerce_optional_int(data.get("lap_num"))
+        if lap_num is None:
+            lap_num = _coerce_optional_int(data.get("lap_no"))
+        if lap_num is not None:
+            segment["lap_no"] = int(lap_num)
+            segment["lap_num"] = int(lap_num)
+
+        for source_key, target_key in (
+            ("lap_start_sample", "start_sample"),
+            ("lap_end_sample", "end_sample"),
+            ("lap_start_ts", "start_ts"),
+            ("lap_end_ts", "end_ts"),
+        ):
+            if source_key in data:
+                segment[target_key] = data.get(source_key)
+
+        lap_complete = _coerce_optional_bool(data.get("lap_complete"))
+        offtrack_surface = _coerce_optional_bool(data.get("offtrack_surface"))
+        incident_delta = _coerce_optional_int(data.get("incident_delta"))
+        valid_lap = _coerce_optional_bool(data.get("valid_lap"))
+        if incident_delta is not None and incident_delta < 0:
+            incident_delta = 0
+        if valid_lap is None and lap_complete is not None and offtrack_surface is not None and incident_delta is not None:
+            valid_lap = bool(lap_complete and not offtrack_surface and incident_delta == 0)
+
+        if lap_complete is not None:
+            segment["lap_complete"] = bool(lap_complete)
+            segment["is_complete"] = bool(lap_complete)
+            segment["lap_incomplete"] = not bool(lap_complete)
+        if offtrack_surface is not None:
+            segment["offtrack_surface"] = bool(offtrack_surface)
+            segment["lap_offtrack"] = bool(offtrack_surface)
+        if incident_delta is not None:
+            segment["incident_delta"] = int(incident_delta)
+        if valid_lap is not None:
+            segment["valid_lap"] = bool(valid_lap)
+            segment["is_valid"] = bool(valid_lap)
+            validity_applied += 1
+
+    return {
+        "found_files": found_files,
+        "applied_segments": applied_segments,
+        "validity_applied": validity_applied,
     }
 
 
@@ -963,6 +1077,7 @@ def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None,
         if not (
             _RUN_META_RE.match(name)
             or _RUN_PARQUET_RE.match(name)
+            or _RUN_LAP_META_RE.match(name)
             or lower == "session_meta.json"
             or lower == _DEBUG_SAMPLES_FILENAME
             or lower == ACTIVE_SESSION_LOCK_FILENAME.lower()
