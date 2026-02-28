@@ -3,21 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any
 
+from core.coaching.lap_metrics import RunLapMetrics, compute_run_lap_metrics
 from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZED_FILENAME
 
 
 _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
 _RUN_PARQUET_RE = re.compile(r"^run_(\d{4})\.parquet$", re.IGNORECASE)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
 class NodeSummary:
     total_time_s: float | None = None
     laps: int | None = None
+    laps_total_display: int | None = None
     fastest_lap_s: float | None = None
     last_driven_ts: float | None = None
 
@@ -81,7 +85,7 @@ class _SessionScan:
 
 @dataclass
 class _SessionCacheEntry:
-    dir_mtime_ns: int
+    signature: tuple[Any, ...]
     parsed: _SessionScan
 
 
@@ -130,12 +134,11 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
         run_count += len(session.runs)
         lap_count += int(session.summary.laps or 0)
 
-    for track_name in sorted(grouped.keys(), key=_sort_key_text):
-        car_map = grouped[track_name]
+    for track_name, car_map in grouped.items():
         car_nodes: list[CoachingTreeNode] = []
-        for car_name in sorted(car_map.keys(), key=_sort_key_text):
+        for car_name, session_group in car_map.items():
             session_scans = sorted(
-                car_map[car_name],
+                session_group,
                 key=lambda s: (
                     -(s.summary.last_driven_ts or 0.0),
                     _sort_key_text(s.folder_name),
@@ -155,6 +158,7 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
                 children=event_nodes,
             )
             car_nodes.append(car_node)
+        car_nodes.sort(key=lambda node: (-(node.summary.last_driven_ts or 0.0), _sort_key_text(node.label)))
         track_summary = _aggregate_summary(car_nodes)
         track_node = CoachingTreeNode(
             id=f"track::{track_name}",
@@ -164,6 +168,7 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
             children=car_nodes,
         )
         tracks.append(track_node)
+    tracks.sort(key=lambda node: (-(node.summary.last_driven_ts or 0.0), _sort_key_text(node.label)))
 
     for track_node in tracks:
         _register_tree_nodes(nodes_by_id, track_node)
@@ -181,25 +186,25 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
 
 def _scan_session_dir_cached(session_dir: Path) -> _SessionScan | None:
     key = _cache_key(session_dir)
-    try:
-        mtime_ns = session_dir.stat().st_mtime_ns
-    except Exception:
+    signature, children = _session_cache_signature(session_dir)
+    if signature is None:
         return None
     cached = _SESSION_CACHE.get(key)
-    if cached is not None and cached.dir_mtime_ns == mtime_ns:
+    if cached is not None and cached.signature == signature:
         return cached.parsed
-    parsed = _scan_session_dir_uncached(session_dir)
+    parsed = _scan_session_dir_uncached(session_dir, children=children)
     if parsed is None:
         return None
-    _SESSION_CACHE[key] = _SessionCacheEntry(dir_mtime_ns=mtime_ns, parsed=parsed)
+    _SESSION_CACHE[key] = _SessionCacheEntry(signature=signature, parsed=parsed)
     return parsed
 
 
-def _scan_session_dir_uncached(session_dir: Path) -> _SessionScan | None:
-    try:
-        children = list(session_dir.iterdir())
-    except Exception:
-        return None
+def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None = None) -> _SessionScan | None:
+    if children is None:
+        try:
+            children = list(session_dir.iterdir())
+        except Exception:
+            return None
 
     parsed_name = _parse_session_folder_name(session_dir.name)
     session_meta_path = session_dir / "session_meta.json"
@@ -242,16 +247,34 @@ def _scan_session_dir_uncached(session_dir: Path) -> _SessionScan | None:
         meta_path = run_meta_map.get(run_id)
         parquet_path = run_parquet_map.get(run_id)
         run_meta = _read_json_dict(meta_path) if meta_path is not None else {}
-        lap_segments_raw = run_meta.get("lap_segments")
-        lap_segments = [seg for seg in lap_segments_raw if isinstance(seg, dict)] if isinstance(lap_segments_raw, list) else []
+        run_metrics = compute_run_lap_metrics(
+            parquet_path=parquet_path,
+            run_meta=run_meta,
+            sample_hz=sample_hz,
+            fallback_last_ts=session_last_ts,
+            meta_path=meta_path,
+        )
+        lap_segments = [seg.to_dict() for seg in run_metrics.lap_slices]
         run_summary = _compute_run_summary(
             run_meta,
             lap_segments=lap_segments,
+            run_metrics=run_metrics,
             sample_hz=sample_hz,
             fallback_last_ts=session_last_ts,
             parquet_path=parquet_path,
             meta_path=meta_path,
         )
+        if _LOG.isEnabledFor(logging.DEBUG):
+            _LOG.debug(
+                "coaching.indexer run=%s/%04d laps_completed=%s laps_including_current=%s best_valid=%s last_driven_ts=%s source=%s",
+                session_dir.name,
+                run_id,
+                run_metrics.laps_completed,
+                run_metrics.laps_including_current,
+                run_metrics.best_valid_lap_s,
+                run_summary.last_driven_ts,
+                run_metrics.last_driven_source,
+            )
         extra_paths = sorted(run_extra_map.get(run_id, []), key=lambda p: _sort_key_text(p.name))
         runs.append(
             _RunScan(
@@ -265,7 +288,12 @@ def _scan_session_dir_uncached(session_dir: Path) -> _SessionScan | None:
             )
         )
 
-    runs.sort(key=lambda r: r.run_id)
+    runs.sort(
+        key=lambda r: (
+            -(r.summary.last_driven_ts or 0.0),
+            _sort_key_text(f"Run {r.run_id:04d}"),
+        )
+    )
     session_summary = _compute_session_summary(runs, fallback_last_ts=session_last_ts)
     return _SessionScan(
         session_dir=session_dir,
@@ -370,30 +398,44 @@ def _compute_run_summary(
     run_meta: dict[str, Any],
     *,
     lap_segments: list[dict[str, Any]],
+    run_metrics: RunLapMetrics,
     sample_hz: float | None,
     fallback_last_ts: float | None,
     parquet_path: Path | None,
     meta_path: Path | None,
 ) -> NodeSummary:
-    durations = [d for d in (_lap_duration_seconds(seg) for seg in lap_segments) if d is not None and d >= 0.0]
+    complete_durations = [
+        d
+        for d in (
+            _lap_duration_seconds(seg)
+            for seg in lap_segments
+            if bool(seg.get("is_complete"))
+        )
+        if d is not None and d >= 0.0
+    ]
     total_time = _duration_from_run_meta(run_meta)
-    if total_time is None and durations:
-        total_time = sum(durations)
+    if total_time is None:
+        total_time = run_metrics.total_time_s
+    if total_time is None and complete_durations:
+        total_time = sum(complete_durations)
     if total_time is None:
         sample_count = _coerce_optional_float(run_meta.get("sample_count"))
         if sample_count is not None and sample_hz and sample_hz > 0:
             total_time = sample_count / sample_hz
 
-    laps = len(lap_segments)
-    fastest_lap = min(durations) if durations else None
+    laps_completed = int(run_metrics.laps_completed)
+    laps_total_display = int(run_metrics.laps_including_current)
+    fastest_lap = run_metrics.best_valid_lap_s
     last_driven = _max_optional(
+        run_metrics.last_driven_ts,
         fallback_last_ts,
         _path_mtime_ts(parquet_path),
         _path_mtime_ts(meta_path),
     )
     return NodeSummary(
         total_time_s=total_time,
-        laps=laps,
+        laps=laps_completed,
+        laps_total_display=laps_total_display,
         fastest_lap_s=fastest_lap,
         last_driven_ts=last_driven,
     )
@@ -404,16 +446,22 @@ def _compute_session_summary(runs: list[_RunScan], *, fallback_last_ts: float | 
         return NodeSummary(
             total_time_s=None,
             laps=0,
+            laps_total_display=0,
             fastest_lap_s=None,
             last_driven_ts=fallback_last_ts,
         )
     total_time_values = [r.summary.total_time_s for r in runs if r.summary.total_time_s is not None]
     lap_counts = [int(r.summary.laps or 0) for r in runs]
+    lap_total_display_counts = [
+        int(r.summary.laps_total_display if r.summary.laps_total_display is not None else (r.summary.laps or 0))
+        for r in runs
+    ]
     fastest_values = [r.summary.fastest_lap_s for r in runs if r.summary.fastest_lap_s is not None]
     last_values = [r.summary.last_driven_ts for r in runs if r.summary.last_driven_ts is not None]
     return NodeSummary(
         total_time_s=sum(total_time_values) if total_time_values else None,
         laps=sum(lap_counts),
+        laps_total_display=sum(lap_total_display_counts),
         fastest_lap_s=min(fastest_values) if fastest_values else None,
         last_driven_ts=max(last_values) if last_values else fallback_last_ts,
     )
@@ -430,6 +478,7 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
     event_summary = NodeSummary(
         total_time_s=session.summary.total_time_s,
         laps=session.summary.laps,
+        laps_total_display=session.summary.laps_total_display,
         fastest_lap_s=session.summary.fastest_lap_s,
         last_driven_ts=session.summary.last_driven_ts or session.last_driven_ts,
     )
@@ -488,6 +537,11 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
             "meta_path": str(run.meta_path) if run.meta_path else "",
             "parquet_path": str(run.parquet_path) if run.parquet_path else "",
             "extra_count": len(run.extra_paths),
+            "laps_completed": int(run.summary.laps or 0),
+            "laps_including_current": int(
+                run.summary.laps_total_display if run.summary.laps_total_display is not None else (run.summary.laps or 0)
+            ),
+            "best_valid_lap_s": run.summary.fastest_lap_s if run.summary.fastest_lap_s is not None else "na",
         },
     )
 
@@ -495,12 +549,20 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
 def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dict[str, Any]) -> CoachingTreeNode:
     session_id_str = _stable_path_id(session.session_dir)
     lap_no = _coerce_optional_int(segment.get("lap_no"))
-    lap_label = f"Lap {lap_no}" if lap_no is not None else f"Lap {idx + 1}"
+    is_complete = bool(segment.get("is_complete", True))
+    is_current = not is_complete or str(segment.get("reason") or "").lower().startswith("current_incomplete")
+    if is_current and lap_no is not None:
+        lap_label = f"Lap {lap_no} (current)"
+    elif is_current:
+        lap_label = "Current (incomplete)"
+    else:
+        lap_label = f"Lap {lap_no}" if lap_no is not None else f"Lap {idx + 1}"
     duration = _lap_duration_seconds(segment)
     summary = NodeSummary(
         total_time_s=duration,
-        laps=1,
-        fastest_lap_s=duration,
+        laps=1 if is_complete else 0,
+        laps_total_display=1 if is_complete else 1,
+        fastest_lap_s=duration if is_complete else None,
         last_driven_ts=run.summary.last_driven_ts,
     )
     return CoachingTreeNode(
@@ -527,11 +589,16 @@ def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
         return NodeSummary()
     total_time_values = [n.summary.total_time_s for n in nodes if n.summary.total_time_s is not None]
     laps_total = sum(int(n.summary.laps or 0) for n in nodes)
+    laps_total_display = sum(
+        int(n.summary.laps_total_display if n.summary.laps_total_display is not None else (n.summary.laps or 0))
+        for n in nodes
+    )
     fastest_values = [n.summary.fastest_lap_s for n in nodes if n.summary.fastest_lap_s is not None]
     last_values = [n.summary.last_driven_ts for n in nodes if n.summary.last_driven_ts is not None]
     return NodeSummary(
         total_time_s=sum(total_time_values) if total_time_values else None,
         laps=laps_total,
+        laps_total_display=laps_total_display,
         fastest_lap_s=min(fastest_values) if fastest_values else None,
         last_driven_ts=max(last_values) if last_values else None,
     )
@@ -570,6 +637,9 @@ def _duration_from_run_meta(run_meta: dict[str, Any]) -> float | None:
 def _lap_duration_seconds(segment: dict[str, Any]) -> float | None:
     if not isinstance(segment, dict):
         return None
+    duration = _coerce_optional_float(segment.get("duration_s"))
+    if duration is not None and duration >= 0.0:
+        return duration
     start = _coerce_optional_float(segment.get("start_ts"))
     end = _coerce_optional_float(segment.get("end_ts"))
     if start is None or end is None:
@@ -617,6 +687,38 @@ def _coerce_optional_int(value: Any) -> int | None:
 
 def _sort_key_text(value: Any) -> str:
     return str(value or "").lower()
+
+
+def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None, list[Path]]:
+    try:
+        children = list(session_dir.iterdir())
+        dir_stat = session_dir.stat()
+    except Exception:
+        return (None, [])
+
+    relevant_entries: list[tuple[str, int, int]] = []
+    for child in children:
+        name = str(child.name or "")
+        lower = name.lower()
+        if not (
+            _RUN_META_RE.match(name)
+            or _RUN_PARQUET_RE.match(name)
+            or lower == "session_meta.json"
+            or lower == ACTIVE_SESSION_LOCK_FILENAME.lower()
+            or lower == SESSION_FINALIZED_FILENAME.lower()
+        ):
+            continue
+        try:
+            stat = child.stat()
+            relevant_entries.append((name, int(stat.st_mtime_ns), int(stat.st_size)))
+        except Exception:
+            relevant_entries.append((name, 0, 0))
+    relevant_entries.sort(key=lambda item: _sort_key_text(item[0]))
+    signature: tuple[Any, ...] = (
+        int(dir_stat.st_mtime_ns),
+        tuple(relevant_entries),
+    )
+    return (signature, children)
 
 
 def _stable_path_id(path: Path) -> str:

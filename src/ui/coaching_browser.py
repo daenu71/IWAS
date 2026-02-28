@@ -213,9 +213,15 @@ def _format_summary(summary: NodeSummary) -> str:
     if summary.total_time_s is not None:
         parts.append(f"t={_format_seconds(summary.total_time_s)}")
     if summary.laps is not None:
-        parts.append(f"laps={int(summary.laps)}")
+        laps_text = f"{int(summary.laps)}"
+        if summary.laps_total_display is not None and int(summary.laps_total_display) > int(summary.laps):
+            delta = int(summary.laps_total_display) - int(summary.laps)
+            laps_text = f"{laps_text} (+{delta} cur)"
+        parts.append(f"laps={laps_text}")
     if summary.fastest_lap_s is not None:
         parts.append(f"best={_format_seconds(summary.fastest_lap_s)}")
+    elif summary.laps is not None and int(summary.laps) > 0:
+        parts.append("best=na")
     return "  ".join(parts) if parts else "-"
 
 
