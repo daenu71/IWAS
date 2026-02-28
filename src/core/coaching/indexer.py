@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -25,6 +26,8 @@ class NodeSummary:
     laps_total_display: int | None = None
     fastest_lap_s: float | None = None
     last_driven_ts: float | None = None
+    lap_incomplete: bool = False
+    lap_offtrack: bool = False
 
 
 @dataclass
@@ -270,11 +273,23 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
                 "coaching.indexer run=%s/%04d laps_completed=%s laps_including_current=%s best_valid=%s last_driven_ts=%s source=%s",
                 session_dir.name,
                 run_id,
-                run_metrics.laps_completed,
-                run_metrics.laps_including_current,
-                run_metrics.best_valid_lap_s,
+                run_summary.laps,
+                run_summary.laps_total_display,
+                run_summary.fastest_lap_s,
                 run_summary.last_driven_ts,
                 run_metrics.last_driven_source,
+            )
+        if _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+            stats = _lap_validity_stats(lap_segments)
+            _LOG.debug(
+                "coaching.indexer validity run=%s/%04d laps_total=%s laps_valid=%s best_valid=%s incomplete=%s offtrack=%s",
+                session_dir.name,
+                run_id,
+                stats["laps_total"],
+                stats["laps_valid"],
+                stats["best_valid_lap_s"],
+                stats["laps_incomplete"],
+                stats["laps_offtrack"],
             )
         extra_paths = sorted(run_extra_map.get(run_id, []), key=lambda p: _sort_key_text(p.name))
         runs.append(
@@ -412,7 +427,7 @@ def _compute_run_summary(
         for d in (
             _lap_duration_seconds(seg)
             for seg in lap_segments
-            if bool(seg.get("is_complete"))
+            if not _segment_lap_incomplete(seg)
         )
         if d is not None and d >= 0.0
     ]
@@ -426,9 +441,9 @@ def _compute_run_summary(
         if sample_count is not None and sample_hz and sample_hz > 0:
             total_time = sample_count / sample_hz
 
-    laps_completed = int(run_metrics.laps_completed)
-    laps_total_display = int(run_metrics.laps_including_current)
-    fastest_lap = run_metrics.best_valid_lap_s
+    laps_completed = _count_completed_laps(lap_segments)
+    laps_total_display = max(int(run_metrics.laps_including_current), len(lap_segments), laps_completed)
+    fastest_lap = _best_valid_lap_from_segments(lap_segments)
     last_driven = _max_optional(
         run_metrics.last_driven_ts,
         fallback_last_ts,
@@ -496,15 +511,9 @@ def _augment_single_run_from_debug_samples(*, session_dir: Path, runs: list[_Run
         target_completed=target_completed,
         target_total=target_total,
     )
-    run.summary.laps = target_completed
-    run.summary.laps_total_display = target_total
-
-    observed_best = _coerce_optional_float(snapshot.get("lap_best_lap_time_s"))
-    if observed_best is not None and observed_best > 0:
-        if run.summary.fastest_lap_s is None:
-            run.summary.fastest_lap_s = observed_best
-        else:
-            run.summary.fastest_lap_s = min(run.summary.fastest_lap_s, observed_best)
+    run.summary.laps = _count_completed_laps(run.lap_segments)
+    run.summary.laps_total_display = max(target_total, len(run.lap_segments))
+    run.summary.fastest_lap_s = _best_valid_lap_from_segments(run.lap_segments)
 
 
 def _expand_lap_segments_from_counters(
@@ -540,6 +549,8 @@ def _expand_lap_segments_from_counters(
                     else "current_incomplete(debug_samples)",
                     "is_complete": lap_no <= target_completed,
                     "is_valid": None,
+                    "lap_incomplete": lap_no > target_completed,
+                    "lap_offtrack": False,
                 }
             )
             continue
@@ -548,12 +559,16 @@ def _expand_lap_segments_from_counters(
         seg["lap_no"] = lap_no
         if lap_no <= target_completed:
             seg["is_complete"] = True
+            seg["lap_incomplete"] = False
             reason = str(seg.get("reason") or "")
             if reason.lower().startswith("current_incomplete"):
                 seg["reason"] = "debug_samples_counter_backfill"
         else:
             seg["is_complete"] = False
+            seg["lap_incomplete"] = True
             seg["reason"] = "current_incomplete(debug_samples)"
+        if "lap_offtrack" not in seg:
+            seg["lap_offtrack"] = False
         expanded.append(seg)
     return expanded
 
@@ -705,8 +720,9 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
 def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dict[str, Any]) -> CoachingTreeNode:
     session_id_str = _stable_path_id(session.session_dir)
     lap_no = _coerce_optional_int(segment.get("lap_no"))
-    is_complete = bool(segment.get("is_complete", True))
-    is_current = not is_complete or str(segment.get("reason") or "").lower().startswith("current_incomplete")
+    lap_incomplete = _segment_lap_incomplete(segment)
+    lap_offtrack = _segment_lap_offtrack(segment)
+    is_current = lap_incomplete or str(segment.get("reason") or "").lower().startswith("current_incomplete")
     if is_current and lap_no is not None:
         lap_label = f"Lap {lap_no} (current)"
     elif is_current:
@@ -714,13 +730,19 @@ def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dic
     else:
         lap_label = f"Lap {lap_no}" if lap_no is not None else f"Lap {idx + 1}"
     duration = _lap_duration_seconds(segment)
+    best_valid = duration if (duration is not None and not lap_incomplete and not lap_offtrack) else None
     summary = NodeSummary(
         total_time_s=duration,
-        laps=1 if is_complete else 0,
-        laps_total_display=1 if is_complete else 1,
-        fastest_lap_s=duration if is_complete else None,
+        laps=0 if lap_incomplete else 1,
+        laps_total_display=1,
+        fastest_lap_s=best_valid,
         last_driven_ts=run.summary.last_driven_ts,
+        lap_incomplete=lap_incomplete,
+        lap_offtrack=lap_offtrack,
     )
+    lap_meta = dict(segment)
+    lap_meta["lap_incomplete"] = lap_incomplete
+    lap_meta["lap_offtrack"] = lap_offtrack
     return CoachingTreeNode(
         id=f"lap::{session_id_str}::{run.run_id:04d}::{idx}",
         kind="lap",
@@ -730,7 +752,7 @@ def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dic
         run_id=run.run_id,
         can_open_folder=False,
         can_delete=False,
-        meta=dict(segment),
+        meta=lap_meta,
     )
 
 
@@ -758,6 +780,69 @@ def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
         fastest_lap_s=min(fastest_values) if fastest_values else None,
         last_driven_ts=max(last_values) if last_values else None,
     )
+
+
+# Coaching Browser lap validity semantics:
+# - lap_incomplete: lap is not a fully committed lap for browser/best-time purposes.
+# - lap_offtrack: lap had at least one offtrack sample.
+# - best(valid): only laps with lap_incomplete=False and lap_offtrack=False.
+def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
+    explicit = _coerce_optional_bool(segment.get("lap_incomplete"))
+    if explicit is not None:
+        return explicit
+    return not bool(segment.get("is_complete", True))
+
+
+def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
+    explicit = _coerce_optional_bool(segment.get("lap_offtrack"))
+    if explicit is not None:
+        return explicit
+    # Backward-compatible fallback: if only validity exists, treat explicit invalid as offtrack.
+    is_valid = _coerce_optional_bool(segment.get("is_valid"))
+    return is_valid is False
+
+
+def _count_completed_laps(lap_segments: list[dict[str, Any]]) -> int:
+    return sum(1 for segment in lap_segments if isinstance(segment, dict) and not _segment_lap_incomplete(segment))
+
+
+def _best_valid_lap_from_segments(lap_segments: list[dict[str, Any]]) -> float | None:
+    valid_times = [
+        duration
+        for segment in lap_segments
+        if isinstance(segment, dict)
+        for duration in [_lap_duration_seconds(segment)]
+        if duration is not None and duration >= 0.0 and not _segment_lap_incomplete(segment) and not _segment_lap_offtrack(segment)
+    ]
+    if not valid_times:
+        return None
+    return min(valid_times)
+
+
+def _lap_validity_stats(lap_segments: list[dict[str, Any]]) -> dict[str, Any]:
+    total = 0
+    incomplete = 0
+    offtrack = 0
+    valid = 0
+    for segment in lap_segments:
+        if not isinstance(segment, dict):
+            continue
+        total += 1
+        is_incomplete = _segment_lap_incomplete(segment)
+        is_offtrack = _segment_lap_offtrack(segment)
+        if is_incomplete:
+            incomplete += 1
+        if is_offtrack:
+            offtrack += 1
+        if not is_incomplete and not is_offtrack:
+            valid += 1
+    return {
+        "laps_total": total,
+        "laps_valid": valid,
+        "laps_incomplete": incomplete,
+        "laps_offtrack": offtrack,
+        "best_valid_lap_s": _best_valid_lap_from_segments(lap_segments) if total > 0 else None,
+    }
 
 
 def _session_label(session: _SessionScan) -> str:
@@ -841,6 +926,25 @@ def _coerce_optional_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value == 0:
+            return False
+        if value == 1:
+            return True
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+    return None
+
+
 def _sort_key_text(value: Any) -> str:
     return str(value or "").lower()
 
@@ -907,3 +1011,11 @@ def _safe_now_ts() -> float:
         return datetime.now().timestamp()
     except Exception:
         return 0.0
+
+
+def _is_debug_coaching_enabled() -> bool:
+    raw = os.environ.get("IWAS_DEBUG_COACHING")
+    if raw is None:
+        return False
+    text = str(raw).strip().lower()
+    return text in {"1", "true", "yes", "on"}

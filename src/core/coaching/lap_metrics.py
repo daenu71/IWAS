@@ -9,9 +9,10 @@ from typing import Any
 Lap summary rules:
 - complete lap: closed by LapCompleted transition (preferred) or LapDistPct wrap fallback,
   with minimum sample/duration thresholds to avoid tiny fragments.
-- valid lap: complete lap with no in-lap offtrack (`IsOnTrackCar` / `IsOnTrack` never False).
-  If those signals are unavailable, only explicit metadata validity flags are accepted.
-- best lap: minimum duration among valid complete laps only.
+- lap_incomplete: lap is not complete for browser semantics (open/current lap, lap counter glitch,
+  or insufficient LapDistPct coverage in fallback mode).
+- lap_offtrack: lap had any off-track sample. `IsOnTrackCar` is authoritative, `IsOnTrack` is fallback.
+- best lap: minimum duration among laps with `lap_incomplete=False` and `lap_offtrack=False`.
 """
 
 
@@ -27,6 +28,8 @@ class LapSlice:
     reason: str
     is_complete: bool
     is_valid: bool | None
+    lap_incomplete: bool = False
+    lap_offtrack: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +43,8 @@ class LapSlice:
             "reason": self.reason,
             "is_complete": self.is_complete,
             "is_valid": self.is_valid,
+            "lap_incomplete": self.lap_incomplete,
+            "lap_offtrack": self.lap_offtrack,
         }
 
 
@@ -164,14 +169,16 @@ def compute_run_lap_metrics(
             is_complete=False,
             is_valid=None,
         )
-        seg_validity = _resolve_lap_validity(
+        seg_offtrack, has_on_track_signal = _resolve_lap_offtrack(
             seg=seg,
             on_track_values=on_track_values,
             on_track_car_values=on_track_car_values,
-            run_meta=run_meta,
-            lap_index=len(complete_slices),
         )
-        seg.is_valid = seg_validity
+        seg.lap_offtrack = seg_offtrack
+        if has_on_track_signal:
+            seg.is_valid = not seg_offtrack
+        else:
+            seg.is_valid = _meta_lap_validity(run_meta=run_meta, lap_no=seg.lap_no, lap_index=len(complete_slices))
         seg.is_complete = clear_start and _passes_complete_threshold(seg, min_complete_samples=min_complete_samples)
         if seg.is_complete:
             complete_slices.append(seg)
@@ -192,6 +199,20 @@ def compute_run_lap_metrics(
             is_complete=False,
             is_valid=None,
         )
+        incomplete_offtrack, has_on_track_signal = _resolve_lap_offtrack(
+            seg=incomplete_slice,
+            on_track_values=on_track_values,
+            on_track_car_values=on_track_car_values,
+        )
+        incomplete_slice.lap_offtrack = incomplete_offtrack
+        if has_on_track_signal:
+            incomplete_slice.is_valid = not incomplete_offtrack
+        else:
+            incomplete_slice.is_valid = _meta_lap_validity(
+                run_meta=run_meta,
+                lap_no=incomplete_slice.lap_no,
+                lap_index=len(complete_slices),
+            )
         if _should_show_incomplete_lap(
             seg=incomplete_slice,
             sample_hz=sample_hz,
@@ -201,10 +222,15 @@ def compute_run_lap_metrics(
         else:
             incomplete_slice = None
 
-    valid_complete_times = [seg.duration_s for seg in complete_slices if seg.is_valid is True and seg.duration_s is not None]
+    _apply_lap_semantics(lap_slices=all_slices, lap_dist_pct_values=lap_dist_pct_values)
+    valid_complete_times = [
+        seg.duration_s
+        for seg in all_slices
+        if not seg.lap_incomplete and not seg.lap_offtrack and seg.duration_s is not None
+    ]
     total_time = _series_duration(time_values)
-    laps_completed = len(complete_slices)
-    laps_including_current = laps_completed + (1 if incomplete_slice is not None else 0)
+    laps_completed = sum(1 for seg in all_slices if not seg.lap_incomplete)
+    laps_including_current = len(all_slices)
     best_valid_lap_s = min(valid_complete_times) if valid_complete_times else None
 
     return RunLapMetrics(
@@ -252,6 +278,11 @@ def _compute_from_meta_only(
             is_complete=False,
             is_valid=_extract_explicit_validity(seg_raw),
         )
+        explicit_offtrack = _extract_explicit_offtrack(seg_raw)
+        if explicit_offtrack is not None:
+            seg.lap_offtrack = explicit_offtrack
+            if seg.is_valid is None:
+                seg.is_valid = not explicit_offtrack
         seg.duration_s = _duration_from_bounds(seg.start_ts, seg.end_ts)
         reason_lower = str(seg.reason or "").strip().lower()
         closes_lap = reason_lower in {"counter_change", "lapcompleted", "lapdistpctwrap", "distpct_wrap"}
@@ -266,7 +297,6 @@ def _compute_from_meta_only(
             seg.reason = "current_incomplete(meta)"
             incomplete_slice = seg
 
-    explicit_valid_times = [seg.duration_s for seg in complete_slices if seg.is_valid is True and seg.duration_s is not None]
     laps_completed = len(complete_slices)
     total_time = _duration_from_run_meta(run_meta)
     if total_time is None:
@@ -290,6 +320,15 @@ def _compute_from_meta_only(
     if incomplete_slice is not None:
         lap_slices.append(incomplete_slice)
         laps_including_current += 1
+
+    _apply_lap_semantics(lap_slices=lap_slices, lap_dist_pct_values=[])
+    explicit_valid_times = [
+        seg.duration_s
+        for seg in lap_slices
+        if not seg.lap_incomplete and not seg.lap_offtrack and seg.duration_s is not None
+    ]
+    laps_completed = sum(1 for seg in lap_slices if not seg.lap_incomplete)
+    laps_including_current = len(lap_slices)
 
     return RunLapMetrics(
         laps_completed=laps_completed,
@@ -439,34 +478,34 @@ def _build_lap_slice(
     )
 
 
-def _resolve_lap_validity(
+def _resolve_lap_offtrack(
     *,
     seg: LapSlice,
     on_track_values: list[Any],
     on_track_car_values: list[Any],
-    run_meta: dict[str, Any],
-    lap_index: int,
-) -> bool | None:
-    has_on_track_column = len(on_track_values) > 0 or len(on_track_car_values) > 0
-    seen_on_track_signal = False
-    offtrack_seen = False
-    if has_on_track_column:
-        for idx in range(seg.start_idx, seg.end_idx + 1):
-            flags: list[bool] = []
-            for raw in (_list_get(on_track_values, idx), _list_get(on_track_car_values, idx)):
-                value = _coerce_optional_bool(raw)
-                if value is None:
-                    continue
-                seen_on_track_signal = True
-                flags.append(value)
-            if any(flag is False for flag in flags):
-                offtrack_seen = True
-                break
-        if seen_on_track_signal:
-            return not offtrack_seen
+) -> tuple[bool, bool]:
+    # Preferred source for offtrack is IsOnTrackCar; IsOnTrack is fallback when car signal is unavailable.
+    car_offtrack, car_seen = _scan_offtrack_signal(on_track_car_values, seg.start_idx, seg.end_idx)
+    if car_seen:
+        return (car_offtrack, True)
+    track_offtrack, track_seen = _scan_offtrack_signal(on_track_values, seg.start_idx, seg.end_idx)
+    if track_seen:
+        return (track_offtrack, True)
+    return (False, False)
 
-    # If no usable on-track signal exists, only explicit metadata flags are accepted.
-    return _meta_lap_validity(run_meta=run_meta, lap_no=seg.lap_no, lap_index=lap_index)
+
+def _scan_offtrack_signal(values: list[Any], start_idx: int, end_idx: int) -> tuple[bool, bool]:
+    if not values:
+        return (False, False)
+    seen = False
+    for idx in range(start_idx, end_idx + 1):
+        value = _coerce_optional_bool(_list_get(values, idx))
+        if value is None:
+            continue
+        seen = True
+        if value is False:
+            return (True, True)
+    return (False, seen)
 
 
 def _meta_lap_validity(*, run_meta: dict[str, Any], lap_no: int | None, lap_index: int) -> bool | None:
@@ -529,6 +568,24 @@ def _extract_explicit_validity(item: dict[str, Any]) -> bool | None:
                 return not value
     if "on_track" in item:
         return _coerce_optional_bool(item.get("on_track"))
+    return None
+
+
+def _extract_explicit_offtrack(item: dict[str, Any]) -> bool | None:
+    if not isinstance(item, dict):
+        return None
+    for key in ("lap_offtrack", "is_offtrack", "offtrack"):
+        if key in item:
+            return _coerce_optional_bool(item.get(key))
+    for key in ("is_valid", "valid", "lap_valid"):
+        if key in item:
+            value = _coerce_optional_bool(item.get(key))
+            if value is not None:
+                return not value
+    if "on_track" in item:
+        value = _coerce_optional_bool(item.get("on_track"))
+        if value is not None:
+            return not value
     return None
 
 
@@ -622,6 +679,77 @@ def _should_show_incomplete_lap(
     if pct_range is not None and pct_range >= 0.05:
         return True
     return False
+
+
+def _apply_lap_semantics(*, lap_slices: list[LapSlice], lap_dist_pct_values: list[Any]) -> None:
+    # Source-of-truth flags used by the coaching browser:
+    # - lap_incomplete: incomplete lap counter/coverage semantics.
+    # - lap_offtrack: any in-lap offtrack sample (if signal exists), otherwise explicit metadata only.
+    for seg in lap_slices:
+        seg.lap_incomplete = not bool(seg.is_complete)
+        seg.lap_offtrack = bool(seg.lap_offtrack)
+
+    # Counter glitches often produce repeated lap_no fragments (e.g. lap N, lap 0, lap N).
+    for idx, seg in enumerate(lap_slices):
+        if seg.lap_incomplete:
+            continue
+        lap_no = seg.lap_no
+        if lap_no is None or lap_no <= 0:
+            seg.lap_incomplete = True
+            continue
+        for later in lap_slices[idx + 1 :]:
+            if later.lap_no == lap_no:
+                seg.lap_incomplete = True
+                break
+
+    # Coverage fallback for non-LapCompleted closures (or very short laps):
+    # a complete lap should either show a wrap or a broad 0..1 LapDistPct coverage.
+    for seg in lap_slices:
+        if seg.lap_incomplete:
+            continue
+        coverage = _lap_dist_pct_coverage(lap_dist_pct_values, seg.start_idx, seg.end_idx)
+        if coverage is None:
+            continue
+        min_pct, max_pct, span, has_wrap = coverage
+        has_broad_coverage = (
+            min_pct is not None
+            and max_pct is not None
+            and min_pct <= 0.10
+            and max_pct >= 0.90
+            and span is not None
+            and span >= 0.60
+        )
+        has_full_coverage = has_wrap or has_broad_coverage
+        reason_lower = str(seg.reason or "").strip().lower()
+        closes_by_lap_completed = "lapcompleted" in reason_lower
+        is_extremely_short = seg.duration_s is not None and seg.duration_s < 25.0
+        if (not closes_by_lap_completed and not has_full_coverage) or (is_extremely_short and not has_full_coverage):
+            seg.lap_incomplete = True
+
+
+def _lap_dist_pct_coverage(
+    values: list[Any],
+    start_idx: int,
+    end_idx: int,
+) -> tuple[float | None, float | None, float | None, bool] | None:
+    if not values or start_idx > end_idx:
+        return None
+    lo: float | None = None
+    hi: float | None = None
+    prev_pct: float | None = None
+    has_wrap = False
+    for idx in range(start_idx, end_idx + 1):
+        pct = _coerce_optional_float(_list_get(values, idx))
+        if pct is None:
+            continue
+        lo = pct if lo is None else min(lo, pct)
+        hi = pct if hi is None else max(hi, pct)
+        if prev_pct is not None and prev_pct >= 0.99 and pct <= 0.01:
+            has_wrap = True
+        prev_pct = pct
+    if lo is None or hi is None:
+        return None
+    return (lo, hi, hi - lo, has_wrap)
 
 
 def _lap_dist_pct_range(values: list[Any], start_idx: int, end_idx: int) -> float | None:

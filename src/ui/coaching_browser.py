@@ -133,7 +133,7 @@ class CoachingBrowser(ttk.Frame):
     def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
         values = (
             node.kind,
-            _format_summary(node.summary),
+            _format_summary(node),
             _format_last_driven(node.summary.last_driven_ts),
         )
         self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids))
@@ -208,7 +208,11 @@ class CoachingBrowser(ttk.Frame):
             self._btn_delete.state(["disabled"])
 
 
-def _format_summary(summary: NodeSummary) -> str:
+def _format_summary(node: CoachingTreeNode) -> str:
+    summary = node.summary
+    if node.kind == "lap":
+        return _format_lap_summary(summary)
+
     parts: list[str] = []
     if summary.total_time_s is not None:
         parts.append(f"t={_format_seconds(summary.total_time_s)}")
@@ -225,6 +229,16 @@ def _format_summary(summary: NodeSummary) -> str:
     return "  ".join(parts) if parts else "-"
 
 
+def _format_lap_summary(summary: NodeSummary) -> str:
+    parts: list[str] = []
+    parts.append(_format_lap_seconds(summary.total_time_s))
+    if summary.lap_incomplete:
+        parts.append("incomplete")
+    if summary.lap_offtrack:
+        parts.append("offtrack")
+    return " ".join(parts)
+
+
 def _format_seconds(seconds: float) -> str:
     try:
         value = float(seconds)
@@ -237,6 +251,22 @@ def _format_seconds(seconds: float) -> str:
     if minutes > 0:
         return f"{minutes}:{remainder:05.2f}"
     return f"{remainder:.2f}s"
+
+
+def _format_lap_seconds(seconds: float | None) -> str:
+    if seconds is None:
+        return "na"
+    try:
+        value = float(seconds)
+    except Exception:
+        return "na"
+    if value < 0:
+        return "na"
+    minutes = int(value // 60)
+    remainder = value - (minutes * 60)
+    if minutes > 0:
+        return f"{minutes}:{remainder:05.2f}"
+    return f"{remainder:.2f}"
 
 
 def _format_last_driven(ts: float | None) -> str:
