@@ -232,11 +232,18 @@ def _format_summary(node: CoachingTreeNode) -> str:
 def _format_lap_summary(summary: NodeSummary) -> str:
     parts: list[str] = []
     parts.append(_format_lap_seconds(summary.total_time_s))
-    if summary.lap_incomplete:
-        parts.append("incomplete")
-    if summary.lap_offtrack:
-        parts.append("offtrack")
+    status = _lap_status(summary)
+    if status is not None:
+        parts.append(status)
     return " ".join(parts)
+
+
+def _lap_status(summary: NodeSummary) -> str | None:
+    if bool(getattr(summary, "lap_incomplete", False)):
+        return "incomplete"
+    if bool(getattr(summary, "lap_offtrack", False)):
+        return "offtrack"
+    return None
 
 
 def _format_seconds(seconds: float) -> str:
