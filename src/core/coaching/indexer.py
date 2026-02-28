@@ -114,10 +114,11 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
     except Exception:
         candidates = []
     for session_dir in candidates:
-        parsed = _scan_session_dir_cached(session_dir)
+        effective_dir = _maybe_rename_offline_testing_unknown_session_dir(session_dir)
+        parsed = _scan_session_dir_cached(effective_dir)
         if parsed is None:
             continue
-        key = _cache_key(session_dir)
+        key = _cache_key(effective_dir)
         live_keys.add(key)
         sessions.append(parsed)
     _prune_cache(live_keys)
@@ -315,6 +316,30 @@ def _parse_session_folder_name(folder_name: str) -> _ParsedFolderName:
         session_id=str(folder_name or "Unknown"),
         folder_ts=None,
     )
+
+
+def _maybe_rename_offline_testing_unknown_session_dir(session_dir: Path) -> Path:
+    path = Path(session_dir)
+    parts = path.name.split("__")
+    if len(parts) < 6:
+        return path
+    if str(parts[-1]).strip().lower() != "unknown":
+        return path
+
+    meta = _read_json_dict(path / "session_meta.json")
+    raw = str(meta.get("session_type_raw") or "").strip()
+    if raw.lower() != "offline testing":
+        return path
+
+    target_name = "__".join([*parts[:-1], "Offline-Testing"])
+    target = path.parent / target_name
+    if target.exists():
+        return target
+    try:
+        path.rename(target)
+        return target
+    except Exception:
+        return path
 
 
 def _parse_folder_ts(date_part: str, time_part: str) -> float | None:

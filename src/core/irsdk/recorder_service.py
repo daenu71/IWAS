@@ -22,7 +22,7 @@ from core.coaching.storage import (
     mark_session_active,
     mark_session_finalized,
 )
-from core.irsdk.channels import REQUESTED_CHANNELS
+from core.irsdk.channels import DIAGNOSTIC_TARGET_SPECS, REQUESTED_CHANNELS, REQUESTED_CHANNEL_ALIASES
 from core.irsdk.irsdk_client import IRSDKClient
 from core.irsdk.sessioninfo_parser import extract_session_meta
 
@@ -31,6 +31,8 @@ _LOG = logging.getLogger(__name__)
 _DEBUG_RECORDER_LOG_FILENAME = "debug_recorder.log"
 _DEBUG_SAMPLE_DUMP_FILENAME = "debug_samples.jsonl"
 _DEBUG_SESSIONINFO_PROBE_FILENAME = "debug_sessioninfo_probe.json"
+_VARS_DUMP_FILENAME = "vars_dump.json"
+_PENDING_RENAME_FILENAME = "rename_on_next_start.json"
 
 
 class RecorderService:
@@ -45,6 +47,7 @@ class RecorderService:
         self._recorded_channels: tuple[str, ...] = tuple(REQUESTED_CHANNELS)
         self._missing_channels: tuple[Any, ...] = ()
         self._channels_initialized = False
+        self._channel_info: dict[str, dict[str, Any]] = {}
         self._dtype_decisions: dict[str, str] = {}
         self._session_meta_written = False
         self._session_dir: Path | None = None
@@ -70,6 +73,8 @@ class RecorderService:
         self._debug_prev_sample_probe: dict[str, Any] = {}
         self._debug_sample_dump_entries = 0
         self._debug_pyarrow_probe_logged = False
+        self._vars_dump_written = False
+        self._target_field_probe_written = False
 
     @property
     def running(self) -> bool:
@@ -118,6 +123,7 @@ class RecorderService:
             self._recorded_channels = tuple(REQUESTED_CHANNELS)
             self._missing_channels = ()
             self._channels_initialized = False
+            self._channel_info = {}
             self._dtype_decisions = {}
             self._session_meta_written = False
             self._session_dir = None
@@ -143,6 +149,8 @@ class RecorderService:
             self._debug_prev_sample_probe = {}
             self._debug_sample_dump_entries = 0
             self._debug_pyarrow_probe_logged = False
+            self._vars_dump_written = False
+            self._target_field_probe_written = False
             self._stop_event.clear()
             thread = threading.Thread(
                 target=self._run_loop,
@@ -219,6 +227,7 @@ class RecorderService:
                     self._sample_count += 1
                     count = self._sample_count
                 self._debug_maybe_dump_sample(sample, count)
+                self._debug_maybe_dump_target_probe(sample, sample_count=count)
 
                 if count == 1 or (count - last_sample_log_at) >= log_every_samples:
                     last_sample_log_at = count
@@ -255,6 +264,7 @@ class RecorderService:
         if self._channels_initialized:
             return
 
+        available_channels = self._client.describe_available_channels()
         resolution = self._client.resolve_requested_channels(REQUESTED_CHANNELS)
         channel_info = dict(resolution.get("channel_info") or {})
         recorded_channels = [str(name) for name in (resolution.get("recorded_channels") or [])]
@@ -292,6 +302,7 @@ class RecorderService:
         with self._lock:
             self._recorded_channels = tuple(recorded_channels)
             self._missing_channels = tuple(missing_channels_raw)
+            self._channel_info = dict(channel_info)
             self._dtype_decisions = self._build_dtype_decisions(recorded_channels, channel_info)
             self._channels_initialized = True
 
@@ -306,6 +317,12 @@ class RecorderService:
         )
         if missing_channels_raw:
             self._debug_log_line("missing_channels " + self._format_missing_channels_for_log(missing_channels_raw))
+        self._write_vars_dump_once(
+            available_channels=available_channels,
+            recorded_channels=recorded_channels,
+            missing_channels=missing_channels_raw,
+            channel_info=channel_info,
+        )
         self._write_session_meta()
 
     @classmethod
@@ -535,12 +552,13 @@ class RecorderService:
             return None
 
         try:
+            session_id_token = self._resolve_session_folder_id_token(identity_fields)
             session_dir = ensure_session_dir(
                 start_wall_ts,
                 identity_fields.get("TrackDisplayName") or identity_fields.get("TrackConfigName"),
                 identity_fields.get("CarScreenName") or identity_fields.get("CarClassShortName"),
                 identity_fields.get("SessionType") or session_type_hint,
-                identity_fields.get("SessionUniqueID"),
+                session_id_token,
                 base_dir=base_dir,
             )
             mark_session_active(
@@ -550,6 +568,7 @@ class RecorderService:
                     "lock_file": ACTIVE_SESSION_LOCK_FILENAME,
                 },
             )
+            session_dir = self._try_apply_pending_session_rename(session_dir)
         except Exception as exc:
             _LOG.warning("irsdk session dir create failed (%s)", exc)
             return None
@@ -702,6 +721,255 @@ class RecorderService:
             },
         )
 
+    def _write_vars_dump_once(
+        self,
+        *,
+        available_channels: dict[str, dict[str, Any]],
+        recorded_channels: list[str],
+        missing_channels: list[Any],
+        channel_info: dict[str, dict[str, Any]],
+    ) -> None:
+        self._ensure_session_dir()
+        with self._lock:
+            if self._vars_dump_written:
+                return
+            self._vars_dump_written = True
+
+        available = dict(available_channels or {})
+        if not available:
+            available = dict(self._client.describe_available_channels() or {})
+
+        available_vars: list[dict[str, Any]] = []
+        for name in sorted((str(k) for k in available.keys()), key=str.lower):
+            info = available.get(name) or {}
+            item: dict[str, Any] = {"name": name}
+            if isinstance(info, dict):
+                for key in ("type", "count", "unit", "desc"):
+                    if key in info:
+                        item[key] = info.get(key)
+            available_vars.append(item)
+
+        targets = self._build_target_resolution_snapshot(
+            available_channels=available,
+            recorded_channels=recorded_channels,
+            missing_channels=missing_channels,
+            channel_info=channel_info,
+        )
+        payload = {
+            "generated_ts": time.time(),
+            "requested_channels_count": len(REQUESTED_CHANNELS),
+            "recorded_channels_count": len(recorded_channels),
+            "missing_channels_count": len(missing_channels),
+            "classification_legend": {
+                "A": "not_in_irsdk",
+                "B": "in_irsdk_but_not_recorded",
+                "C": "recorded_but_not_read_in_sample",
+                "D": "array_split_incomplete_or_missing",
+                "OK": "resolved_and_readable",
+            },
+            "diagnostic_targets": list(DIAGNOSTIC_TARGET_SPECS),
+            "available_vars": available_vars,
+            "target_resolution": targets,
+        }
+        self._debug_write_json(_VARS_DUMP_FILENAME, payload)
+        self._debug_log_line(
+            f"vars_dump_written file={_VARS_DUMP_FILENAME} available={len(available_vars)} targets={len(targets)}"
+        )
+
+    def _debug_maybe_dump_target_probe(self, sample: dict[str, Any], *, sample_count: int) -> None:
+        if sample_count < 1:
+            return
+        raw = sample.get("raw")
+        if not isinstance(raw, dict):
+            return
+        self._ensure_session_dir()
+
+        with self._lock:
+            if self._target_field_probe_written:
+                return
+            self._target_field_probe_written = True
+            recorded_channels = list(self._recorded_channels)
+            missing_channels = list(self._missing_channels)
+            channel_info = dict(self._channel_info)
+
+        available_channels = dict(self._client.describe_available_channels() or {})
+        targets = self._build_target_resolution_snapshot(
+            available_channels=available_channels,
+            recorded_channels=recorded_channels,
+            missing_channels=missing_channels,
+            channel_info=channel_info,
+        )
+        for item in targets:
+            spec = str(item.get("request_spec") or "")
+            if spec == "RideHeight[4]":
+                columns = [str(col) for col in item.get("resolved_columns") or []]
+                sample_values: dict[str, Any] = {}
+                present_count = 0
+                for col in columns:
+                    if col in raw:
+                        present_count += 1
+                    sample_values[col] = raw.get(col)
+                item["sample_present_count"] = present_count
+                item["sample_values"] = sample_values
+                if item.get("classification") == "OK" and present_count < len(columns):
+                    item["classification"] = "C"
+                continue
+
+            column_name = str(item.get("column_name") or spec)
+            sample_present = column_name in raw
+            sample_value = raw.get(column_name)
+            item["sample_present"] = sample_present
+            item["value_type"] = type(sample_value).__name__ if sample_present else None
+            item["value_example"] = sample_value if sample_present else None
+            if item.get("classification") == "OK" and not sample_present:
+                item["classification"] = "C"
+
+        payload = {
+            "generated_ts": time.time(),
+            "sample_count": sample_count,
+            "target_probe": targets,
+        }
+        self._debug_write_json(_VARS_DUMP_FILENAME, payload={**self._read_existing_vars_dump(), **payload})
+        self._debug_log_line(f"target_probe_written sample_count={sample_count} targets={len(targets)}")
+
+    def _read_existing_vars_dump(self) -> dict[str, Any]:
+        path = self._debug_artifact_path(_VARS_DUMP_FILENAME)
+        if path is None or not path.exists():
+            return {}
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            return {}
+        return {}
+
+    def _build_target_resolution_snapshot(
+        self,
+        *,
+        available_channels: dict[str, dict[str, Any]],
+        recorded_channels: list[str],
+        missing_channels: list[Any],
+        channel_info: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        recorded_set = {str(name) for name in recorded_channels}
+        missing_by_spec: dict[str, dict[str, Any]] = {}
+        for item in missing_channels:
+            if isinstance(item, dict):
+                spec = str(item.get("request_spec") or "").strip()
+                if spec:
+                    missing_by_spec[spec] = dict(item)
+            else:
+                spec = str(item).strip()
+                if spec:
+                    missing_by_spec[spec] = {"request_spec": spec, "reason": "unknown"}
+
+        output: list[dict[str, Any]] = []
+        for spec in DIAGNOSTIC_TARGET_SPECS:
+            if spec == "RideHeight[4]":
+                resolved_columns = [name for name in recorded_channels if str(name).startswith("RideHeight")]
+                available_match_names = self._find_available_wheel_group_names(available_channels, base_name="RideHeight")
+                classification = "A"
+                if len(resolved_columns) >= 4:
+                    classification = "OK"
+                elif available_match_names:
+                    classification = "D"
+                reason = str((missing_by_spec.get(spec) or {}).get("reason") or "")
+                output.append(
+                    {
+                        "request_spec": spec,
+                        "kind": "group",
+                        "classification": classification,
+                        "resolution_reason": reason,
+                        "resolved_columns": resolved_columns,
+                        "available_match_names": available_match_names,
+                    }
+                )
+                continue
+
+            aliases = tuple([spec, *REQUESTED_CHANNEL_ALIASES.get(spec, ())])
+            available_match_names = self._find_available_names_for_aliases(available_channels, aliases)
+            resolved = spec in recorded_set
+            info = channel_info.get(spec) or {}
+            resolved_name = str(info.get("source_name") or spec) if resolved else None
+            source_kind = "irsdk_direct"
+            if resolved and resolved_name is not None and resolved_name != spec:
+                source_kind = "alias"
+            if resolved:
+                classification = "OK"
+            elif available_match_names:
+                classification = "B"
+            else:
+                classification = "A"
+            reason = str((missing_by_spec.get(spec) or {}).get("reason") or "")
+            output.append(
+                {
+                    "request_spec": spec,
+                    "kind": "scalar",
+                    "column_name": spec,
+                    "classification": classification,
+                    "resolution_reason": reason,
+                    "resolved_name": resolved_name,
+                    "source": source_kind if resolved else None,
+                    "aliases_checked": list(aliases),
+                    "available_match_names": available_match_names,
+                }
+            )
+        return output
+
+    @staticmethod
+    def _find_available_names_for_aliases(
+        available_channels: dict[str, dict[str, Any]],
+        aliases: tuple[str, ...] | list[str],
+    ) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for alias in aliases:
+            target = "".join(ch.lower() for ch in str(alias or "") if ch.isalnum())
+            if not target:
+                continue
+            for candidate in available_channels.keys():
+                name = str(candidate)
+                key = "".join(ch.lower() for ch in name if ch.isalnum())
+                if key != target:
+                    continue
+                if name in seen:
+                    continue
+                seen.add(name)
+                out.append(name)
+        out.sort(key=str.lower)
+        return out
+
+    @staticmethod
+    def _find_available_wheel_group_names(available_channels: dict[str, dict[str, Any]], *, base_name: str) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        base_key = "".join(ch.lower() for ch in str(base_name or "") if ch.isalnum())
+        wheel_tokens = ("lf", "rf", "lr", "rr", "leftfront", "rightfront", "leftrear", "rightrear")
+        if not base_key:
+            return out
+        for candidate in available_channels.keys():
+            name = str(candidate)
+            key = "".join(ch.lower() for ch in name if ch.isalnum())
+            if key == base_key:
+                if name not in seen:
+                    seen.add(name)
+                    out.append(name)
+                continue
+            matched = False
+            for token in wheel_tokens:
+                if key.startswith(token) and key[len(token) :] == base_key:
+                    matched = True
+                    break
+                if key.endswith(token) and key[: -len(token)] == base_key:
+                    matched = True
+                    break
+            if matched and name not in seen:
+                seen.add(name)
+                out.append(name)
+        out.sort(key=str.lower)
+        return out
+
     def _merge_session_info_meta_from_yaml(self, yaml_text: str, *, session_info_saved_ts: float) -> bool:
         try:
             with self._lock:
@@ -767,6 +1035,7 @@ class RecorderService:
             "CarClassShortName",
             "SessionType",
             "SessionUniqueID",
+            "session_type_raw",
         )
         updates: dict[str, Any] = {}
         for key in allowed:
@@ -792,12 +1061,13 @@ class RecorderService:
         if current_dir is None:
             return
         try:
+            session_id_token = self._resolve_session_folder_id_token(identity_fields)
             desired_name = build_session_folder_name(
                 start_wall_ts,
                 identity_fields.get("TrackDisplayName") or identity_fields.get("TrackConfigName"),
                 identity_fields.get("CarScreenName") or identity_fields.get("CarClassShortName"),
                 identity_fields.get("SessionType") or session_type_hint,
-                identity_fields.get("SessionUniqueID"),
+                session_id_token,
             )
         except Exception:
             return
@@ -811,11 +1081,81 @@ class RecorderService:
         except Exception as exc:
             _LOG.debug("irsdk session dir rename skipped (%s)", exc)
             self._debug_log_line(f"session_dir_rename_skipped from={current_dir.name} to={target_dir.name} error={type(exc).__name__}:{exc}")
+            self._persist_pending_session_rename(current_dir, desired_name, error=exc)
             return
         with self._lock:
             if self._session_dir == current_dir:
                 self._session_dir = target_dir
         self._debug_log_line(f"session_dir_renamed from={current_dir.name} to={target_dir.name}")
+
+    @staticmethod
+    def _resolve_session_folder_id_token(identity_fields: dict[str, Any]) -> Any:
+        session_unique_id = identity_fields.get("SessionUniqueID")
+        if session_unique_id not in (None, ""):
+            text = str(session_unique_id).strip()
+            numeric_zero = False
+            try:
+                numeric_zero = float(text) == 0.0
+            except Exception:
+                numeric_zero = False
+            if text and not numeric_zero and text not in {"unknown", "Unknown"}:
+                return session_unique_id
+        session_type_raw = str(identity_fields.get("session_type_raw") or "").strip().lower()
+        if session_type_raw == "offline testing":
+            return "Offline-Testing"
+        return None
+
+    def _persist_pending_session_rename(self, session_dir: Path, target_name: str, *, error: Exception | None = None) -> None:
+        marker_path = Path(session_dir) / _PENDING_RENAME_FILENAME
+        payload: dict[str, Any] = {
+            "target_name": str(target_name),
+            "created_ts": time.time(),
+        }
+        if error is not None:
+            payload["last_error"] = f"{type(error).__name__}: {error}"
+        try:
+            marker_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self._debug_log_line(f"session_dir_rename_pending marker={marker_path.name} target={target_name}")
+        except Exception as exc:
+            self._debug_log_line(f"session_dir_rename_pending_write_failed error={type(exc).__name__}:{exc}")
+
+    def _try_apply_pending_session_rename(self, session_dir: Path) -> Path:
+        session_dir = Path(session_dir)
+        marker_path = session_dir / _PENDING_RENAME_FILENAME
+        if not marker_path.exists():
+            return session_dir
+        try:
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._debug_log_line(f"session_dir_pending_marker_parse_failed file={marker_path.name} error={type(exc).__name__}:{exc}")
+            return session_dir
+        target_name = str(payload.get("target_name") or "").strip() if isinstance(payload, dict) else ""
+        if not target_name:
+            return session_dir
+        target_dir = session_dir.parent / target_name
+        if target_dir.exists():
+            try:
+                marker_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._debug_log_line(
+                f"session_dir_pending_rename_skipped target_exists from={session_dir.name} to={target_dir.name}"
+            )
+            return session_dir
+        try:
+            session_dir.rename(target_dir)
+        except Exception as exc:
+            self._debug_log_line(
+                f"session_dir_pending_rename_failed from={session_dir.name} to={target_dir.name} error={type(exc).__name__}:{exc}"
+            )
+            return session_dir
+        moved_marker = target_dir / _PENDING_RENAME_FILENAME
+        try:
+            moved_marker.unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._debug_log_line(f"session_dir_pending_rename_applied from={session_dir.name} to={target_dir.name}")
+        return target_dir
 
     def _append_active_run_sample(self, sample: dict[str, Any]) -> None:
         if not isinstance(sample, dict):

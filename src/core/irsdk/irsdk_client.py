@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Any, Sequence
 
-from core.irsdk.channels import REQUESTED_CHANNELS
+from core.irsdk.channels import REQUESTED_CHANNELS, REQUESTED_CHANNEL_ALIASES
 
 
 _LOG = logging.getLogger(__name__)
@@ -161,6 +161,10 @@ class IRSDKClient:
                     item["type"] = info.get("type")
                 if "count" in info:
                     item["count"] = info.get("count")
+                if "unit" in info:
+                    item["unit"] = info.get("unit")
+                if "desc" in info:
+                    item["desc"] = info.get("desc")
             items.append(item)
         return items
 
@@ -303,7 +307,7 @@ class IRSDKClient:
     def _describe_available_channels_from_ir(cls, ir: Any) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
 
-        for attr_name in ("var_headers", "varHeaders"):
+        for attr_name in ("var_headers", "varHeaders", "_var_headers", "_varHeaders"):
             headers = cls._get_ir_attr_value(ir, attr_name)
             if headers is None:
                 continue
@@ -311,17 +315,7 @@ class IRSDKClient:
                 name = cls._header_field(header, "name", "Name", "var_name", "varName")
                 if not name:
                     continue
-                info: dict[str, Any] = {}
-                var_type = cls._header_field(header, "type", "Type", "var_type", "varType")
-                count = cls._header_field(header, "count", "Count")
-                if var_type is not None:
-                    info["type"] = str(var_type)
-                if count is not None:
-                    try:
-                        info["count"] = int(count)
-                    except Exception:
-                        info["count"] = count
-                result[str(name)] = info
+                result[str(name)] = cls._extract_header_info(header)
             if result:
                 return result
 
@@ -339,8 +333,9 @@ class IRSDKClient:
             if result:
                 return result
 
-        # Fallback: probe only requested channels so unsupported header APIs do not break recording.
-        for name in REQUESTED_CHANNELS:
+        # Fallback: probe requested specs and explicit aliases so unsupported header APIs
+        # do not break recording.
+        for name in cls._build_fallback_probe_names():
             try:
                 ir[name]
             except Exception:
@@ -407,8 +402,8 @@ class IRSDKClient:
                 )
                 continue
 
-            info = available.get(spec)
-            if info is None:
+            resolved_source_name = cls._resolve_scalar_source_name(spec, available)
+            if resolved_source_name is None:
                 result["missing_channels"].append(
                     cls._build_missing_spec_entry(
                         spec,
@@ -416,13 +411,19 @@ class IRSDKClient:
                     )
                 )
                 continue
+            info = available.get(resolved_source_name) or {}
             cls._register_concrete_channel(
                 result,
                 column_name=spec,
-                source_name=spec,
+                source_name=resolved_source_name,
                 source_index=None,
                 source_info=info,
             )
+            if resolved_source_name != spec:
+                channel_info = result["channel_info"].get(spec)
+                if isinstance(channel_info, dict):
+                    channel_info["resolution_source"] = "alias"
+                    channel_info["requested_name"] = spec
 
         return result
 
@@ -574,17 +575,12 @@ class IRSDKClient:
             wheel, remainder = cls._wheel_parts_from_var_name(name)
             if wheel is None:
                 continue
-            full_key = cls._normalize_var_key(name)
             score = -1
             for alias in alias_keys:
                 if not alias:
                     continue
                 if remainder == alias:
                     score = max(score, 300)
-                elif alias in remainder:
-                    score = max(score, 240)
-                elif alias in full_key:
-                    score = max(score, 180)
             if score < 0:
                 continue
             count = cls._coerce_int((info or {}).get("count"))
@@ -658,6 +654,10 @@ class IRSDKClient:
         info: dict[str, Any] = {}
         if "type" in source_info:
             info["type"] = source_info.get("type")
+        if "unit" in source_info:
+            info["unit"] = source_info.get("unit")
+        if "desc" in source_info:
+            info["desc"] = source_info.get("desc")
         count = source_info.get("count")
         if source_index is None:
             if count is not None:
@@ -667,6 +667,45 @@ class IRSDKClient:
             info["source_index"] = int(source_index)
         info["source_name"] = str(source_name)
         return info
+
+    @classmethod
+    def _resolve_scalar_source_name(
+        cls,
+        request_spec: str,
+        available: dict[str, dict[str, Any]],
+    ) -> str | None:
+        candidates: list[str] = [str(request_spec)]
+        for alias in REQUESTED_CHANNEL_ALIASES.get(str(request_spec), ()):
+            alias_text = str(alias).strip()
+            if alias_text:
+                candidates.append(alias_text)
+        seen: set[str] = set()
+        for candidate in candidates:
+            norm = cls._normalize_var_key(candidate)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            resolved = cls._find_exact_available_name(available, candidate)
+            if resolved is not None:
+                return resolved
+        return None
+
+    @classmethod
+    def _find_exact_available_name(
+        cls,
+        available: dict[str, dict[str, Any]],
+        candidate: str,
+    ) -> str | None:
+        if candidate in available:
+            return candidate
+        target = cls._normalize_var_key(candidate)
+        if not target:
+            return None
+        matches = [str(name) for name in available.keys() if cls._normalize_var_key(name) == target]
+        if not matches:
+            return None
+        matches.sort(key=lambda text: (0 if text.lower() == str(candidate).lower() else 1, text.lower(), text))
+        return matches[0]
 
     @staticmethod
     def _build_missing_spec_entry(spec: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -682,9 +721,75 @@ class IRSDKClient:
         except Exception:
             return None
 
+    @classmethod
+    def _extract_header_info(cls, header: Any) -> dict[str, Any]:
+        info: dict[str, Any] = {}
+        var_type = cls._header_field(header, "type", "Type", "var_type", "varType")
+        if var_type is not None:
+            pretty = cls._pretty_var_type(var_type)
+            info["type"] = pretty if pretty is not None else str(var_type)
+        count = cls._header_field(header, "count", "Count")
+        if count is not None:
+            coerced = cls._coerce_int(count)
+            info["count"] = coerced if coerced is not None else count
+        unit = cls._header_field(header, "unit", "Unit")
+        if unit not in (None, ""):
+            info["unit"] = str(unit)
+        desc = cls._header_field(header, "desc", "Desc", "description", "Description")
+        if desc not in (None, ""):
+            info["desc"] = str(desc)
+        return info
+
+    @staticmethod
+    def _pretty_var_type(raw_type: Any) -> str | None:
+        key = str(raw_type).strip().lower()
+        if key in {"irsdk_char", "irsdk_bool", "irsdk_int", "irsdk_bitfield", "irsdk_float", "irsdk_double"}:
+            return key.replace("irsdk_", "")
+        try:
+            idx = int(raw_type)
+        except Exception:
+            idx = -1
+        return {
+            0: "char",
+            1: "bool",
+            2: "int",
+            3: "bitfield",
+            4: "float",
+            5: "double",
+        }.get(idx)
+
     @staticmethod
     def _normalize_var_key(value: Any) -> str:
         return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
+
+    @classmethod
+    def _build_fallback_probe_names(cls) -> list[str]:
+        probe_names: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: Any) -> None:
+            text = str(name or "").strip()
+            if not text:
+                return
+            if "[" in text or "]" in text:
+                return
+            key = text.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            probe_names.append(text)
+
+        for spec in REQUESTED_CHANNELS:
+            add(spec)
+            for alias in REQUESTED_CHANNEL_ALIASES.get(str(spec), ()):
+                add(alias)
+
+        wheel_tokens = ("LF", "RF", "LR", "RR")
+        for base in ("ShockDefl", "RideHeight", "TirePressure"):
+            for wheel in wheel_tokens:
+                add(f"{wheel}{base}")
+                add(f"{base}{wheel}")
+        return probe_names
 
     @classmethod
     def _wheel_parts_from_var_name(cls, name: Any) -> tuple[str | None, str]:

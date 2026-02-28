@@ -70,3 +70,30 @@ REQUESTED_CHANNELS: list[str] = [
     "IsOnTrack",
     "IsOnTrackCar",
 ]
+
+# Optional exact aliases per request spec.
+# Resolver behavior is strict: only explicit alias names are accepted, no fuzzy matching.
+REQUESTED_CHANNEL_ALIASES: dict[str, tuple[str, ...]] = {
+    # iRacing commonly exposes this as ABSActive (capital A).
+    "ABSactive": ("ABSActive", "BrakeABSactive", "BrakeABSActive"),
+    # Depending on car/build, these are often dynamic control channels (dc*).
+    "BrakeBias": ("dcBrakeBias",),
+    "TractionControl": ("dcTractionControl", "dcTractionControl2"),
+    "TractionControlActive": ("TractionControlAct", "TCActive", "TractionControlInAction"),
+    # Geo channels can vary by feed/provider naming.
+    "Lat": ("Latitude",),
+    "Lon": ("Longitude",),
+    "Alt": ("Altitude",),
+}
+
+# Target channels for one-time recorder diagnostics (vars_dump / first-sample probe).
+DIAGNOSTIC_TARGET_SPECS: tuple[str, ...] = (
+    "ABSactive",
+    "Alt",
+    "BrakeBias",
+    "Lat",
+    "Lon",
+    "RideHeight[4]",
+    "TractionControl",
+    "TractionControlActive",
+)
