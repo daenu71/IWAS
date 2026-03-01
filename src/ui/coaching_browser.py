@@ -44,6 +44,10 @@ class CoachingBrowser(ttk.Frame):
         self._stats_var = tk.StringVar(value="No sessions loaded.")
         self._best_overlays: list[tk.Label] = []
         self._best_text: dict[str, str] = {}  # iid → purple time text
+        self._overlay_after_id: str | None = None
+        self._overlay_font: tkfont.Font | None = None
+        self._overlay_row_bg: str = "#FFFFFF"
+        self._overlay_sel_bg: str = "#0078D4"
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -89,10 +93,11 @@ class CoachingBrowser(ttk.Frame):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", self._on_double_click)
-        self.tree.bind("<<TreeviewOpen>>", lambda _: self.after(5, self._refresh_overlays), add="+")
-        self.tree.bind("<<TreeviewClose>>", lambda _: self.after(5, self._refresh_overlays), add="+")
-        self.tree.bind("<MouseWheel>", lambda _: self.after(1, self._refresh_overlays), add="+")
-        self.tree.bind("<Configure>", lambda _: self.after(10, self._refresh_overlays), add="+")
+        self.tree.bind("<<TreeviewOpen>>", lambda _: self._schedule_overlay_refresh(5), add="+")
+        self.tree.bind("<<TreeviewClose>>", lambda _: self._schedule_overlay_refresh(5), add="+")
+        self.tree.bind("<MouseWheel>", lambda _: self._schedule_overlay_refresh(30), add="+")
+        self.tree.bind("<Configure>", lambda _: self._schedule_overlay_refresh(10), add="+")
+        self._cache_overlay_style()
         self._update_action_buttons()
 
     def set_index(self, index: CoachingIndex | None) -> None:
@@ -153,7 +158,7 @@ class CoachingBrowser(ttk.Frame):
             f"Sessions: {index.session_count}  Runs: {index.run_count}  Laps: {index.lap_count}"
         )
         self._update_action_buttons()
-        self.after(10, self._refresh_overlays)
+        self._schedule_overlay_refresh(10)
 
     def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
         """Implement insert node logic."""
@@ -197,7 +202,7 @@ class CoachingBrowser(ttk.Frame):
     def _on_tree_select(self, _event=None) -> None:
         """Implement on tree select logic."""
         self._update_action_buttons()
-        self.after(1, self._refresh_overlays)
+        self._schedule_overlay_refresh(1)
         node = self.selected_node()
         if node is None:
             return
@@ -231,7 +236,7 @@ class CoachingBrowser(ttk.Frame):
     def _tree_yview(self, *args) -> None:
         """Handle yview scroll and keep overlays in sync."""
         self.tree.yview(*args)
-        self.after(1, self._refresh_overlays)
+        self._schedule_overlay_refresh(30)
 
     def _build_best_text(self, index: CoachingIndex, best_ids: set[str]) -> None:
         """Populate _best_text: maps iid → the exact time text to paint purple."""
@@ -243,6 +248,26 @@ class CoachingBrowser(ttk.Frame):
             if purple_text and purple_text != "na":
                 self._best_text[iid] = purple_text
 
+    def _cache_overlay_style(self) -> None:
+        """Load and cache Treeview style values (row/sel background, font)."""
+        style = ttk.Style()
+        self._overlay_row_bg = style.lookup("Treeview", "fieldbackground") or "#FFFFFF"
+        self._overlay_sel_bg = style.lookup("Treeview", "selectbackground") or "#0078D4"
+        try:
+            font_name = style.lookup("Treeview", "font")
+            self._overlay_font = tkfont.nametofont(font_name) if font_name else tkfont.nametofont("TkDefaultFont")
+        except Exception:
+            self._overlay_font = tkfont.nametofont("TkDefaultFont")
+
+    def _schedule_overlay_refresh(self, delay_ms: int) -> None:
+        """Cancel any pending overlay refresh and schedule a new one after delay_ms."""
+        if self._overlay_after_id is not None:
+            try:
+                self.after_cancel(self._overlay_after_id)
+            except Exception:
+                pass
+        self._overlay_after_id = self.after(delay_ms, self._refresh_overlays)
+
     def _clear_overlays(self) -> None:
         """Destroy all existing overlay labels."""
         for lbl in self._best_overlays:
@@ -251,17 +276,13 @@ class CoachingBrowser(ttk.Frame):
 
     def _refresh_overlays(self) -> None:
         """Recreate purple overlay labels over the best-time text in the Time column."""
+        self._overlay_after_id = None
         self._clear_overlays()
         if not self._best_text:
             return
-        style = ttk.Style()
-        row_bg = style.lookup("Treeview", "fieldbackground") or "#FFFFFF"
-        sel_bg = style.lookup("Treeview", "selectbackground") or "#0078D4"
-        try:
-            font_name = style.lookup("Treeview", "font")
-            font = tkfont.nametofont(font_name) if font_name else tkfont.nametofont("TkDefaultFont")
-        except Exception:
-            font = tkfont.nametofont("TkDefaultFont")
+        font = self._overlay_font
+        row_bg = self._overlay_row_bg
+        sel_bg = self._overlay_sel_bg
         selected = set(self.tree.selection())
         for iid, purple_text in self._best_text.items():
             if not self.tree.exists(iid):
