@@ -1,3 +1,5 @@
+"""FFmpeg/FFprobe binary resolution helpers."""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +10,7 @@ from core.resources import get_resource_path
 
 
 def _tool_filename(base_name: str) -> str:
+    """Implement tool filename logic."""
     name = str(base_name or "").strip()
     if os.name == "nt" and not name.lower().endswith(".exe"):
         return f"{name}.exe"
@@ -15,6 +18,7 @@ def _tool_filename(base_name: str) -> str:
 
 
 def _find_bundled_tool(base_name: str) -> Path | None:
+    """Find bundled tool."""
     fn = _tool_filename(base_name)
     # PyInstaller one-folder layout -> _internal/tools/ffmpeg/*
     try:
@@ -34,6 +38,7 @@ def _find_bundled_tool(base_name: str) -> Path | None:
 
 
 def resolve_media_tool(base_name: str) -> str:
+    """Resolve media tool."""
     bundled = _find_bundled_tool(base_name)
     if bundled is not None:
         return str(bundled)
@@ -51,6 +56,7 @@ def resolve_media_tool(base_name: str) -> str:
 
 
 def media_tool_exists(base_name: str) -> bool:
+    """Implement media tool exists logic."""
     bundled = _find_bundled_tool(base_name)
     if bundled is not None:
         return True
@@ -59,16 +65,20 @@ def media_tool_exists(base_name: str) -> bool:
 
 
 def resolve_ffmpeg_bin() -> str:
+    """Resolve ffmpeg bin."""
     return resolve_media_tool("ffmpeg")
 
 
 def resolve_ffprobe_bin() -> str:
+    """Resolve ffprobe bin."""
     return resolve_media_tool("ffprobe")
 
 
 def ffmpeg_exists() -> bool:
+    """Implement ffmpeg exists logic."""
     return media_tool_exists("ffmpeg")
 
 
 def ffprobe_exists() -> bool:
+    """Implement ffprobe exists logic."""
     return media_tool_exists("ffprobe")

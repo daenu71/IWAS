@@ -1,3 +1,5 @@
+"""Runtime module for core/log.py."""
+
 from __future__ import annotations
 
 import os
@@ -8,22 +10,27 @@ from pathlib import Path
 
 @dataclass
 class Logger:
+    """Container and behavior for Logger."""
     log_file: Path
 
     def kv(self, key: str, value) -> None:
+        """Implement kv logic."""
         line = f"{key}={value}"
         self._write(line)
 
     def msg(self, text: str) -> None:
+        """Implement msg logic."""
         self._write(text)
 
     def _write(self, line: str) -> None:
+        """Write."""
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
         with self.log_file.open("a", encoding="utf-8") as f:
             f.write(line.rstrip("\n") + "\n")
 
 
 def build_log_file_path(project_root: str | Path, name: str = "main") -> Path:
+    """Build and return log file path."""
     root = Path(project_root).resolve()
     logs_dir = root / "_logs"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -31,6 +38,7 @@ def build_log_file_path(project_root: str | Path, name: str = "main") -> Path:
 
 
 def make_logger(project_root: str | Path, name: str = "main", log_file: Path | None = None) -> Logger:
+    """Implement make logger logic."""
     if log_file is None:
         env_path = str(os.environ.get("IRVC_LOG_FILE") or "").strip()
         if env_path:

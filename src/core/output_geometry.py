@@ -1,3 +1,5 @@
+"""Output geometry calculation for video/hud layout composition."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,6 +11,7 @@ from core.models import LayoutConfig
 
 @dataclass(frozen=True)
 class Rect:
+    """Container and behavior for Rect."""
     x: int
     y: int
     w: int
@@ -17,6 +20,7 @@ class Rect:
 
 @dataclass(frozen=True)
 class OutputGeometry:
+    """Container and behavior for Output Geometry."""
     W: int
     H: int
     hud: int
@@ -34,6 +38,7 @@ class OutputGeometry:
 
 
 def geometry_signature(geom: OutputGeometry) -> tuple[Any, ...]:
+    """Implement geometry signature logic."""
     hud_items: list[tuple[int, int, int, int]] = []
     for r in tuple(geom.hud_rects):
         hud_items.append((int(r.x), int(r.y), int(r.w), int(r.h)))
@@ -55,7 +60,9 @@ def geometry_signature(geom: OutputGeometry) -> tuple[Any, ...]:
 
 
 def format_output_geometry_dump(geom: OutputGeometry) -> str:
+    """Format output geometry dump."""
     def _fmt_rect(r: Rect) -> str:
+        """Implement fmt rect logic."""
         return f"(x={int(r.x)},y={int(r.y)},w={int(r.w)},h={int(r.h)})"
 
     if not tuple(geom.hud_rects):
@@ -73,6 +80,7 @@ def format_output_geometry_dump(geom: OutputGeometry) -> str:
 
 
 def _parse_video_layout(layout_cfg: LayoutConfig | None) -> str:
+    """Parse video layout."""
     raw = ""
     if isinstance(layout_cfg, LayoutConfig):
         raw = str(layout_cfg.video_layout or "")
@@ -83,6 +91,7 @@ def _parse_video_layout(layout_cfg: LayoutConfig | None) -> str:
 
 
 def _parse_hud_mode(layout_cfg: LayoutConfig | None) -> str:
+    """Parse hud mode."""
     raw = ""
     if isinstance(layout_cfg, LayoutConfig):
         raw = str(layout_cfg.hud_mode or "")
@@ -93,6 +102,7 @@ def _parse_hud_mode(layout_cfg: LayoutConfig | None) -> str:
 
 
 def _parse_hud_frame(layout_cfg: LayoutConfig | None) -> tuple[str, str, int | None]:
+    """Parse hud frame."""
     orientation = "vertical"
     anchor = "center"
     thickness: int | None = None
@@ -126,6 +136,7 @@ def _parse_hud_frame(layout_cfg: LayoutConfig | None) -> tuple[str, str, int | N
 
 
 def _split_video_rects(video_layout: str, area: Rect) -> tuple[Rect, Rect]:
+    """Implement split video rects logic."""
     if video_layout == "TB":
         slow_h = int(area.h) // 2
         fast_h = int(area.h) - slow_h
@@ -147,15 +158,18 @@ def _split_video_rects(video_layout: str, area: Rect) -> tuple[Rect, Rect]:
 
 
 def _geom_debug_enabled() -> bool:
+    """Implement geom debug enabled logic."""
     raw = str(os.environ.get("IRVC_DEBUG") or os.environ.get("IRVC_DEBUG_SWALLOWED") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
 
 def _rect_dbg(r: Rect) -> str:
+    """Implement rect dbg logic."""
     return f"(x={int(r.x)},y={int(r.y)},w={int(r.w)},h={int(r.h)})"
 
 
 def _validate_rect_inside_output(name: str, r: Rect, W: int, H: int) -> None:
+    """Validate rect inside output."""
     if int(r.w) <= 0 or int(r.h) <= 0:
         raise RuntimeError(f"{name} ungueltig: w/h <= 0")
     x0 = int(r.x)
@@ -167,6 +181,7 @@ def _validate_rect_inside_output(name: str, r: Rect, W: int, H: int) -> None:
 
 
 def _validate_rects_no_overlap(name_a: str, a: Rect, name_b: str, b: Rect) -> None:
+    """Validate rects no overlap."""
     ax0 = int(a.x)
     ay0 = int(a.y)
     ax1 = int(a.x) + int(a.w)
@@ -184,6 +199,7 @@ def _validate_rects_no_overlap(name_a: str, a: Rect, name_b: str, b: Rect) -> No
 
 
 def split_weighted_lengths(total: int, weights: list[float]) -> list[int]:
+    """Implement split weighted lengths logic."""
     t = max(0, int(total))
     n = len(weights)
     if n <= 0:
@@ -207,6 +223,7 @@ def split_weighted_lengths(total: int, weights: list[float]) -> list[int]:
 
 
 def _hud_type_from_box(box: dict[str, Any]) -> str:
+    """Implement hud type from box logic."""
     try:
         return str(box.get("type") or "")
     except Exception:
@@ -214,6 +231,7 @@ def _hud_type_from_box(box: dict[str, Any]) -> str:
 
 
 def vertical_fit_weight_for_hud_key(hud_key: str) -> float:
+    """Implement vertical fit weight for hud key logic."""
     if hud_key == "Throttle / Brake":
         return 1.5
     elif hud_key in ("Speed", "Gear & RPM"):
@@ -226,6 +244,7 @@ def _layout_horizontal_frame_row(
     items: list[dict[str, Any]],
     row_rect: Rect,
 ) -> list[tuple[dict[str, Any], Rect]]:
+    """Implement layout horizontal frame row logic."""
     if not items:
         return []
 
@@ -280,6 +299,7 @@ def _layout_horizontal_frame_row(
 def split_horizontal_top_bottom_rows(
     active_boxes: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Implement split horizontal top bottom rows logic."""
     items = list(active_boxes or [])
     if not items:
         return [], []
@@ -318,6 +338,7 @@ def split_horizontal_top_bottom_rows(
             top_units.append(unit)
 
     def _expand(row_units: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """Implement expand logic."""
         row: list[dict[str, Any]] = []
         for unit in row_units:
             row.extend(unit)
@@ -332,6 +353,7 @@ def layout_horizontal_frame_hud_boxes(
     frame_rects: tuple[Rect, ...],
     anchor: str,
 ) -> list[tuple[dict[str, Any], Rect]]:
+    """Implement layout horizontal frame hud boxes logic."""
     rects = tuple(frame_rects or ())
     if not active_boxes or not rects:
         return []
@@ -361,6 +383,7 @@ def _debug_geometry_dump(
     video_fast_rect: Rect,
     hud_rects: tuple[Rect, ...],
 ) -> None:
+    """Implement debug geometry dump logic."""
     if not _geom_debug_enabled():
         return
     hud_s = "none" if not hud_rects else ",".join(_rect_dbg(r) for r in hud_rects)
@@ -381,6 +404,7 @@ def build_output_geometry_for_size(
     hud_width_px: int,
     layout_config: LayoutConfig | None = None,
 ) -> OutputGeometry:
+    """Build and return output geometry for size."""
     W = int(out_w)
     H = int(out_h)
     if W <= 0 or H <= 0:

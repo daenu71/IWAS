@@ -1,3 +1,5 @@
+"""IRSDK client abstraction and channel/session handling."""
+
 from __future__ import annotations
 
 import importlib
@@ -16,7 +18,9 @@ _DEFAULT_SAMPLE_FIELDS = tuple(REQUESTED_CHANNELS)
 
 
 class IRSDKClient:
+    """Container and behavior for I R S D K Client."""
     def __init__(self) -> None:
+        """Implement init logic."""
         self._lock = threading.Lock()
         self._state = "disconnected"
         self._irsdk_module: Any | None = None
@@ -28,17 +32,20 @@ class IRSDKClient:
 
     @property
     def state(self) -> str:
+        """Implement state logic."""
         with self._lock:
             return self._state
 
     @property
     def is_connected(self) -> bool:
+        """Return whether connected."""
         with self._lock:
             ir = self._ir
             state = self._state
         return bool(ir is not None and state == "connected" and self._runtime_is_connected(ir))
 
     def connect(self) -> bool:
+        """Implement connect logic."""
         with self._lock:
             existing = self._ir
         if existing is not None and self._runtime_is_connected(existing):
@@ -83,6 +90,7 @@ class IRSDKClient:
             return False
 
     def disconnect(self) -> None:
+        """Implement disconnect logic."""
         with self._lock:
             ir = self._ir
             was_connected = self._state == "connected"
@@ -95,6 +103,7 @@ class IRSDKClient:
             _LOG.info("irsdk disconnect")
 
     def read_sample(self, fields: Sequence[str] | None = None) -> dict[str, Any] | None:
+        """Read sample."""
         with self._lock:
             ir = self._ir
             resolved_field_reads = dict(self._resolved_field_reads)
@@ -143,6 +152,7 @@ class IRSDKClient:
             return None
 
     def describe_available_channels(self) -> dict[str, dict[str, Any]]:
+        """Implement describe available channels logic."""
         with self._lock:
             ir = self._ir
         if ir is None:
@@ -153,6 +163,7 @@ class IRSDKClient:
             return {}
 
     def list_available_vars(self) -> list[dict[str, Any]]:
+        """Implement list available vars logic."""
         channel_info = self.describe_available_channels()
         items: list[dict[str, Any]] = []
         for name, info in channel_info.items():
@@ -170,6 +181,7 @@ class IRSDKClient:
         return items
 
     def resolve_requested_channels(self, request_specs: Sequence[str]) -> dict[str, Any]:
+        """Resolve requested channels."""
         channel_info = self.describe_available_channels()
         resolved = self._resolve_requested_channels_from_available(request_specs, channel_info)
         with self._lock:
@@ -178,6 +190,7 @@ class IRSDKClient:
         return resolved
 
     def get_session_info_yaml(self) -> str | None:
+        """Implement get session info yaml logic."""
         with self._lock:
             ir = self._ir
         if ir is None:
@@ -194,10 +207,12 @@ class IRSDKClient:
             return None
 
     def get_last_session_info_source(self) -> str | None:
+        """Implement get last session info source logic."""
         with self._lock:
             return self._last_session_info_source
 
     def get_debug_snapshot(self) -> dict[str, Any]:
+        """Implement get debug snapshot logic."""
         with self._lock:
             ir = self._ir
             state = self._state
@@ -271,6 +286,7 @@ class IRSDKClient:
         return snapshot
 
     def _runtime_is_connected(self, ir: Any) -> bool:
+        """Implement runtime is connected logic."""
         checks = (
             ("is_connected", True),
             ("isConnected", True),
@@ -290,6 +306,7 @@ class IRSDKClient:
         return True
 
     def _safe_shutdown(self, ir: Any) -> None:
+        """Implement safe shutdown logic."""
         try:
             shutdown = getattr(ir, "shutdown", None)
             if callable(shutdown):
@@ -298,6 +315,7 @@ class IRSDKClient:
             pass
 
     def _log_connect_error_once(self, exc: Exception) -> None:
+        """Implement log connect error once logic."""
         key = f"{type(exc).__name__}:{exc}"
         if key == self._last_error_key:
             return
@@ -306,6 +324,7 @@ class IRSDKClient:
 
     @classmethod
     def _describe_available_channels_from_ir(cls, ir: Any) -> dict[str, dict[str, Any]]:
+        """Implement describe available channels from ir logic."""
         result: dict[str, dict[str, Any]] = {}
 
         for attr_name in ("var_headers", "varHeaders", "_var_headers", "_varHeaders"):
@@ -350,6 +369,7 @@ class IRSDKClient:
         request_specs: Sequence[str],
         available_channels: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
+        """Resolve requested channels from available."""
         result: dict[str, Any] = {
             "recorded_channels": [],
             "missing_channels": [],
@@ -440,6 +460,7 @@ class IRSDKClient:
         expected_wheels: Sequence[str],
         discovery_available: bool,
     ) -> None:
+        """Resolve wheel group request spec."""
         exact_expanded = cls._try_expand_exact_array_header(
             result,
             spec=spec,
@@ -485,6 +506,7 @@ class IRSDKClient:
         available: dict[str, dict[str, Any]],
         discovery_available: bool,
     ) -> None:
+        """Resolve tire temp group request spec."""
         exact_expanded = cls._try_expand_exact_array_header(
             result,
             spec=spec,
@@ -535,6 +557,7 @@ class IRSDKClient:
         output_prefix: str,
         expected_count: int,
     ) -> bool:
+        """Implement try expand exact array header logic."""
         for base_name in base_names:
             info = available.get(base_name)
             if info is None:
@@ -570,6 +593,7 @@ class IRSDKClient:
         *,
         aliases: Sequence[str],
     ) -> dict[str, tuple[str, dict[str, Any]]]:
+        """Select best wheel scalar sources."""
         alias_keys = [cls._normalize_var_key(alias) for alias in aliases if str(alias).strip()]
         best: dict[str, tuple[int, str, dict[str, Any]]] = {}
         for name, info in available.items():
@@ -600,6 +624,7 @@ class IRSDKClient:
         cls,
         available: dict[str, dict[str, Any]],
     ) -> dict[tuple[str, str], tuple[str, dict[str, Any]]]:
+        """Select best tire temp scalar sources."""
         best: dict[tuple[str, str], tuple[int, str, dict[str, Any]]] = {}
         for name, info in available.items():
             wheel, remainder = cls._wheel_parts_from_var_name(name)
@@ -636,6 +661,7 @@ class IRSDKClient:
         source_index: int | None,
         source_info: dict[str, Any] | None,
     ) -> None:
+        """Implement register concrete channel logic."""
         concrete_name = str(column_name)
         if concrete_name in result["channel_info"]:
             return
@@ -652,6 +678,7 @@ class IRSDKClient:
         source_name: str,
         source_index: int | None,
     ) -> dict[str, Any]:
+        """Implement copy concrete channel info logic."""
         info: dict[str, Any] = {}
         if "type" in source_info:
             info["type"] = source_info.get("type")
@@ -675,6 +702,7 @@ class IRSDKClient:
         request_spec: str,
         available: dict[str, dict[str, Any]],
     ) -> str | None:
+        """Resolve scalar source name."""
         candidates: list[str] = [str(request_spec)]
         for alias in REQUESTED_CHANNEL_ALIASES.get(str(request_spec), ()):
             alias_text = str(alias).strip()
@@ -697,6 +725,7 @@ class IRSDKClient:
         available: dict[str, dict[str, Any]],
         candidate: str,
     ) -> str | None:
+        """Find exact available name."""
         if candidate in available:
             return candidate
         target = cls._normalize_var_key(candidate)
@@ -710,6 +739,7 @@ class IRSDKClient:
 
     @staticmethod
     def _build_missing_spec_entry(spec: str, reason: str, **extra: Any) -> dict[str, Any]:
+        """Build and return missing spec entry."""
         entry: dict[str, Any] = {"request_spec": str(spec), "reason": str(reason)}
         for key, value in extra.items():
             entry[key] = value
@@ -717,6 +747,7 @@ class IRSDKClient:
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
+        """Coerce int."""
         try:
             return int(value)
         except Exception:
@@ -724,6 +755,7 @@ class IRSDKClient:
 
     @classmethod
     def _extract_header_info(cls, header: Any) -> dict[str, Any]:
+        """Extract header info."""
         info: dict[str, Any] = {}
         var_type = cls._header_field(header, "type", "Type", "var_type", "varType")
         if var_type is not None:
@@ -743,6 +775,7 @@ class IRSDKClient:
 
     @staticmethod
     def _pretty_var_type(raw_type: Any) -> str | None:
+        """Implement pretty var type logic."""
         key = str(raw_type).strip().lower()
         if key in {"irsdk_char", "irsdk_bool", "irsdk_int", "irsdk_bitfield", "irsdk_float", "irsdk_double"}:
             return key.replace("irsdk_", "")
@@ -761,14 +794,17 @@ class IRSDKClient:
 
     @staticmethod
     def _normalize_var_key(value: Any) -> str:
+        """Normalize var key."""
         return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
 
     @classmethod
     def _build_fallback_probe_names(cls) -> list[str]:
+        """Build and return fallback probe names."""
         probe_names: list[str] = []
         seen: set[str] = set()
 
         def add(name: Any) -> None:
+            """Implement add logic."""
             text = str(name or "").strip()
             if not text:
                 return
@@ -794,6 +830,7 @@ class IRSDKClient:
 
     @classmethod
     def _wheel_parts_from_var_name(cls, name: Any) -> tuple[str | None, str]:
+        """Implement wheel parts from var name logic."""
         norm = cls._normalize_var_key(name)
         if not norm:
             return None, ""
@@ -817,6 +854,7 @@ class IRSDKClient:
 
     @classmethod
     def _tire_temp_segment_from_remainder(cls, remainder: str) -> tuple[str | None, int]:
+        """Implement tire temp segment from remainder logic."""
         key = cls._normalize_var_key(remainder)
         if "temp" not in key:
             return None, 0
@@ -849,6 +887,7 @@ class IRSDKClient:
 
     @staticmethod
     def _get_ir_attr_value(ir: Any, attr_name: str) -> Any:
+        """Implement get ir attr value logic."""
         if not hasattr(ir, attr_name):
             return None
         try:
@@ -859,6 +898,7 @@ class IRSDKClient:
 
     @staticmethod
     def _iter_ir_headers(headers: Any) -> list[Any]:
+        """Implement iter ir headers logic."""
         try:
             return list(headers)
         except Exception:
@@ -866,6 +906,7 @@ class IRSDKClient:
 
     @staticmethod
     def _header_field(header: Any, *names: str) -> Any:
+        """Implement header field logic."""
         for name in names:
             if isinstance(header, dict) and name in header:
                 return header.get(name)
@@ -879,6 +920,7 @@ class IRSDKClient:
 
     @classmethod
     def _get_session_info_yaml_with_source_from_ir(cls, ir: Any) -> tuple[str | None, str | None]:
+        """Implement get session info yaml with source from ir logic."""
         text, source = cls._get_session_info_yaml_primary_from_ir(ir)
         if text and source:
             return text, source
@@ -889,11 +931,13 @@ class IRSDKClient:
 
     @classmethod
     def _get_session_info_yaml_from_ir(cls, ir: Any) -> str | None:
+        """Implement get session info yaml from ir logic."""
         text, _source = cls._get_session_info_yaml_with_source_from_ir(ir)
         return text
 
     @classmethod
     def _get_session_info_yaml_primary_from_ir(cls, ir: Any) -> tuple[str | None, str | None]:
+        """Implement get session info yaml primary from ir logic."""
         for attr_name in (
             "session_info",
             "sessionInfo",
@@ -923,6 +967,7 @@ class IRSDKClient:
 
     @classmethod
     def _get_session_info_yaml_shared_mem_fallback_from_ir(cls, ir: Any) -> str | None:
+        """Implement get session info yaml shared mem fallback from ir logic."""
         header = cls._get_ir_attr_value(ir, "_header")
         shared_mem = cls._get_ir_attr_value(ir, "_shared_mem")
         if header is None or shared_mem is None:
@@ -973,6 +1018,7 @@ class IRSDKClient:
 
     @staticmethod
     def _decode_text_best_effort(data: bytes) -> str | None:
+        """Implement decode text best effort logic."""
         if not isinstance(data, (bytes, bytearray)):
             return None
         raw = bytes(data)
@@ -990,6 +1036,7 @@ class IRSDKClient:
 
     @staticmethod
     def _coerce_text(value: Any) -> str | None:
+        """Coerce text."""
         if value is None:
             return None
         if isinstance(value, bytes):
@@ -1003,6 +1050,7 @@ class IRSDKClient:
 
     @staticmethod
     def _summarize_debug_value(value: Any) -> dict[str, Any]:
+        """Implement summarize debug value logic."""
         info: dict[str, Any] = {"type": type(value).__name__}
         try:
             if isinstance(value, (str, bytes, bytearray)):
@@ -1024,6 +1072,7 @@ class IRSDKClient:
 
     @staticmethod
     def _extract_indexed_value(value: Any, index: int) -> Any:
+        """Extract indexed value."""
         if index < 0:
             raise IndexError(index)
         if isinstance(value, (list, tuple)):
@@ -1040,6 +1089,7 @@ class IRSDKClient:
 
     @staticmethod
     def _to_simple_value(value: Any) -> Any:
+        """Convert value to simple value."""
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
         try:

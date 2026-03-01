@@ -1,3 +1,5 @@
+"""HUD renderer registry helpers."""
+
 # hud_registry.py
 # Zentrale Registry: HUD-Name (UI-Key) -> Legacy-Render-Funktion
 # Adapter-Phase: verweist bewusst auf bestehende Funktionen in render_split.py

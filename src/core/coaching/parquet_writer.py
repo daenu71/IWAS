@@ -1,3 +1,5 @@
+"""Runtime module for core/coaching/parquet_writer.py."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -8,6 +10,7 @@ from typing import Any
 
 
 class ParquetRunWriter:
+    """Container and behavior for Parquet Run Writer."""
     def __init__(
         self,
         run_path: str | Path,
@@ -18,6 +21,7 @@ class ParquetRunWriter:
         chunk_seconds: float = 1.0,
         sample_hz: float | int = 120,
     ) -> None:
+        """Implement init logic."""
         self.run_path = Path(run_path)
         self.recorded_channels = [str(name) for name in recorded_channels]
         self.dtype_decisions = dict(dtype_policy or dtype_decisions or {})
@@ -38,6 +42,7 @@ class ParquetRunWriter:
         self._last_flush_summary: dict[str, Any] | None = None
 
     def append(self, sample: Mapping[str, Any], now_ts: float | None = None) -> bool:
+        """Implement append logic."""
         raw = sample.get("raw")
         raw_dict = raw if isinstance(raw, Mapping) else {}
         row: dict[str, Any] = {}
@@ -54,6 +59,7 @@ class ParquetRunWriter:
         return self.append_row(row)
 
     def append_row(self, row: Mapping[str, Any]) -> bool:
+        """Implement append row logic."""
         if self._closed:
             raise RuntimeError("ParquetRunWriter is closed")
         self._buffer.append(dict(row))
@@ -63,6 +69,7 @@ class ParquetRunWriter:
         return True
 
     def flush(self) -> None:
+        """Implement flush logic."""
         if self._closed or not self._buffer:
             return
         started = time.perf_counter()
@@ -118,6 +125,7 @@ class ParquetRunWriter:
             raise
 
     def close(self, final: bool = True) -> None:
+        """Close."""
         if self._closed:
             return
         if final:
@@ -129,11 +137,13 @@ class ParquetRunWriter:
             writer.close()
 
     def consume_last_flush_summary(self) -> dict[str, Any] | None:
+        """Implement consume last flush summary logic."""
         summary = self._last_flush_summary
         self._last_flush_summary = None
         return dict(summary) if isinstance(summary, dict) else None
 
     def _ensure_backend(self) -> None:
+        """Implement ensure backend logic."""
         if self._pa is not None and self._pq is not None:
             return
         try:
@@ -145,6 +155,7 @@ class ParquetRunWriter:
         self._pq = pq
 
     def _build_schema(self, rows: Sequence[Mapping[str, Any]]) -> Any:
+        """Build and return schema."""
         self._ensure_backend()
         fields = [
             self._pa.field("ts", self._pa.float64(), nullable=True),
@@ -155,6 +166,7 @@ class ParquetRunWriter:
         return self._pa.schema(fields)
 
     def _resolve_arrow_type(self, name: str, rows: Sequence[Mapping[str, Any]]) -> Any:
+        """Resolve arrow type."""
         self._ensure_backend()
         decision = str(self.dtype_decisions.get(name, "") or "").strip().lower()
         if "[" in decision and "]" in decision:
@@ -199,6 +211,7 @@ class ParquetRunWriter:
         return self._pa.float32()
 
     def _coerce_value(self, value: Any, arrow_type: Any) -> Any:
+        """Coerce value."""
         if value is None:
             return None
         type_id = getattr(arrow_type, "id", None)

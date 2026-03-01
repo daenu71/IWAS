@@ -1,3 +1,5 @@
+"""Runtime module for core/optional_deps.py."""
+
 from __future__ import annotations
 
 import importlib
@@ -7,6 +9,7 @@ _CV2_MISSING_MSG = "Video features unavailable: OpenCV (cv2) not installed.\nIns
 
 
 def has_cv2() -> bool:
+    """Return whether cv2."""
     try:
         return importlib.util.find_spec("cv2") is not None
     except Exception:
@@ -14,6 +17,7 @@ def has_cv2() -> bool:
 
 
 def try_import_cv2() -> tuple[bool, str | None]:
+    """Implement try import cv2 logic."""
     try:
         importlib.import_module("cv2")
         return True, None

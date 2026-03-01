@@ -1,3 +1,5 @@
+"""Lap-distance based synchronization map helpers."""
+
 from __future__ import annotations
 
 import math
@@ -7,6 +9,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class SyncMap:
     # pro slow frame index: fast index (nearest)
+    """Container and behavior for Sync Map."""
     slow_to_fast_idx: list[int]
     # pro slow frame: lapdist, damit du es debuggen kannst
     slow_lapdist: list[float]
@@ -70,6 +73,7 @@ def build_sync_map_by_lapdist(
 
 
 def _count_non_increasing(xs: list[float]) -> int:
+    """Implement count non increasing logic."""
     bad = 0
     prev = xs[0]
     for i in range(1, len(xs)):

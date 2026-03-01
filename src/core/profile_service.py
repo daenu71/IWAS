@@ -1,3 +1,5 @@
+"""Runtime module for core/profile_service.py."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,6 +17,7 @@ def build_profile_dict(
     profile_model_from_ui_state: Callable[[list[str], list[str], dict[str, int], dict[str, int]], Profile],
     set_app_model: Callable[[AppModel], None],
 ) -> dict[str, Any]:
+    """Build and return profile dict."""
     vnames: list[str] = []
     cnames: list[str] = []
 
@@ -92,6 +95,7 @@ def apply_profile_dict(
     render_png_preview: Callable[..., None],
     refresh_layout_preview: Callable[[], None],
 ) -> None:
+    """Apply profile dict."""
     if not isinstance(profile, dict):
         return
     migrate_profile_contract_dict(profile)

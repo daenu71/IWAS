@@ -1,3 +1,5 @@
+"""Runtime module for core/resources.py."""
+
 from __future__ import annotations
 
 import sys
@@ -5,6 +7,7 @@ from pathlib import Path
 
 
 def get_resource_path(*parts: str) -> Path:
+    """Implement get resource path logic."""
     base = getattr(sys, "_MEIPASS", None)
     if not base:
         here = Path(__file__).resolve()

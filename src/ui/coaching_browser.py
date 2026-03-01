@@ -1,3 +1,5 @@
+"""Runtime module for ui/coaching_browser.py."""
+
 from __future__ import annotations
 
 import tkinter as tk
@@ -13,6 +15,7 @@ NodeCallback = Callable[[CoachingTreeNode], None]
 
 
 class CoachingBrowser(ttk.Frame):
+    """Container and behavior for Coaching Browser."""
     def __init__(
         self,
         master: tk.Widget,
@@ -22,6 +25,7 @@ class CoachingBrowser(ttk.Frame):
         on_delete_node: NodeCallback | None = None,
         on_select_node: NodeCallback | None = None,
     ) -> None:
+        """Implement init logic."""
         super().__init__(master)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -81,12 +85,14 @@ class CoachingBrowser(ttk.Frame):
         self._update_action_buttons()
 
     def set_index(self, index: CoachingIndex | None) -> None:
+        """Implement set index logic."""
         self._capture_expanded_state()
         selected_id = self._selected_id()
         self._index = index
         self._rebuild_tree(selected_id=selected_id)
 
     def refresh(self) -> None:
+        """Implement refresh logic."""
         self._capture_expanded_state()
         selected_id = self._selected_id()
         if callable(self._on_refresh):
@@ -100,9 +106,11 @@ class CoachingBrowser(ttk.Frame):
         self._rebuild_tree(selected_id=selected_id)
 
     def set_message(self, message: str) -> None:
+        """Implement set message logic."""
         self._message_var.set(str(message or ""))
 
     def selected_node(self) -> CoachingTreeNode | None:
+        """Implement selected node logic."""
         index = self._index
         if index is None:
             return None
@@ -112,6 +120,7 @@ class CoachingBrowser(ttk.Frame):
         return index.nodes_by_id.get(item_id)
 
     def _rebuild_tree(self, *, selected_id: str | None) -> None:
+        """Implement rebuild tree logic."""
         self.tree.delete(*self.tree.get_children(""))
         index = self._index
         if index is None:
@@ -131,6 +140,7 @@ class CoachingBrowser(ttk.Frame):
         self._update_action_buttons()
 
     def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
+        """Implement insert node logic."""
         values = (
             node.kind,
             _format_summary(node),
@@ -141,9 +151,11 @@ class CoachingBrowser(ttk.Frame):
             self._insert_node(node.id, child)
 
     def _capture_expanded_state(self) -> None:
+        """Implement capture expanded state logic."""
         expanded: set[str] = set()
 
         def walk(parent: str) -> None:
+            """Implement walk logic."""
             for iid in self.tree.get_children(parent):
                 if self.tree.item(iid, "open"):
                     expanded.add(iid)
@@ -153,17 +165,20 @@ class CoachingBrowser(ttk.Frame):
         self._expanded_ids = expanded
 
     def _restore_expanded_state(self) -> None:
+        """Implement restore expanded state logic."""
         for iid in list(self._expanded_ids):
             if self.tree.exists(iid):
                 self.tree.item(iid, open=True)
 
     def _selected_id(self) -> str | None:
+        """Implement selected id logic."""
         sel = self.tree.selection()
         if not sel:
             return None
         return str(sel[0])
 
     def _on_tree_select(self, _event=None) -> None:
+        """Implement on tree select logic."""
         self._update_action_buttons()
         node = self.selected_node()
         if node is None:
@@ -172,6 +187,7 @@ class CoachingBrowser(ttk.Frame):
             self._on_select_node(node)
 
     def _on_double_click(self, _event=None) -> None:
+        """Implement on double click logic."""
         node = self.selected_node()
         if node is None:
             return
@@ -179,6 +195,7 @@ class CoachingBrowser(ttk.Frame):
             self._handle_open_folder()
 
     def _handle_open_folder(self) -> None:
+        """Implement handle open folder logic."""
         node = self.selected_node()
         if node is None or not node.can_open_folder:
             return
@@ -186,6 +203,7 @@ class CoachingBrowser(ttk.Frame):
             self._on_open_folder(node)
 
     def _handle_delete(self) -> None:
+        """Implement handle delete logic."""
         node = self.selected_node()
         if node is None or not node.can_delete:
             return
@@ -193,6 +211,7 @@ class CoachingBrowser(ttk.Frame):
             self._on_delete_node(node)
 
     def _update_action_buttons(self) -> None:
+        """Update action buttons."""
         node = self.selected_node()
         if node is None:
             self._btn_open.state(["disabled"])
@@ -209,6 +228,7 @@ class CoachingBrowser(ttk.Frame):
 
 
 def _format_summary(node: CoachingTreeNode) -> str:
+    """Format summary."""
     summary = node.summary
     if node.kind == "lap":
         return _format_lap_summary(summary, lap_summary=_node_lap_summary(node))
@@ -230,6 +250,7 @@ def _format_summary(node: CoachingTreeNode) -> str:
 
 
 def _format_lap_summary(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str:
+    """Format lap summary."""
     parts: list[str] = []
     lap_time_s = summary.total_time_s
     if lap_time_s is None:
@@ -247,6 +268,7 @@ def _format_lap_summary(summary: NodeSummary, *, lap_summary: dict[str, object])
 
 
 def _lap_status(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str | None:
+    """Implement lap status logic."""
     if _lap_is_incomplete(summary, lap_summary=lap_summary):
         return "incomplete"
     if _lap_is_offtrack(summary, lap_summary=lap_summary):
@@ -255,6 +277,7 @@ def _lap_status(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str 
 
 
 def _node_lap_summary(node: CoachingTreeNode) -> dict[str, object]:
+    """Implement node lap summary logic."""
     meta = getattr(node, "meta", {})
     if isinstance(meta, dict):
         summary = meta.get("lap_summary")
@@ -264,6 +287,7 @@ def _node_lap_summary(node: CoachingTreeNode) -> dict[str, object]:
 
 
 def _lap_is_incomplete(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
+    """Implement lap is incomplete logic."""
     if bool(getattr(summary, "lap_incomplete", False)):
         return True
     if "incomplete" in lap_summary:
@@ -281,6 +305,7 @@ def _lap_is_incomplete(summary: NodeSummary, *, lap_summary: dict[str, object]) 
 
 
 def _lap_is_offtrack(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
+    """Implement lap is offtrack logic."""
     if bool(getattr(summary, "lap_offtrack", False)):
         return True
     for key in ("offtrack_surface", "lap_offtrack", "offtrack"):
@@ -292,6 +317,7 @@ def _lap_is_offtrack(summary: NodeSummary, *, lap_summary: dict[str, object]) ->
 
 
 def _format_seconds(seconds: float) -> str:
+    """Format seconds."""
     try:
         value = float(seconds)
     except Exception:
@@ -306,6 +332,7 @@ def _format_seconds(seconds: float) -> str:
 
 
 def _format_lap_seconds(seconds: float | None) -> str:
+    """Format lap seconds."""
     if seconds is None:
         return "na"
     try:
@@ -322,6 +349,7 @@ def _format_lap_seconds(seconds: float | None) -> str:
 
 
 def _format_last_driven(ts: float | None) -> str:
+    """Format last driven."""
     if ts is None:
         return "-"
     try:
@@ -331,6 +359,7 @@ def _format_last_driven(ts: float | None) -> str:
 
 
 def _coerce_optional_float(value: object) -> float | None:
+    """Coerce optional float."""
     try:
         return float(value)
     except Exception:
@@ -338,6 +367,7 @@ def _coerce_optional_float(value: object) -> float | None:
 
 
 def _coerce_optional_bool(value: object) -> bool | None:
+    """Coerce optional bool."""
     if isinstance(value, bool):
         return value
     if value is None:

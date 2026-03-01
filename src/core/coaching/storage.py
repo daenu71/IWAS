@@ -1,3 +1,5 @@
+"""Runtime module for core/coaching/storage.py."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,6 +18,7 @@ _SANITIZE_REPEAT_UNDERSCORE_RE = re.compile(r"_+")
 
 
 def get_coaching_storage_dir() -> Path:
+    """Implement get coaching storage dir logic."""
     try:
         from core.persistence import resolve_coaching_storage_dir
 
@@ -30,6 +33,7 @@ def get_coaching_storage_dir() -> Path:
 
 
 def sanitize_name(s: str) -> str:
+    """Implement sanitize name logic."""
     text = str(s or "").strip()
     if not text:
         return "unknown"
@@ -47,6 +51,7 @@ def build_session_folder_name(
     session_type: Any,
     session_id: Any,
 ) -> str:
+    """Build and return session folder name."""
     dt = _coerce_datetime(ts)
     ts_part = dt.strftime("%Y-%m-%d__%H%M%S")
     return "__".join(
@@ -69,6 +74,7 @@ def ensure_session_dir(
     *,
     base_dir: Path | None = None,
 ) -> Path:
+    """Implement ensure session dir logic."""
     root_dir = Path(base_dir) if base_dir is not None else get_coaching_storage_dir()
     session_dir = root_dir / build_session_folder_name(ts, track, car, session_type, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +82,7 @@ def ensure_session_dir(
 
 
 def mark_session_active(session_dir: Path, *, payload: dict[str, Any] | None = None) -> Path:
+    """Implement mark session active logic."""
     lock_path = Path(session_dir) / ACTIVE_SESSION_LOCK_FILENAME
     content = ""
     if payload:
@@ -88,6 +95,7 @@ def mark_session_active(session_dir: Path, *, payload: dict[str, Any] | None = N
 
 
 def mark_session_finalized(session_dir: Path, *, remove_lock: bool = False) -> Path:
+    """Implement mark session finalized logic."""
     session_dir = Path(session_dir)
     lock_path = session_dir / ACTIVE_SESSION_LOCK_FILENAME
     if remove_lock:
@@ -101,6 +109,7 @@ def mark_session_finalized(session_dir: Path, *, remove_lock: bool = False) -> P
 
 
 def _coerce_datetime(ts: Any) -> datetime:
+    """Coerce datetime."""
     if isinstance(ts, datetime):
         return ts
     if isinstance(ts, time.struct_time):

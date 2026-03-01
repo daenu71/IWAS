@@ -1,3 +1,5 @@
+"""Runtime module for ui/preview/video_preview.py."""
+
 from __future__ import annotations
 
 import json
@@ -23,6 +25,7 @@ _CV2 = None
 
 
 def _require_cv2():
+    """Implement require cv2 logic."""
     global _CV2
     if _CV2 is None:
         import cv2 as _cv2
@@ -32,6 +35,7 @@ def _require_cv2():
 
 
 class VideoPreviewController:
+    """Container and behavior for Video Preview Controller."""
     def __init__(
         self,
         *,
@@ -56,6 +60,7 @@ class VideoPreviewController:
         sync_from_folders_if_needed_ui: Callable[..., None],
         show_progress: Callable[[str, str], tuple[object, Callable[[], None]]],
     ) -> None:
+        """Implement init logic."""
         self.root = root
         self.preview_area = preview_area
         self.preview_label = preview_label
@@ -98,12 +103,14 @@ class VideoPreviewController:
         self._preview_cut_logger = None
 
     def ffmpeg_exists(self) -> bool:
+        """Implement ffmpeg exists logic."""
         try:
             return bool(_ffmpeg_exists_bundled())
         except Exception:
             return False
 
     def _cut_log(self, text: str) -> None:
+        """Implement cut log logic."""
         try:
             if self._preview_cut_logger is None:
                 project_root = self.input_video_dir.parent.parent
@@ -113,6 +120,7 @@ class VideoPreviewController:
             pass
 
     def _video_encode_candidates(self) -> list[tuple[str, list[str]]]:
+        """Implement video encode candidates logic."""
         if self._video_encode_candidates_cache is not None:
             return list(self._video_encode_candidates_cache)
 
@@ -163,6 +171,7 @@ class VideoPreviewController:
         return list(deduped)
 
     def _exact_cut_encode_candidates(self) -> list[tuple[str, list[str]]]:
+        """Implement exact cut encode candidates logic."""
         ffmpeg_bin = resolve_ffmpeg_bin()
         available = detect_available_encoders(ffmpeg_bin, cache=True)
 
@@ -244,6 +253,7 @@ class VideoPreviewController:
         return deduped
 
     def _hybrid_edge_encode_candidates(self, *, src_video_codec: str) -> list[tuple[str, list[str]]]:
+        """Implement hybrid edge encode candidates logic."""
         codec = str(src_video_codec or "").strip().lower()
         if codec == "h264":
             return self._exact_cut_encode_candidates()
@@ -316,6 +326,7 @@ class VideoPreviewController:
         progress_total_sec: float | None = None,
         progress_cb: Callable[[float], None] | None = None,
     ) -> tuple[bool, str, str]:
+        """Run ffmpeg with video encode fallback."""
         ffmpeg_bin = resolve_ffmpeg_bin()
         last_error = ""
 
@@ -330,6 +341,7 @@ class VideoPreviewController:
                     pass
 
                 def _on_progress_line(line: str, total_s: float = float(progress_total_sec), cb: Callable[[float], None] = progress_cb) -> None:
+                    """Implement on progress line logic."""
                     pct = self._progress_pct_from_ffmpeg_line(line, total_s)
                     if pct is None:
                         return
@@ -377,6 +389,7 @@ class VideoPreviewController:
         args: list[str],
         out_path: Path,
     ) -> tuple[bool, str]:
+        """Run ffmpeg once."""
         self.safe_unlink(out_path)
         cmd = [resolve_ffmpeg_bin(), "-hide_banner", "-nostats", "-loglevel", "error", *args, str(out_path)]
         try:
@@ -401,6 +414,7 @@ class VideoPreviewController:
         return False, f"ffmpeg rc={p.returncode}"
 
     def _ffmpeg_decode_check(self, *, src: Path, seek_sec: float, frames: int = 24) -> tuple[bool, str]:
+        """Implement ffmpeg decode check logic."""
         seek_val = max(0.0, float(seek_sec))
         cmd = [
             resolve_ffmpeg_bin(),
@@ -441,6 +455,7 @@ class VideoPreviewController:
         return False, f"ffmpeg rc={p.returncode}"
 
     def _ffprobe_media_summary(self, src: Path) -> str:
+        """Implement ffprobe media summary logic."""
         try:
             p = subprocess.run(
                 [
@@ -511,6 +526,7 @@ class VideoPreviewController:
         return " ".join(parts)
 
     def _log_hybrid_artifact_debug(self, *, label: str, path: Path) -> None:
+        """Implement log hybrid artifact debug logic."""
         try:
             if not path.exists():
                 self._cut_log(f"hybrid debug {label}: missing path={path.name}")
@@ -541,6 +557,7 @@ class VideoPreviewController:
     ) -> tuple[bool, str]:
         # Some Windows/FFmpeg builds intermittently fail a decode probe exactly at t=0.000
         # on valid H.264 files produced by the hybrid concat path. Probe slightly inside start.
+        """Validate hybrid output."""
         start_probe_ts = 0.01
         try:
             left_d = max(0.0, float(left_dur_ts))
@@ -570,6 +587,7 @@ class VideoPreviewController:
         return True, ""
 
     def _probe_video_packets_for_hybrid_cut(self, src: Path) -> tuple[list[float], list[int]]:
+        """Implement probe video packets for hybrid cut logic."""
         self._cut_log(f"ffprobe packets start file={src.name}")
         try:
             p = subprocess.run(
@@ -611,6 +629,7 @@ class VideoPreviewController:
             raise RuntimeError("ffprobe returned no video packets")
 
         def _parse_opt_float(val: object) -> float | None:
+            """Parse opt float."""
             if val in (None, "N/A"):
                 return None
             try:
@@ -707,6 +726,7 @@ class VideoPreviewController:
         return frame_times, sorted(set(int(i) for i in keyframes if 0 <= int(i) < len(frame_times)))
 
     def _probe_video_frames_for_hybrid_cut(self, src: Path) -> tuple[list[float], list[int]]:
+        """Implement probe video frames for hybrid cut logic."""
         try:
             return self._probe_video_packets_for_hybrid_cut(src)
         except Exception as packet_err:
@@ -800,6 +820,7 @@ class VideoPreviewController:
         return frame_times, sorted(set(int(i) for i in keyframes if 0 <= int(i) < len(frame_times)))
 
     def _probe_primary_video_codec_name(self, src: Path) -> str:
+        """Implement probe primary video codec name logic."""
         try:
             p = subprocess.run(
                 [
@@ -846,6 +867,7 @@ class VideoPreviewController:
         return codec_name
 
     def _hybrid_cut_copy_partition(self, *, s: int, e: int, keyframes: list[int]) -> tuple[int, int] | None:
+        """Implement hybrid cut copy partition logic."""
         if e <= s or not keyframes:
             return None
 
@@ -875,6 +897,7 @@ class VideoPreviewController:
         progress_total_sec: float | None = None,
         progress_cb: Callable[[float], None] | None = None,
     ) -> tuple[bool, str]:
+        """Run ffmpeg with single video encoder."""
         self.safe_unlink(out_path)
         progress_line_cb = None
         if (progress_cb is not None) and (progress_total_sec is not None) and (progress_total_sec > 0):
@@ -884,6 +907,7 @@ class VideoPreviewController:
                 pass
 
             def _on_progress_line(line: str, total_s: float = float(progress_total_sec), cb: Callable[[float], None] = progress_cb) -> None:
+                """Implement on progress line logic."""
                 pct = self._progress_pct_from_ffmpeg_line(line, total_s)
                 if pct is None:
                     return
@@ -938,6 +962,7 @@ class VideoPreviewController:
         out_path: Path,
         progress_cb: Callable[[float], None] | None = None,
     ) -> tuple[bool, str, str]:
+        """Run hybrid exact cut."""
         part = self._hybrid_cut_copy_partition(s=int(s), e=int(e), keyframes=keyframes)
         if part is None:
             return False, "", "hybrid_copy_window_unavailable"
@@ -958,9 +983,11 @@ class VideoPreviewController:
         nominal_step = 1.0 / max(1.0, float(self.fps))
 
         def _frame_ts(idx: int) -> float:
+            """Implement frame ts logic."""
             return float(frame_times[max(0, min(idx, n_frames - 1))])
 
         def _frame_end_ts(idx_inclusive: int) -> float:
+            """Implement frame end ts logic."""
             nxt = idx_inclusive + 1
             if 0 <= nxt < n_frames:
                 t0 = _frame_ts(idx_inclusive)
@@ -975,6 +1002,7 @@ class VideoPreviewController:
             return _frame_ts(idx_inclusive) + nominal_step
 
         def _split_exact_seek(ts: float, *, preroll_sec: float = 2.0) -> tuple[float, float]:
+            """Implement split exact seek logic."""
             target = max(0.0, float(ts))
             pre = max(0.0, target - max(0.0, float(preroll_sec)))
             post = max(0.0, target - pre)
@@ -1015,6 +1043,7 @@ class VideoPreviewController:
         total_duration = max(0.001, float(left_dur_ts + mid_dur_ts + right_dur_ts))
 
         def _stage_progress(start_pct: float, span_pct: float, local_pct: float) -> None:
+            """Implement stage progress logic."""
             if progress_cb is None:
                 return
             try:
@@ -1023,6 +1052,7 @@ class VideoPreviewController:
                 pass
 
         def _set_abs_progress(pct: float) -> None:
+            """Implement set abs progress logic."""
             if progress_cb is None:
                 return
             try:
@@ -1251,6 +1281,7 @@ class VideoPreviewController:
 
     @staticmethod
     def _parse_ffmpeg_clock_to_sec(s: str) -> float:
+        """Parse ffmpeg clock to sec."""
         try:
             txt = str(s or "").strip()
             if txt.count(":") != 2:
@@ -1261,6 +1292,7 @@ class VideoPreviewController:
             return 0.0
 
     def _progress_pct_from_ffmpeg_line(self, line: str, total_s: float) -> float | None:
+        """Implement progress pct from ffmpeg line logic."""
         txt = str(line or "").strip()
         if txt == "" or "=" not in txt or total_s <= 0:
             return None
@@ -1296,6 +1328,7 @@ class VideoPreviewController:
         *,
         stdout_line_cb: Callable[[str], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        """Run process with ui pump."""
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -1308,6 +1341,7 @@ class VideoPreviewController:
         q: queue.Queue[tuple[str, str | None]] = queue.Queue()
 
         def _reader(tag: str, stream) -> None:
+            """Implement reader logic."""
             try:
                 if stream is None:
                     return
@@ -1377,6 +1411,7 @@ class VideoPreviewController:
 
     @staticmethod
     def _find_progressbar_widget(progress_win: object) -> ttk.Progressbar | None:
+        """Find progressbar widget."""
         try:
             if not isinstance(progress_win, tk.Misc):
                 return None
@@ -1389,6 +1424,7 @@ class VideoPreviewController:
         return None
 
     def _make_progress_setter(self, progress_win: object, *, label_prefix: str) -> Callable[[float], None]:
+        """Implement make progress setter logic."""
         bar = self._find_progressbar_widget(progress_win)
         if bar is not None:
             try:
@@ -1403,6 +1439,7 @@ class VideoPreviewController:
         last_pct = {"v": -1}
 
         def _set_progress(pct: float) -> None:
+            """Implement set progress logic."""
             p = max(0.0, min(100.0, float(pct)))
             pi = int(p)
             if pi == last_pct["v"] and p < 100.0:
@@ -1425,6 +1462,7 @@ class VideoPreviewController:
         return _set_progress
 
     def make_proxy_h264(self, src: Path) -> Path | None:
+        """Implement make proxy h264 logic."""
         if not self.ffmpeg_exists():
             return None
 
@@ -1453,6 +1491,7 @@ class VideoPreviewController:
         return None
 
     def try_open_for_png(self, p: Path) -> cv2.VideoCapture | None:
+        """Implement try open for png logic."""
         cv2 = _require_cv2()
         c = cv2.VideoCapture(str(p))
         if c is not None and c.isOpened():
@@ -1476,6 +1515,7 @@ class VideoPreviewController:
         return None
 
     def read_frame_as_pil(self, p: Path, frame_idx: int) -> Image.Image | None:
+        """Read frame as pil."""
         cv2 = _require_cv2()
         c = self.try_open_for_png(p)
         if c is None:
@@ -1497,6 +1537,7 @@ class VideoPreviewController:
                 pass
 
     def clamp_frame(self, idx: int) -> int:
+        """Implement clamp frame logic."""
         if self.total_frames <= 0:
             return max(0, idx)
         if idx < 0:
@@ -1506,6 +1547,7 @@ class VideoPreviewController:
         return idx
 
     def set_endframe(self, idx: int, save: bool = True) -> None:
+        """Implement set endframe logic."""
         idx = self.clamp_frame(int(idx))
         self.end_frame_idx = idx
 
@@ -1526,6 +1568,7 @@ class VideoPreviewController:
             self._save_endframes(self.endframes_by_name)
 
     def auto_end_from_start(self, start_idx: int) -> None:
+        """Implement auto end from start logic."""
         lap_ms = self._extract_time_ms(self.current_video_original) if self.current_video_original is not None else None
         if lap_ms is None:
             self.set_endframe(self.total_frames - 1, save=True)
@@ -1534,6 +1577,7 @@ class VideoPreviewController:
         self.set_endframe(int(start_idx) + int(dur_frames), save=True)
 
     def save_endframe_from_ui(self) -> None:
+        """Save data endframe from ui."""
         try:
             self.set_endframe(int(self.end_var.get()), save=True)
         except Exception:
@@ -1541,6 +1585,7 @@ class VideoPreviewController:
 
     @staticmethod
     def safe_unlink(p: Path) -> None:
+        """Implement safe unlink logic."""
         try:
             if p.exists():
                 p.unlink()
@@ -1548,6 +1593,7 @@ class VideoPreviewController:
             pass
 
     def close_preview_video(self) -> None:
+        """Close preview video."""
         self.is_playing = False
         self.current_frame_idx = 0
         self.current_video_original = None
@@ -1573,6 +1619,7 @@ class VideoPreviewController:
 
     @staticmethod
     def try_open_video(path: Path) -> tuple[cv2.VideoCapture | None, str]:
+        """Implement try open video logic."""
         cv2 = _require_cv2()
         c = cv2.VideoCapture(str(path))
         if c is None or not c.isOpened():
@@ -1588,6 +1635,7 @@ class VideoPreviewController:
         return c, "ok"
 
     def render_image_from_frame(self, frame) -> None:
+        """Render image from frame."""
         cv2 = _require_cv2()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
@@ -1600,6 +1648,7 @@ class VideoPreviewController:
         self.preview_label.config(image=self.tk_img, text="")
 
     def seek_and_read(self, idx: int) -> bool:
+        """Implement seek and read logic."""
         cv2 = _require_cv2()
         if self.cap is None:
             return False
@@ -1630,6 +1679,7 @@ class VideoPreviewController:
         return True
 
     def read_next_frame(self) -> bool:
+        """Read next frame."""
         cv2 = _require_cv2()
         if self.cap is None:
             return False
@@ -1654,6 +1704,7 @@ class VideoPreviewController:
         return True
 
     def render_frame(self, idx: int, force: bool = False) -> None:
+        """Render frame."""
         now = time.time()
         if (not force) and (now - self.last_render_ts) < 0.02:
             return
@@ -1661,6 +1712,7 @@ class VideoPreviewController:
         self.seek_and_read(idx)
 
     def play_tick(self) -> None:
+        """Implement play tick logic."""
         if not self.is_playing:
             return
 
@@ -1676,6 +1728,7 @@ class VideoPreviewController:
         self.root.after(delay, self.play_tick)
 
     def on_play_pause(self) -> None:
+        """Implement on play pause logic."""
         if self.cap is None:
             return
         self.is_playing = not self.is_playing
@@ -1684,6 +1737,7 @@ class VideoPreviewController:
             self.play_tick()
 
     def on_prev_frame(self) -> None:
+        """Implement on prev frame logic."""
         if self.cap is None:
             return
         self.is_playing = False
@@ -1691,6 +1745,7 @@ class VideoPreviewController:
         self.render_frame(self.current_frame_idx - 1, force=True)
 
     def on_next_frame(self) -> None:
+        """Implement on next frame logic."""
         if self.cap is None:
             return
         self.is_playing = False
@@ -1698,9 +1753,11 @@ class VideoPreviewController:
         self.render_frame(self.current_frame_idx + 1, force=True)
 
     def on_scrub_press(self, _event=None) -> None:
+        """Implement on scrub press logic."""
         self.scrub_is_dragging = True
 
     def on_scrub_release(self, _event=None) -> None:
+        """Implement on scrub release logic."""
         self.scrub_is_dragging = False
         if self.cap is None:
             return
@@ -1709,12 +1766,14 @@ class VideoPreviewController:
         self.render_frame(int(self.scrub.get()), force=True)
 
     def on_scrub_move(self, _event=None) -> None:
+        """Implement on scrub move logic."""
         if self.cap is None:
             return
         if self.scrub_is_dragging:
             self.render_frame(int(self.scrub.get()), force=False)
 
     def set_start_here(self) -> None:
+        """Implement set start here logic."""
         if self.current_video_original is None:
             return
         self.startframes_by_name[self.current_video_original.name] = int(self.current_frame_idx)
@@ -1722,6 +1781,7 @@ class VideoPreviewController:
         self.auto_end_from_start(int(self.current_frame_idx))
 
     def cut_current_video(self) -> None:
+        """Implement cut current video logic."""
         if self.current_video_original is None:
             return
         if not self.ffmpeg_exists():
@@ -1901,6 +1961,7 @@ class VideoPreviewController:
             self.lbl_loaded.config(text=cut_fail_msg)
 
     def start_crop_for_video(self, video_path: Path) -> None:
+        """Start crop for video."""
         cv2 = _require_cv2()
         self.close_preview_video()
 
@@ -1948,6 +2009,7 @@ class VideoPreviewController:
         self._show_preview_controls(True)
 
         def _late_render() -> None:
+            """Implement late render logic."""
             self.render_frame(self.current_frame_idx, force=True)
 
         self.root.after(60, _late_render)

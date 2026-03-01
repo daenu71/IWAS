@@ -1,3 +1,5 @@
+"""HUD layout activation and filtering helpers."""
+
 # hud_layout.py
 from typing import Dict, List, Tuple
 
@@ -6,7 +8,9 @@ HudBox = Tuple[int, int, int, int]
 
 
 class HudLayoutItem:
+    """Container and behavior for Hud Layout Item."""
     def __init__(self, name: str, box: HudBox):
+        """Implement init logic."""
         self.name = name
         self.box = box
 

@@ -1,3 +1,5 @@
+"""Runtime module for ui/preview/png_preview.py."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,6 +15,7 @@ from core.output_geometry import build_output_geometry_for_size
 
 def pil_paste_clipped(dst: Image.Image, src: Image.Image, region_box: tuple[int, int, int, int], pos_xy: tuple[int, int]) -> None:
     # region_box is the allowed region in dst coords.
+    """Implement pil paste clipped logic."""
     rx0, ry0, rx1, ry1 = region_box
     px, py = pos_xy
 
@@ -45,6 +48,7 @@ def _png_region_out(
     hud_w: int,
     layout_config: Any | None = None,
 ) -> tuple[int, int, int, int]:
+    """Implement png region out logic."""
     try:
         geom = build_output_geometry_for_size(
             out_w=int(out_w),
@@ -64,6 +68,7 @@ def _png_region_out(
 
 
 class PngPreviewController:
+    """Container and behavior for Png Preview Controller."""
     def __init__(
         self,
         canvas: tk.Canvas,
@@ -81,6 +86,7 @@ class PngPreviewController:
         on_preview_geometry: Callable[[Any, int, int, float, int, int, int], None] | None = None,
         on_video_transform_changed: Callable[[], None] | None = None,
     ) -> None:
+        """Implement init logic."""
         self.canvas = canvas
         self._get_preview_area_size = get_preview_area_size
         self._get_output_format = get_output_format
@@ -128,6 +134,7 @@ class PngPreviewController:
         self.png_right_start = -1
 
     def _notify_video_transform_changed(self) -> None:
+        """Implement notify video transform changed logic."""
         if self._on_video_transform_changed is None:
             return
         try:
@@ -136,6 +143,7 @@ class PngPreviewController:
             pass
 
     def _png_dbg(self, msg: str) -> None:
+        """Implement png dbg logic."""
         if not self.PNG_DEBUG:
             return
         try:
@@ -148,6 +156,7 @@ class PngPreviewController:
             pass
 
     def _layout_config(self) -> Any | None:
+        """Implement layout config logic."""
         try:
             output = self._get_output_format()
         except Exception:
@@ -155,6 +164,7 @@ class PngPreviewController:
         return getattr(output, "layout_config", None)
 
     def _sync_state_from_video_transform(self) -> None:
+        """Synchronize state from video transform."""
         cfg = self._layout_config()
         vt = getattr(cfg, "video_transform", None) if cfg is not None else None
         if vt is None:
@@ -190,6 +200,7 @@ class PngPreviewController:
             self.png_state[side]["fit_to_height"] = bool(fit_to_height)
 
     def _sync_video_transform_from_state(self, side: str = "L") -> None:
+        """Synchronize video transform from state."""
         cfg = self._layout_config()
         vt = getattr(cfg, "video_transform", None) if cfg is not None else None
         if vt is None:
@@ -262,9 +273,11 @@ class PngPreviewController:
             self._notify_video_transform_changed()
 
     def png_load_state_for_current(self) -> None:
+        """Implement png load state for current logic."""
         self._sync_state_from_video_transform()
 
     def png_save_state_for_current(self) -> None:
+        """Implement png save state for current logic."""
         self._sync_state_from_video_transform()
         key = self._get_png_view_key()
         png_view_data = self._load_png_view_data()
@@ -284,6 +297,7 @@ class PngPreviewController:
 
     def compute_frame_rect_for_preview(self) -> tuple[int, int, int, int, float, int, int, int]:
         # Returns: x0,y0,x1,y1,scale,out_w,out_h,hud_w
+        """Compute frame rect for preview."""
         area_w_raw, area_h_raw = self._get_preview_area_size()
         area_w = max(200, int(area_w_raw))
         area_h = max(200, int(area_h_raw))
@@ -322,6 +336,7 @@ class PngPreviewController:
         enforce_cover: bool = True,
         enforce_cover_zoom: bool = True,
     ) -> None:
+        """Implement clamp png cover logic."""
         try:
             self._png_dbg(
                 f"CLAMP ENTER side={side} "
@@ -435,6 +450,7 @@ class PngPreviewController:
             pass
 
     def render_png_preview(self, force_reload: bool = False) -> None:
+        """Render png preview."""
         if not self._is_png_mode():
             return
         self._sync_state_from_video_transform()
@@ -514,6 +530,7 @@ class PngPreviewController:
         draw_h = max(1, y1 - y0)
 
         def out_rect_to_frame(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
+            """Implement out rect to frame logic."""
             fx0 = int(round(float(x) * float(scale)))
             fy0 = int(round(float(y) * float(scale)))
             fx1 = int(round(float(x + w) * float(scale)))
@@ -580,6 +597,7 @@ class PngPreviewController:
 
         def render_side(side: str, src_img: Image.Image, region: tuple[int, int, int, int]) -> None:
             # Zoom/Offset sind in Output-Pixeln gespeichert (stabil, egal wie gross das App-Fenster ist)
+            """Render side."""
             rx0, ry0, rx1, ry1 = region
             rw = max(1, rx1 - rx0)
             rh = max(1, ry1 - ry0)
@@ -707,6 +725,7 @@ class PngPreviewController:
         self.canvas._tk_img = tk_img
 
     def png_hit_side(self, x: int, y: int) -> str:
+        """Implement png hit side logic."""
         if not bool(self.png_frame_last.get("valid")):
             return ""
         if x < int(self.png_frame_last["x0"]) or x > int(self.png_frame_last["x1"]):
@@ -730,6 +749,7 @@ class PngPreviewController:
         return ""
 
     def png_on_wheel(self, e: Any) -> None:
+        """Implement png on wheel logic."""
         if not self._is_png_mode():
             return
         self._sync_state_from_video_transform()
@@ -833,6 +853,7 @@ class PngPreviewController:
         self.render_png_preview(force_reload=False)
 
     def png_on_down(self, e: Any) -> None:
+        """Implement png on down logic."""
         if not self._is_png_mode():
             return
         self._sync_state_from_video_transform()
@@ -845,6 +866,7 @@ class PngPreviewController:
         self.png_state["drag_y"] = int(e.y)
 
     def png_on_move(self, e: Any) -> None:
+        """Implement png on move logic."""
         if not self._is_png_mode():
             return
         self._sync_state_from_video_transform()
@@ -884,6 +906,7 @@ class PngPreviewController:
         self.render_png_preview(force_reload=False)
 
     def png_on_up(self, _e: Any = None) -> None:
+        """Implement png on up logic."""
         try:
             self._png_dbg("UP ENTER")
         except Exception:
@@ -940,6 +963,7 @@ class PngPreviewController:
         self.render_png_preview(force_reload=False)
 
     def _fit_video_both_for_mode(self, fit_button_mode: str) -> None:
+        """Implement fit video both for mode logic."""
         if not self._is_png_mode():
             return
         self._sync_state_from_video_transform()
@@ -962,6 +986,7 @@ class PngPreviewController:
             fit_mode = "fit_height"
 
         def fit_scale_pct_for(side: str, img: Image.Image) -> int:
+            """Implement fit scale pct for logic."""
             rx0, ry0, rx1, ry1 = _png_region_out(side, out_w, out_h, hud_w, layout_config=layout_config)
             rw = max(1, int(rx1 - rx0))
             rh = max(1, int(ry1 - ry0))
@@ -1016,12 +1041,15 @@ class PngPreviewController:
         self.render_png_preview(force_reload=False)
 
     def fit_video_for_LR(self) -> None:
+        """Implement fit video for LR logic."""
         self._fit_video_both_for_mode("fit_height")
 
     def fit_video_for_TB(self) -> None:
+        """Implement fit video for TB logic."""
         self._fit_video_both_for_mode("fit_width")
 
     def png_fit_to_height_both(self) -> None:
+        """Implement png fit to height both logic."""
         layout_mode = "LR"
         try:
             cfg = self._layout_config()

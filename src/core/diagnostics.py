@@ -1,3 +1,5 @@
+"""Diagnostics bundle export and environment risk detection."""
+
 from __future__ import annotations
 
 import json
@@ -17,6 +19,7 @@ _RUN_META_RE = re.compile(r"^run_\d{4}_meta\.json$", re.IGNORECASE)
 
 
 def _safe_resolve(path: Path) -> Path:
+    """Implement safe resolve logic."""
     try:
         return path.expanduser().resolve()
     except Exception:
@@ -27,11 +30,13 @@ def _safe_resolve(path: Path) -> Path:
 
 
 def _norm_case_path_text(path: Path) -> str:
+    """Implement norm case path text logic."""
     raw = str(_safe_resolve(path))
     return raw.replace("/", "\\").rstrip("\\").lower()
 
 
 def _path_within(path: Path, root: Path) -> bool:
+    """Implement path within logic."""
     path_text = _norm_case_path_text(path)
     root_text = _norm_case_path_text(root)
     if not root_text:
@@ -40,10 +45,12 @@ def _path_within(path: Path, root: Path) -> bool:
 
 
 def collect_onedrive_roots() -> list[Path]:
+    """Collect onedrive roots."""
     roots: list[Path] = []
     seen: set[str] = set()
 
     def _add(candidate: Path | None) -> None:
+        """Implement add logic."""
         if candidate is None:
             return
         resolved = _safe_resolve(candidate)
@@ -82,6 +89,7 @@ def collect_onedrive_roots() -> list[Path]:
 
 
 def is_onedrive_sync_path(path: str | Path | None, *, roots: Sequence[Path] | None = None) -> bool:
+    """Return whether onedrive sync path."""
     raw = str(path or "").strip()
     if not raw:
         return False
@@ -94,6 +102,7 @@ def is_onedrive_sync_path(path: str | Path | None, *, roots: Sequence[Path] | No
 
 
 def detect_onedrive_risky_paths(paths: Iterable[str | Path | None]) -> list[Path]:
+    """Detect onedrive risky paths."""
     roots = collect_onedrive_roots()
     risky: list[Path] = []
     seen: set[str] = set()
@@ -112,10 +121,12 @@ def detect_onedrive_risky_paths(paths: Iterable[str | Path | None]) -> list[Path
 
 
 def _candidate_log_dirs(project_root: Path) -> list[Path]:
+    """Implement candidate log dirs logic."""
     out: list[Path] = []
     seen: set[str] = set()
 
     def _add(path: Path) -> None:
+        """Implement add logic."""
         resolved = _safe_resolve(path)
         key = _norm_case_path_text(resolved)
         if key in seen:
@@ -140,6 +151,7 @@ def _candidate_log_dirs(project_root: Path) -> list[Path]:
 
 
 def _collect_recent_logs(project_root: Path, *, max_files: int = 16) -> list[Path]:
+    """Collect recent logs."""
     candidates: list[Path] = []
     seen: set[str] = set()
     for log_dir in _candidate_log_dirs(project_root):
@@ -163,6 +175,7 @@ def _collect_recent_logs(project_root: Path, *, max_files: int = 16) -> list[Pat
             candidates.append(child)
 
     def _mtime(path: Path) -> float:
+        """Implement mtime logic."""
         try:
             return float(path.stat().st_mtime)
         except Exception:
@@ -173,6 +186,7 @@ def _collect_recent_logs(project_root: Path, *, max_files: int = 16) -> list[Pat
 
 
 def _find_latest_session_dir(storage_dir: Path) -> Path | None:
+    """Find latest session dir."""
     try:
         if not storage_dir.is_dir():
             return None
@@ -198,6 +212,7 @@ def _find_latest_session_dir(storage_dir: Path) -> Path | None:
 
 
 def _read_redacted_text(path: Path) -> str:
+    """Read redacted text."""
     text = path.read_text(encoding="utf-8", errors="replace")
     out_lines: list[str] = []
     for line in text.splitlines():
@@ -224,6 +239,7 @@ def _read_redacted_text(path: Path) -> str:
 
 
 def _unique_arcname(base_name: str, used: set[str]) -> str:
+    """Implement unique arcname logic."""
     candidate = base_name
     idx = 2
     while candidate in used:
@@ -245,7 +261,9 @@ def export_diagnostics_bundle(
     output_video_dir: str | Path | None = None,
     progress_cb: Callable[[str], None] | None = None,
 ) -> Path:
+    """Implement export diagnostics bundle logic."""
     def _progress(text: str) -> None:
+        """Implement progress logic."""
         if callable(progress_cb):
             try:
                 progress_cb(str(text))

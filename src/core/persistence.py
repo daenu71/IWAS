@@ -1,3 +1,5 @@
+"""Persistence layer for ini/json settings and runtime state."""
+
 import configparser
 import json
 import logging
@@ -10,6 +12,7 @@ _LOG = logging.getLogger(__name__)
 
 
 def _find_project_root(script_path: Path) -> Path:
+    """Find project root."""
     try:
         return get_resource_path()
     except Exception:
@@ -68,6 +71,7 @@ _VIDEO_CUT_LOGGED_ONCE = False
 
 
 def load_startframes() -> dict[str, int]:
+    """Load data startframes."""
     try:
         if startframes_file.exists():
             data = json.loads(startframes_file.read_text(encoding="utf-8"))
@@ -85,6 +89,7 @@ def load_startframes() -> dict[str, int]:
 
 
 def save_startframes(d: dict[str, int]) -> None:
+    """Save data startframes."""
     try:
         startframes_file.write_text(json.dumps(d, indent=2), encoding="utf-8")
     except Exception:
@@ -92,6 +97,7 @@ def save_startframes(d: dict[str, int]) -> None:
 
 
 def load_endframes() -> dict[str, int]:
+    """Load data endframes."""
     try:
         if endframes_file.exists():
             data = json.loads(endframes_file.read_text(encoding="utf-8"))
@@ -109,6 +115,7 @@ def load_endframes() -> dict[str, int]:
 
 
 def save_endframes(d: dict[str, int]) -> None:
+    """Save data endframes."""
     try:
         endframes_file.write_text(json.dumps(d, indent=2), encoding="utf-8")
     except Exception:
@@ -116,6 +123,7 @@ def save_endframes(d: dict[str, int]) -> None:
 
 
 def cfg_get(section: str, key: str, fallback: str) -> str:
+    """Implement cfg get logic."""
     try:
         return cfg.get(section, key, fallback=fallback)
     except Exception:
@@ -123,6 +131,7 @@ def cfg_get(section: str, key: str, fallback: str) -> str:
 
 
 def _cfg_bool(section: str, key: str, fallback: bool) -> bool:
+    """Implement cfg bool logic."""
     try:
         raw = str(cfg_get(section, key, "true" if fallback else "false")).strip().lower()
     except Exception:
@@ -135,6 +144,7 @@ def _cfg_bool(section: str, key: str, fallback: bool) -> bool:
 
 
 def _coerce_bool(raw: object, fallback: bool) -> bool:
+    """Coerce bool."""
     if isinstance(raw, bool):
         return bool(raw)
     try:
@@ -149,6 +159,7 @@ def _coerce_bool(raw: object, fallback: bool) -> bool:
 
 
 def _coerce_int_in_range(raw: object, fallback: int, *, min_value: int, max_value: int) -> int:
+    """Coerce int in range."""
     try:
         value = int(float(str(raw).strip()))
     except Exception:
@@ -161,6 +172,7 @@ def _coerce_int_in_range(raw: object, fallback: int, *, min_value: int, max_valu
 
 
 def _coerce_str(raw: object, fallback: str) -> str:
+    """Coerce str."""
     try:
         return str(raw).strip()
     except Exception:
@@ -168,6 +180,7 @@ def _coerce_str(raw: object, fallback: str) -> str:
 
 
 def _persist_coaching_storage_dir_if_user_empty(effective_dir: str) -> None:
+    """Implement persist coaching storage dir if user empty logic."""
     user_cp = configparser.ConfigParser()
     try:
         if user_ini.exists():
@@ -205,6 +218,7 @@ def resolve_coaching_storage_dir(
     *,
     persist_if_user_empty: bool = False,
 ) -> str:
+    """Resolve coaching storage dir."""
     if raw_value is None:
         raw_value = cfg_get(
             _COACHING_RECORDING_SECTION,
@@ -228,6 +242,7 @@ def resolve_coaching_storage_dir(
 
 
 def load_coaching_recording_settings() -> dict[str, object]:
+    """Load data coaching recording settings."""
     return {
         "coaching_recording_enabled": bool(
             _cfg_bool(
@@ -292,6 +307,7 @@ def load_coaching_recording_settings() -> dict[str, object]:
 
 
 def save_coaching_recording_settings(values: dict[str, object]) -> dict[str, object]:
+    """Save data coaching recording settings."""
     current = load_coaching_recording_settings()
     merged: dict[str, object] = dict(current)
     incoming = values if isinstance(values, dict) else {}
@@ -380,6 +396,7 @@ def save_coaching_recording_settings(values: dict[str, object]) -> dict[str, obj
 
 
 def load_png_view() -> dict:
+    """Load data png view."""
     try:
         if png_view_file.exists():
             data = json.loads(png_view_file.read_text(encoding="utf-8"))
@@ -391,6 +408,7 @@ def load_png_view() -> dict:
 
 
 def save_png_view(data: dict) -> None:
+    """Save data png view."""
     try:
         png_view_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
@@ -398,6 +416,7 @@ def save_png_view(data: dict) -> None:
 
 
 def load_hud_layout() -> dict:
+    """Load data hud layout."""
     try:
         if hud_layout_file.exists():
             data = json.loads(hud_layout_file.read_text(encoding="utf-8"))
@@ -409,6 +428,7 @@ def load_hud_layout() -> dict:
 
 
 def save_hud_layout(data: dict) -> None:
+    """Save data hud layout."""
     try:
         hud_layout_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
@@ -417,6 +437,7 @@ def save_hud_layout(data: dict) -> None:
 
 def load_output_format() -> dict[str, str]:
     # Reihenfolge: config/output_format.json (User-Wahl) -> defaults.ini -> Fallback
+    """Load data output format."""
     out: dict[str, str] = {
         "aspect": cfg_get("video_compare", "output_aspect", "32:9"),
         "preset": cfg_get("video_compare", "output_preset", "5120x1440"),
@@ -445,6 +466,7 @@ def load_output_format() -> dict[str, str]:
 
 
 def save_output_format(d: dict[str, str]) -> None:
+    """Save data output format."""
     try:
         merged: dict[str, str] = {}
         if output_format_file.exists():
@@ -465,6 +487,7 @@ def save_output_format(d: dict[str, str]) -> None:
 
 
 def _cfg_float(section: str, key: str, fallback: float) -> float:
+    """Implement cfg float logic."""
     try:
         v = str(cfg_get(section, key, str(fallback))).strip()
         return float(v) if v else float(fallback)
@@ -473,6 +496,7 @@ def _cfg_float(section: str, key: str, fallback: float) -> float:
 
 
 def _cfg_float_opt(section: str, key: str) -> float | None:
+    """Implement cfg float opt logic."""
     try:
         v = str(cfg_get(section, key, "")).strip()
         return float(v) if v else None
@@ -481,6 +505,7 @@ def _cfg_float_opt(section: str, key: str) -> float | None:
 
 
 def _cfg_int(section: str, key: str, fallback: int) -> int:
+    """Implement cfg int logic."""
     try:
         v = str(cfg_get(section, key, str(fallback))).strip()
         return int(float(v)) if v else int(fallback)
@@ -489,6 +514,7 @@ def _cfg_int(section: str, key: str, fallback: int) -> int:
 
 
 def _cfg_int_opt(section: str, key: str) -> int | None:
+    """Implement cfg int opt logic."""
     try:
         v = str(cfg_get(section, key, "")).strip()
         return int(float(v)) if v else None
@@ -497,6 +523,7 @@ def _cfg_int_opt(section: str, key: str) -> int | None:
 
 
 def _append_log_line(log_file: Path | None, line: str) -> None:
+    """Implement append log line logic."""
     if log_file is None:
         return
     try:
@@ -508,6 +535,7 @@ def _append_log_line(log_file: Path | None, line: str) -> None:
 
 
 def _parse_non_negative_finite_float(raw: str) -> tuple[float | None, str | None]:
+    """Parse non negative finite float."""
     s = str(raw).strip()
     try:
         value = float(s)
@@ -521,6 +549,7 @@ def _parse_non_negative_finite_float(raw: str) -> tuple[float | None, str | None
 
 
 def _log_video_cut_once(values: dict[str, float], log_file: Path | None = None) -> None:
+    """Implement log video cut once logic."""
     global _VIDEO_CUT_LOGGED_ONCE
     if _VIDEO_CUT_LOGGED_ONCE:
         return
@@ -535,6 +564,7 @@ def _log_video_cut_once(values: dict[str, float], log_file: Path | None = None) 
 
 
 def load_video_cut_settings(*, video_mode: str, log_file: Path | None = None) -> dict[str, float]:
+    """Load data video cut settings."""
     mode = str(video_mode or "full").strip().lower()
     if mode not in ("full", "cut"):
         mode = "full"

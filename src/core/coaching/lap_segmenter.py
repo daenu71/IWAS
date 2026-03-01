@@ -1,3 +1,5 @@
+"""Runtime module for core/coaching/lap_segmenter.py."""
+
 from __future__ import annotations
 
 from collections import Counter
@@ -32,6 +34,7 @@ _TRACK_SURFACE_ON_TRACK_NAMES: set[str] = {
 
 
 class LapSegmenter:
+    """Container and behavior for Lap Segmenter."""
     def __init__(
         self,
         *,
@@ -41,6 +44,7 @@ class LapSegmenter:
         min_valid_lap_time_s: float = 30.0,
         min_valid_lap_samples: int = 60,
     ) -> None:
+        """Implement init logic."""
         self.use_ontrack_gate = bool(use_ontrack_gate)
         self.wrap_hi = float(wrap_hi)
         self.wrap_lo = float(wrap_lo)
@@ -50,6 +54,7 @@ class LapSegmenter:
         self.reset()
 
     def reset(self, run_id: int | None = None) -> None:
+        """Implement reset logic."""
         self.run_id = run_id
         self.last_lap: int | None = None
         self.last_lapdistpct: float | None = None
@@ -76,6 +81,7 @@ class LapSegmenter:
         sample_index: int,
         now_ts: float | None = None,
     ) -> list[dict[str, Any]]:
+        """Update."""
         sample_dict = sample if isinstance(sample, dict) else {}
         events: list[dict[str, Any]] = []
 
@@ -135,6 +141,7 @@ class LapSegmenter:
         return events
 
     def finalize(self, last_sample_index: int, now_ts: float | None = None) -> list[dict[str, Any]]:
+        """Implement finalize logic."""
         close_event = self._close_segment(
             end_sample_index=last_sample_index,
             end_ts=now_ts,
@@ -146,11 +153,13 @@ class LapSegmenter:
         return [close_event]
 
     def _should_consider_wrap(self, counter_key: str | None, counter_value: int | None) -> bool:
+        """Return whether consider wrap."""
         if counter_key is None or counter_value is None:
             return True
         return not self._counter_change_seen
 
     def _should_trigger_wrap(self, lapdistpct: float | None, is_on_track: bool | None) -> bool:
+        """Return whether trigger wrap."""
         if lapdistpct is None:
             return False
         if self._wrap_cooldown_active:
@@ -165,6 +174,7 @@ class LapSegmenter:
         return True
 
     def _is_wrap_cooldown_released(self, lapdistpct: float | None) -> bool:
+        """Return whether wrap cooldown released."""
         if lapdistpct is None:
             return False
         if lapdistpct <= 0.1:
@@ -172,6 +182,7 @@ class LapSegmenter:
         return lapdistpct < self.wrap_hi
 
     def _derive_next_lap_no(self, counter_value: int | None) -> int | None:
+        """Implement derive next lap no logic."""
         if counter_value is not None:
             if self.current_lap_no is not None and counter_value == self.current_lap_no:
                 return self.current_lap_no + 1
@@ -181,6 +192,7 @@ class LapSegmenter:
         return self.current_lap_no + 1
 
     def _start_segment(self, sample_index: int, now_ts: float | None, lap_no: int | None) -> None:
+        """Start segment."""
         self.current_lap_start_index = int(sample_index)
         self.current_lap_start_ts = now_ts
         self.current_lap_no = lap_no
@@ -193,6 +205,7 @@ class LapSegmenter:
         end_ts: float | None,
         reason: str,
     ) -> dict[str, Any] | None:
+        """Close segment."""
         start_index = self.current_lap_start_index
         if start_index is None:
             return None
@@ -304,6 +317,7 @@ class LapSegmenter:
         is_on_track_car: bool | None,
         on_pit_road: bool | None,
     ) -> None:
+        """Implement accumulate current lap sample logic."""
         if self.current_lap_start_index is None:
             return
         self.current_sample_count += 1
@@ -331,6 +345,7 @@ class LapSegmenter:
             self.current_incident_max = int(incident_count)
 
     def _reset_current_lap_meta(self) -> None:
+        """Implement reset current lap meta logic."""
         self.current_offtrack_surface = False
         self.current_sample_count = 0
         self.current_track_surface_min = None
@@ -341,6 +356,7 @@ class LapSegmenter:
 
     @staticmethod
     def _read_value(sample: dict[str, Any], key: str) -> Any:
+        """Read value."""
         raw = sample.get("raw")
         if isinstance(raw, dict) and key in raw:
             return raw.get(key)
@@ -348,6 +364,7 @@ class LapSegmenter:
 
     @staticmethod
     def _select_lap_counter(sample: dict[str, Any]) -> tuple[str | None, int | None]:
+        """Select lap counter."""
         lap = LapSegmenter._coerce_int(LapSegmenter._read_value(sample, "Lap"))
         if lap is not None:
             return ("Lap", lap)
@@ -358,6 +375,7 @@ class LapSegmenter:
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
+        """Coerce int."""
         try:
             return int(value)
         except Exception:
@@ -365,6 +383,7 @@ class LapSegmenter:
 
     @staticmethod
     def _coerce_float(value: Any) -> float | None:
+        """Coerce float."""
         try:
             return float(value)
         except Exception:
@@ -372,6 +391,7 @@ class LapSegmenter:
 
     @staticmethod
     def _coerce_bool(value: Any) -> bool | None:
+        """Coerce bool."""
         if isinstance(value, bool):
             return value
         if value is None:
@@ -382,6 +402,7 @@ class LapSegmenter:
             return None
 
     def _passes_lap_sanity(self, *, lap_time_s: float | None, sample_count: int) -> bool:
+        """Implement passes lap sanity logic."""
         if lap_time_s is None or lap_time_s < self.min_valid_lap_time_s:
             return False
         if sample_count < self.min_valid_lap_samples:
@@ -390,6 +411,7 @@ class LapSegmenter:
 
     @staticmethod
     def _compute_lap_time_s(start_ts: float | None, end_ts: float | None) -> float | None:
+        """Compute lap time s."""
         if start_ts is None or end_ts is None:
             return None
         lap_time_s = float(end_ts) - float(start_ts)
@@ -405,6 +427,7 @@ class LapSegmenter:
         is_on_track_car: bool | None = None,
         on_pit_road: bool | None = None,
     ) -> str:
+        """Implement classify track surface logic."""
         normalized = cls._normalize_enum_text(value)
         if normalized:
             if normalized in _TRACK_SURFACE_OFFTRACK_NAMES:
@@ -450,6 +473,7 @@ class LapSegmenter:
         return _TRACK_SURFACE_UNKNOWN
 
     def _apply_duplicate_lap_policy(self, new_segment: dict[str, Any]) -> None:
+        """Apply duplicate lap policy."""
         lap_no = self._coerce_int(new_segment.get("lap_no"))
         if lap_no is None:
             return
@@ -464,6 +488,7 @@ class LapSegmenter:
 
     @classmethod
     def _segment_duration_sort_key(cls, segment: dict[str, Any]) -> tuple[float, int]:
+        """Implement segment duration sort key logic."""
         lap_time_s = cls._coerce_float(segment.get("lap_time_s"))
         if lap_time_s is None:
             start_ts = cls._coerce_float(segment.get("start_ts"))
@@ -480,6 +505,7 @@ class LapSegmenter:
 
     @staticmethod
     def _mark_as_fragment(segment: dict[str, Any], *, lap_no: int | None = None, clear_lap_no: bool = False) -> None:
+        """Implement mark as fragment logic."""
         if lap_no is None:
             lap_no = LapSegmenter._coerce_int(segment.get("lap_no"))
         segment["lap_complete"] = False
@@ -498,6 +524,7 @@ class LapSegmenter:
             segment["reason"] = f"{reason}|fragment_duplicate_lap_no" if reason else "fragment_duplicate_lap_no"
 
     def _debug_log_surface_values_once(self) -> None:
+        """Implement debug log surface values once logic."""
         if not self._debug_enabled or self._debug_surface_values_logged:
             return
         self._debug_surface_values_logged = True
@@ -508,11 +535,13 @@ class LapSegmenter:
 
     @staticmethod
     def _is_debug_enabled() -> bool:
+        """Return whether debug enabled."""
         value = os.getenv("IWAS_COACHING_DEBUG_LAP_SEGMENTER", "")
         return value.strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _normalize_enum_text(value: Any) -> str:
+        """Normalize enum text."""
         if value is None:
             return ""
         return "".join(ch.lower() for ch in str(value) if ch.isalnum())

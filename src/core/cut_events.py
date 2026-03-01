@@ -1,3 +1,5 @@
+"""Curve/cut event detection and segment mapping helpers."""
+
 from __future__ import annotations
 
 import bisect
@@ -9,6 +11,7 @@ from typing import Any, Sequence
 
 @dataclass(frozen=True)
 class FrameSegment:
+    """Container and behavior for Frame Segment."""
     start_frame: int
     end_frame: int
     start_time_s: float
@@ -17,15 +20,18 @@ class FrameSegment:
 
 @dataclass(frozen=True)
 class CurveSegmentStats:
+    """Container and behavior for Curve Segment Stats."""
     merge_count: int = 0
 
 
 @dataclass(frozen=True)
 class FrameMappingStats:
+    """Container and behavior for Frame Mapping Stats."""
     merge_count: int = 0
 
 
 def _log_line(logger: Any, level: str, message: str) -> None:
+    """Implement log line logic."""
     if logger is not None:
         try:
             fn = getattr(logger, level, None)
@@ -53,6 +59,7 @@ def _log_line(logger: Any, level: str, message: str) -> None:
 
 
 def _detect_full_throttle_threshold(throttle: Sequence[float]) -> float:
+    """Detect full throttle threshold."""
     max_value = float("-inf")
     for raw in throttle:
         try:
@@ -74,6 +81,7 @@ def _append_or_merge_segment(
     end_s: float,
     min_between_curves_s: float,
 ) -> bool:
+    """Implement append or merge segment logic."""
     if end_s < start_s:
         end_s = start_s
     if not segments:
@@ -93,6 +101,7 @@ def _append_or_merge_segment(
 def _validate_time_segments_sorted(
     segments: Sequence[tuple[float, float]],
 ) -> list[tuple[float, float]]:
+    """Validate time segments sorted."""
     normalized: list[tuple[float, float]] = []
     prev_start: float | None = None
     for idx, raw in enumerate(segments):
@@ -118,6 +127,7 @@ def _append_or_merge_frame_segment(
     mapped: list[FrameSegment],
     candidate: FrameSegment,
 ) -> bool:
+    """Implement append or merge frame segment logic."""
     if not mapped:
         mapped.append(candidate)
         return False
@@ -148,6 +158,7 @@ def map_time_segments_to_frame_indices(
     frame_time_s: Sequence[float],
     logger: Any = None,
 ) -> list[FrameSegment]:
+    """Map time segments to frame indices."""
     mapped, _stats = map_time_segments_to_frame_indices_with_stats(
         segments=segments,
         frame_time_s=frame_time_s,
@@ -242,6 +253,7 @@ def map_time_segments_to_frames(
     num_frames: int | None = None,
     logger: Any = None,
 ) -> list[FrameSegment]:
+    """Map time segments to frames."""
     mapped, _stats = map_time_segments_to_frames_with_stats(
         segments=segments,
         fps=fps,
@@ -330,6 +342,7 @@ def detect_curve_segments(
     min_between_curves_s: float,
     logger: Any = None,
 ) -> list[tuple[float, float]]:
+    """Detect curve segments."""
     segments, _stats = detect_curve_segments_with_stats(
         time_s=time_s,
         throttle=throttle,
@@ -351,6 +364,7 @@ def detect_curve_segments_with_stats(
     min_between_curves_s: float,
     logger: Any = None,
 ) -> tuple[list[tuple[float, float]], CurveSegmentStats]:
+    """Detect curve segments with stats."""
     n = len(time_s)
     if len(throttle) != n or len(brake) != n:
         raise ValueError("time_s, throttle und brake muessen gleich lang sein.")
@@ -450,6 +464,7 @@ def detect_curve_segments_with_stats(
 
 
 def _selftest() -> None:
+    """Implement selftest logic."""
     seg1 = detect_curve_segments(
         time_s=[0, 1, 2, 3, 4, 5, 6],
         throttle=[100, 100, 20, 10, 30, 100, 100],

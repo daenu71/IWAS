@@ -1,3 +1,5 @@
+"""Runtime module for core/coaching/lap_metrics.py."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,6 +20,7 @@ Lap summary rules:
 
 @dataclass
 class LapSlice:
+    """Container and behavior for Lap Slice."""
     lap_no: int | None
     start_idx: int
     end_idx: int
@@ -32,6 +35,7 @@ class LapSlice:
     lap_offtrack: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "lap_no": self.lap_no,
             "start_idx": self.start_idx,
@@ -50,6 +54,7 @@ class LapSlice:
 
 @dataclass
 class RunLapMetrics:
+    """Container and behavior for Run Lap Metrics."""
     laps_completed: int = 0
     laps_including_current: int = 0
     best_valid_lap_s: float | None = None
@@ -62,6 +67,7 @@ class RunLapMetrics:
 
 @dataclass
 class _Boundary:
+    """Container and behavior for Boundary."""
     idx: int
     reason: str
     lap_no: int | None = None
@@ -76,6 +82,7 @@ def compute_run_lap_metrics(
     fallback_last_ts: float | None,
     meta_path: Path | None = None,
 ) -> RunLapMetrics:
+    """Compute run lap metrics."""
     if parquet_path is None or not parquet_path.exists():
         return _compute_from_meta_only(
             run_meta=run_meta,
@@ -253,6 +260,7 @@ def _compute_from_meta_only(
     parquet_path: Path | None,
     meta_path: Path | None,
 ) -> RunLapMetrics:
+    """Compute from meta only."""
     lap_segments_raw = run_meta.get("lap_segments")
     lap_segments = [seg for seg in lap_segments_raw if isinstance(seg, dict)] if isinstance(lap_segments_raw, list) else []
     min_complete_samples = _min_complete_samples(sample_hz)
@@ -343,6 +351,7 @@ def _compute_from_meta_only(
 
 
 def _read_parquet_columns(path: Path) -> tuple[dict[str, list[Any]], int]:
+    """Read parquet columns."""
     import pyarrow.parquet as pq  # type: ignore
 
     requested = [
@@ -382,6 +391,7 @@ def _lap_completed_boundaries(
     lap_completed_values: list[Any],
     lap_last_time_values: list[Any],
 ) -> list[_Boundary]:
+    """Implement lap completed boundaries logic."""
     boundaries: list[_Boundary] = []
     prev_value: int | None = None
     for idx, raw in enumerate(lap_completed_values):
@@ -411,6 +421,7 @@ def _lap_dist_wrap_boundaries(
     lap_completed_values: list[Any],
     lap_last_time_values: list[Any],
 ) -> list[_Boundary]:
+    """Implement lap dist wrap boundaries logic."""
     boundaries: list[_Boundary] = []
     cooldown_active = False
     prev_pct: float | None = None
@@ -458,6 +469,7 @@ def _build_lap_slice(
     is_complete: bool,
     is_valid: bool | None,
 ) -> LapSlice:
+    """Build and return lap slice."""
     start_ts = _coerce_optional_float(_list_get(time_values, start_idx))
     end_ts = _coerce_optional_float(_list_get(time_values, end_idx))
     duration = _duration_from_bounds(start_ts, end_ts)
@@ -485,6 +497,7 @@ def _resolve_lap_offtrack(
     on_track_car_values: list[Any],
 ) -> tuple[bool, bool]:
     # Preferred source for offtrack is IsOnTrackCar; IsOnTrack is fallback when car signal is unavailable.
+    """Resolve lap offtrack."""
     car_offtrack, car_seen = _scan_offtrack_signal(on_track_car_values, seg.start_idx, seg.end_idx)
     if car_seen:
         return (car_offtrack, True)
@@ -495,6 +508,7 @@ def _resolve_lap_offtrack(
 
 
 def _scan_offtrack_signal(values: list[Any], start_idx: int, end_idx: int) -> tuple[bool, bool]:
+    """Scan offtrack signal."""
     if not values:
         return (False, False)
     seen = False
@@ -509,6 +523,7 @@ def _scan_offtrack_signal(values: list[Any], start_idx: int, end_idx: int) -> tu
 
 
 def _meta_lap_validity(*, run_meta: dict[str, Any], lap_no: int | None, lap_index: int) -> bool | None:
+    """Implement meta lap validity logic."""
     by_no = str(lap_no) if lap_no is not None else None
 
     lap_validity = run_meta.get("lap_validity")
@@ -556,6 +571,7 @@ def _meta_lap_validity(*, run_meta: dict[str, Any], lap_no: int | None, lap_inde
 
 
 def _extract_explicit_validity(item: dict[str, Any]) -> bool | None:
+    """Extract explicit validity."""
     if not isinstance(item, dict):
         return None
     for key in ("is_valid", "valid", "lap_valid"):
@@ -572,6 +588,7 @@ def _extract_explicit_validity(item: dict[str, Any]) -> bool | None:
 
 
 def _extract_explicit_offtrack(item: dict[str, Any]) -> bool | None:
+    """Extract explicit offtrack."""
     if not isinstance(item, dict):
         return None
     for key in ("lap_offtrack", "is_offtrack", "offtrack"):
@@ -594,6 +611,7 @@ def _select_time_series(
     session_time_values: list[Any],
     monotonic_values: list[Any],
 ) -> tuple[list[Any], str]:
+    """Select time series."""
     if _count_finite(ts_values) >= 2:
         return ts_values, "ts"
     if _count_finite(session_time_values) >= 2:
@@ -613,6 +631,7 @@ def _looks_like_lap_start(
     lap_dist_pct_values: list[Any],
     lap_current_time_values: list[Any],
 ) -> bool:
+    """Implement looks like lap start logic."""
     pct = _coerce_optional_float(_list_get(lap_dist_pct_values, idx))
     if pct is not None and 0.0 <= pct <= 0.08:
         return True
@@ -623,6 +642,7 @@ def _looks_like_lap_start(
 
 
 def _infer_lap_no_for_completed(end_idx: int, lap_values: list[Any], lap_completed_values: list[Any]) -> int | None:
+    """Implement infer lap no for completed logic."""
     lap_no = _coerce_optional_int(_list_get(lap_values, end_idx))
     if lap_no is not None:
         return lap_no
@@ -641,6 +661,7 @@ def _infer_current_lap_no(
     lap_completed_values: list[Any],
     complete_slices: list[LapSlice],
 ) -> int | None:
+    """Implement infer current lap no logic."""
     for raw in reversed(lap_values):
         lap_no = _coerce_optional_int(raw)
         if lap_no is not None:
@@ -657,6 +678,7 @@ def _infer_current_lap_no(
 
 
 def _passes_complete_threshold(seg: LapSlice, *, min_complete_samples: int) -> bool:
+    """Implement passes complete threshold logic."""
     if seg.sample_count < max(3, min_complete_samples):
         return False
     if seg.duration_s is not None and seg.duration_s < 1.0:
@@ -670,6 +692,7 @@ def _should_show_incomplete_lap(
     sample_hz: float | None,
     lap_dist_pct_values: list[Any],
 ) -> bool:
+    """Return whether show incomplete lap."""
     min_samples = _min_incomplete_samples(sample_hz)
     if seg.sample_count >= min_samples:
         return True
@@ -685,6 +708,7 @@ def _apply_lap_semantics(*, lap_slices: list[LapSlice], lap_dist_pct_values: lis
     # Source-of-truth flags used by the coaching browser:
     # - lap_incomplete: incomplete lap counter/coverage semantics.
     # - lap_offtrack: any in-lap offtrack sample (if signal exists), otherwise explicit metadata only.
+    """Apply lap semantics."""
     for seg in lap_slices:
         seg.lap_incomplete = not bool(seg.is_complete)
         seg.lap_offtrack = bool(seg.lap_offtrack)
@@ -732,6 +756,7 @@ def _lap_dist_pct_coverage(
     start_idx: int,
     end_idx: int,
 ) -> tuple[float | None, float | None, float | None, bool] | None:
+    """Implement lap dist pct coverage logic."""
     if not values or start_idx > end_idx:
         return None
     lo: float | None = None
@@ -753,6 +778,7 @@ def _lap_dist_pct_coverage(
 
 
 def _lap_dist_pct_range(values: list[Any], start_idx: int, end_idx: int) -> float | None:
+    """Implement lap dist pct range logic."""
     if start_idx > end_idx:
         return None
     lo: float | None = None
@@ -769,18 +795,21 @@ def _lap_dist_pct_range(values: list[Any], start_idx: int, end_idx: int) -> floa
 
 
 def _min_complete_samples(sample_hz: float | None) -> int:
+    """Implement min complete samples logic."""
     if sample_hz is None or sample_hz <= 0:
         return 10
     return max(10, int(round(sample_hz * 0.75)))
 
 
 def _min_incomplete_samples(sample_hz: float | None) -> int:
+    """Implement min incomplete samples logic."""
     if sample_hz is None or sample_hz <= 0:
         return 25
     return max(25, int(round(sample_hz * 3.0)))
 
 
 def _clean_lap_time_hint(values: list[Any], idx: int) -> float | None:
+    """Implement clean lap time hint logic."""
     value = _coerce_optional_float(_list_get(values, idx))
     if value is None:
         return None
@@ -790,6 +819,7 @@ def _clean_lap_time_hint(values: list[Any], idx: int) -> float | None:
 
 
 def _series_duration(values: list[Any]) -> float | None:
+    """Implement series duration logic."""
     finite = [v for raw in values if (v := _coerce_optional_float(raw)) is not None and math.isfinite(v)]
     if len(finite) < 2:
         return None
@@ -800,6 +830,7 @@ def _series_duration(values: list[Any]) -> float | None:
 
 
 def _max_finite(values: list[Any]) -> float | None:
+    """Implement max finite logic."""
     finite = [v for raw in values if (v := _coerce_optional_float(raw)) is not None and math.isfinite(v)]
     if not finite:
         return None
@@ -807,12 +838,14 @@ def _max_finite(values: list[Any]) -> float | None:
 
 
 def _duration_from_run_meta(run_meta: dict[str, Any]) -> float | None:
+    """Implement duration from run meta logic."""
     start = _coerce_optional_float(run_meta.get("start_session_time"))
     end = _coerce_optional_float(run_meta.get("end_session_time"))
     return _duration_from_bounds(start, end)
 
 
 def _duration_from_bounds(start: float | None, end: float | None) -> float | None:
+    """Implement duration from bounds logic."""
     if start is None or end is None:
         return None
     delta = end - start
@@ -822,6 +855,7 @@ def _duration_from_bounds(start: float | None, end: float | None) -> float | Non
 
 
 def _count_finite(values: list[Any]) -> int:
+    """Implement count finite logic."""
     count = 0
     for raw in values:
         value = _coerce_optional_float(raw)
@@ -831,6 +865,7 @@ def _count_finite(values: list[Any]) -> int:
 
 
 def _coerce_int_set(value: Any) -> set[int] | None:
+    """Coerce int set."""
     if not isinstance(value, (list, tuple, set)):
         return None
     result: set[int] = set()
@@ -842,6 +877,7 @@ def _coerce_int_set(value: Any) -> set[int] | None:
 
 
 def _list_get(values: list[Any], idx: int) -> Any:
+    """Implement list get logic."""
     if idx < 0:
         return None
     if idx >= len(values):
@@ -850,6 +886,7 @@ def _list_get(values: list[Any], idx: int) -> Any:
 
 
 def _path_mtime_ts(path: Path | None) -> float | None:
+    """Implement path mtime ts logic."""
     if path is None:
         return None
     try:
@@ -859,6 +896,7 @@ def _path_mtime_ts(path: Path | None) -> float | None:
 
 
 def _coerce_optional_float(value: Any) -> float | None:
+    """Coerce optional float."""
     try:
         result = float(value)
     except Exception:
@@ -869,6 +907,7 @@ def _coerce_optional_float(value: Any) -> float | None:
 
 
 def _coerce_optional_int(value: Any) -> int | None:
+    """Coerce optional int."""
     try:
         return int(value)
     except Exception:
@@ -876,6 +915,7 @@ def _coerce_optional_int(value: Any) -> int | None:
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:
+    """Coerce optional bool."""
     if isinstance(value, bool):
         return value
     if value is None:

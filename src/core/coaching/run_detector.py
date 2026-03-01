@@ -1,3 +1,5 @@
+"""Runtime module for core/coaching/run_detector.py."""
+
 from __future__ import annotations
 
 import logging
@@ -9,12 +11,14 @@ _LOG = logging.getLogger(__name__)
 
 
 class RunDetector:
+    """Container and behavior for Run Detector."""
     _INCOMPLETE_SPEED_THRESHOLD = 1.0
     STATE_IDLE = "IDLE"
     STATE_ARMED = "ARMED"
     STATE_ACTIVE = "ACTIVE"
 
     def __init__(self, session_type: str, *, incomplete_timeout_s: float = 25.0) -> None:
+        """Implement init logic."""
         self.session_type = str(session_type or "unknown").strip().lower() or "unknown"
         self.state = self.STATE_IDLE
         self.incomplete_timeout_s = float(incomplete_timeout_s)
@@ -29,6 +33,7 @@ class RunDetector:
         self._last_lap_change_ts: float | None = None
 
     def update(self, sample: dict[str, Any], now_ts: float) -> list[dict[str, Any]]:
+        """Update."""
         sample_dict = sample if isinstance(sample, dict) else {}
         events: list[dict[str, Any]] = []
 
@@ -40,6 +45,7 @@ class RunDetector:
         return events
 
     def _apply_start_rules(self, sample: dict[str, Any], now_ts: float, events: list[dict[str, Any]]) -> None:
+        """Apply start rules."""
         if self.state == self.STATE_ACTIVE:
             return
 
@@ -77,6 +83,7 @@ class RunDetector:
             _LOG.info("RunDetector: session_type unknown; automatic run start disabled")
 
     def _apply_end_rules(self, sample: dict[str, Any], now_ts: float, events: list[dict[str, Any]]) -> None:
+        """Apply end rules."""
         if self.state != self.STATE_ACTIVE:
             return
 
@@ -97,10 +104,12 @@ class RunDetector:
             self._end(now_ts, "incomplete_timeout", events)
 
     def _arm(self) -> None:
+        """Implement arm logic."""
         if self.state == self.STATE_IDLE:
             self.state = self.STATE_ARMED
 
     def _start(self, now_ts: float, reason: str, events: list[dict[str, Any]], sample: dict[str, Any]) -> None:
+        """Start."""
         if self.state == self.STATE_ACTIVE:
             return
         self.state = self.STATE_ACTIVE
@@ -118,6 +127,7 @@ class RunDetector:
         )
 
     def _end(self, now_ts: float, reason: str, events: list[dict[str, Any]]) -> None:
+        """Implement end logic."""
         if self.state != self.STATE_ACTIVE:
             return
         self.state = self.STATE_IDLE
@@ -135,6 +145,7 @@ class RunDetector:
 
     @staticmethod
     def _read_value(sample: dict[str, Any], key: str) -> Any:
+        """Read value."""
         if key in sample:
             return sample.get(key)
         raw = sample.get("raw")
@@ -144,6 +155,7 @@ class RunDetector:
 
     @staticmethod
     def _coerce_bool(value: Any) -> bool | None:
+        """Coerce bool."""
         if isinstance(value, bool):
             return value
         if value is None:
@@ -160,6 +172,7 @@ class RunDetector:
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
+        """Coerce int."""
         try:
             return int(value)
         except Exception:
@@ -167,18 +180,21 @@ class RunDetector:
 
     @staticmethod
     def _coerce_float(value: Any) -> float | None:
+        """Coerce float."""
         try:
             return float(value)
         except Exception:
             return None
 
     def _log_missing_signal_once(self, key: str, message: str) -> None:
+        """Implement log missing signal once logic."""
         if key in self._missing_signal_logs:
             return
         self._missing_signal_logs.add(key)
         _LOG.info(message)
 
     def _update_lap_progress(self, sample: dict[str, Any], now_ts: float) -> None:
+        """Update lap progress."""
         lap_completed = self._coerce_int(self._read_value(sample, "LapCompleted"))
         if lap_completed is None:
             return
@@ -191,6 +207,7 @@ class RunDetector:
             self._last_lap_change_ts = now_ts
 
     def _should_end_incomplete(self, sample: dict[str, Any], now_ts: float) -> bool:
+        """Return whether end incomplete."""
         if self._last_lap_change_ts is None:
             if self._coerce_int(self._read_value(sample, "LapCompleted")) is None:
                 self._log_missing_signal_once("LapCompleted", "RunDetector incomplete rule waiting for LapCompleted")
@@ -200,6 +217,7 @@ class RunDetector:
         return self._incomplete_secondary_ok(sample)
 
     def _incomplete_secondary_ok(self, sample: dict[str, Any]) -> bool:
+        """Implement incomplete secondary ok logic."""
         is_on_track_car = self._coerce_bool(self._read_value(sample, "IsOnTrackCar"))
         if is_on_track_car is False:
             return True
@@ -215,6 +233,7 @@ class RunDetector:
 
     @classmethod
     def _has_green_flag(cls, flags_value: Any) -> bool:
+        """Return whether green flag."""
         if isinstance(flags_value, int):
             return bool(flags_value & 0x00000004)
         if isinstance(flags_value, float):
@@ -227,6 +246,7 @@ class RunDetector:
 
     @classmethod
     def _has_checkered_flag(cls, flags_value: Any) -> bool:
+        """Return whether checkered flag."""
         if isinstance(flags_value, int):
             return bool(flags_value & 0x00000001)
         if isinstance(flags_value, float):
@@ -239,6 +259,7 @@ class RunDetector:
 
     @staticmethod
     def _is_race_session_state_start_ok(state_value: Any) -> bool:
+        """Return whether race session state start ok."""
         if isinstance(state_value, str):
             key = re.sub(r"[^a-z0-9]+", " ", state_value.lower()).strip()
             if not key:
@@ -253,6 +274,7 @@ class RunDetector:
 
     @staticmethod
     def _is_race_session_state_end_ok(state_value: Any) -> bool:
+        """Return whether race session state end ok."""
         if isinstance(state_value, str):
             key = re.sub(r"[^a-z0-9]+", " ", state_value.lower()).strip()
             if not key:

@@ -1,3 +1,5 @@
+"""Garage61 CSV parsing and frame sampling utilities."""
+
 from __future__ import annotations
 
 import csv
@@ -11,12 +13,14 @@ import numpy as np
 
 @dataclass(frozen=True)
 class RunData:
+    """Container and behavior for Run Data."""
     csv_path: Path
     columns: dict[str, list[Any]]  # floats, ints, bools oder str
     row_count: int
 
 
 def load_g61_csv(csv_path: str | Path) -> RunData:
+    """Load data g61 csv."""
     p = Path(csv_path).resolve()
     if not p.exists():
         raise FileNotFoundError(f"CSV nicht gefunden: {p}")
@@ -45,6 +49,7 @@ def load_g61_csv(csv_path: str | Path) -> RunData:
 
 
 def get_float_col(run: RunData, name: str) -> list[float]:
+    """Implement get float col logic."""
     if name not in run.columns:
         raise KeyError(f"Spalte fehlt: {name}")
     out: list[float] = []
@@ -57,6 +62,7 @@ def get_float_col(run: RunData, name: str) -> list[float]:
 
 
 def has_col(run: RunData, name: str) -> bool:
+    """Return whether col."""
     return name in run.columns
 
 
@@ -69,6 +75,7 @@ def sample_float_cols_to_frames(
     cols: Sequence[str],
     target_times_s: Sequence[float] | None = None,
 ) -> dict[str, np.ndarray]:
+    """Sample float cols to frames."""
     out: dict[str, np.ndarray] = {}
     for col in cols:
         out[str(col)] = np.empty((0,), dtype=np.float64)
@@ -169,11 +176,13 @@ def sample_float_cols_to_frames(
 
 
 def _require(cols: dict[str, list[Any]], name: str) -> None:
+    """Implement require logic."""
     if name not in cols:
         raise ValueError(f"Pflicht-Spalte fehlt: {name}")
 
 
 def _parse_value(col_name: str, raw: str) -> Any:
+    """Parse value."""
     s = (raw or "").strip()
 
     # Booleans (Garage61 nutzt oft "true/false")
@@ -209,6 +218,7 @@ def _parse_value(col_name: str, raw: str) -> Any:
 
 
 def _to_float(s: str) -> float:
+    """Convert value to float."""
     if s == "":
         return float("nan")
     try:
@@ -218,6 +228,7 @@ def _to_float(s: str) -> float:
 
 
 def _to_int(s: str) -> int:
+    """Convert value to int."""
     if s == "":
         return 0
     try:
@@ -230,6 +241,7 @@ def _to_int(s: str) -> int:
 
 
 def _to_bool(s: str) -> bool:
+    """Convert value to bool."""
     t = s.lower()
     if t in ("true", "1", "yes", "y"):
         return True

@@ -1,3 +1,5 @@
+"""Runtime module for core/irsdk/channels.py."""
+
 from __future__ import annotations
 
 # Central list of telemetry request specs for Sprint 1.

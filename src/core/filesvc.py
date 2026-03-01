@@ -1,3 +1,5 @@
+"""Runtime module for core/filesvc.py."""
+
 import os
 import shutil
 from pathlib import Path
@@ -9,6 +11,7 @@ VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi"}
 
 
 def copy_to_dir(src: Path, dst_dir: Path) -> Path:
+    """Implement copy to dir logic."""
     dst = dst_dir / src.name
     if not dst.exists():
         shutil.copy2(src, dst)
@@ -16,6 +19,7 @@ def copy_to_dir(src: Path, dst_dir: Path) -> Path:
 
 
 def delete_file(path: Path) -> bool:
+    """Implement delete file logic."""
     try:
         if path.exists():
             path.unlink()
@@ -25,6 +29,7 @@ def delete_file(path: Path) -> bool:
 
 
 def open_folder(path: Path) -> None:
+    """Open folder."""
     try:
         os.startfile(str(path.parent))
     except Exception:
@@ -32,6 +37,7 @@ def open_folder(path: Path) -> None:
 
 
 def scan_folders_signature(input_video_dir: Path, input_csv_dir: Path) -> FolderScanSignature:
+    """Scan folders signature."""
     vids = tuple(sorted([p.name for p in input_video_dir.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS]))
     cs = tuple(sorted([p.name for p in input_csv_dir.glob("*.csv") if p.is_file()]))
     return vids, cs
@@ -46,6 +52,7 @@ def sync_from_folders_if_needed(
     refresh_display: Callable[[], None],
     force: bool = False,
 ) -> tuple[list[Path], list[Path], FolderScanSignature | None]:
+    """Synchronize from folders if needed."""
     sig = scan_folders_signature(input_video_dir, input_csv_dir)
     if (not force) and (sig == last_scan_sig):
         return videos, csvs, last_scan_sig
@@ -72,11 +79,13 @@ def sync_from_folders_if_needed(
 
 
 def periodic_folder_watch(sync_callback: Callable[[], None], schedule_callback: Callable[[], None]) -> None:
+    """Implement periodic folder watch logic."""
     sync_callback()
     schedule_callback()
 
 
 def select_files(paths: Sequence[str], input_video_dir: Path, input_csv_dir: Path) -> tuple[str, list[Path], list[Path]]:
+    """Select files."""
     if not paths:
         return "empty", [], []
 

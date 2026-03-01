@@ -1,9 +1,12 @@
+"""Top-level runtime entry point for GUI/render mode selection."""
+
 from __future__ import annotations
 
 import sys
 
 
 def _run_ui_with_recorder_service() -> None:
+    """Run ui with recorder service."""
     from core import persistence
     from core.irsdk.recorder_service import RecorderService
     import ui.app as ui_app
@@ -11,6 +14,7 @@ def _run_ui_with_recorder_service() -> None:
     recorder_service = RecorderService()
 
     def _current_irsdk_sample_hz() -> int:
+        """Implement current irsdk sample hz logic."""
         try:
             settings = persistence.load_coaching_recording_settings()
             return int(settings.get("irsdk_sample_hz", 120))
@@ -33,6 +37,7 @@ def _run_ui_with_recorder_service() -> None:
 
 def main() -> None:
     # Single PyInstaller entry: render mode when UI passes --ui-json, otherwise GUI.
+    """Implement main logic."""
     if any(arg == "--ui-json" for arg in sys.argv[1:]):
         from main import main as render_main
 

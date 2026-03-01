@@ -1,3 +1,5 @@
+"""Configuration loader helpers for ini-based defaults."""
+
 from __future__ import annotations
 
 import configparser
@@ -11,12 +13,14 @@ APP_NAME = "iWAS"
 
 @dataclass(frozen=True)
 class Cfg:
+    """Container and behavior for Cfg."""
     root: Path
     config_file: Path
     hud_width_px: int
 
 
 def load_cfg(project_root: str | Path, config_file: str | Path = "config/defaults.ini") -> Cfg:
+    """Load data cfg."""
     root = Path(project_root).resolve()
     cfg_path = (root / config_file).resolve()
 
@@ -33,6 +37,7 @@ def load_cfg(project_root: str | Path, config_file: str | Path = "config/default
 
 
 def _get_int(cp: configparser.ConfigParser, section: str, key: str, default: int) -> int:
+    """Implement get int logic."""
     try:
         return int(cp.get(section, key, fallback=str(default)).strip())
     except Exception:
@@ -40,6 +45,7 @@ def _get_int(cp: configparser.ConfigParser, section: str, key: str, default: int
 
 
 def _get_float(cp: configparser.ConfigParser, section: str, key: str, default: float) -> float:
+    """Implement get float logic."""
     try:
         return float(cp.get(section, key, fallback=str(default)).strip())
     except Exception:
@@ -47,6 +53,7 @@ def _get_float(cp: configparser.ConfigParser, section: str, key: str, default: f
 
 
 def _get_str(cp: configparser.ConfigParser, section: str, key: str, default: str) -> str:
+    """Implement get str logic."""
     try:
         return str(cp.get(section, key, fallback=default)).strip()
     except Exception:

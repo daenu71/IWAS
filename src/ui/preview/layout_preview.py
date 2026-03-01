@@ -1,3 +1,5 @@
+"""Runtime module for ui/preview/layout_preview.py."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +10,7 @@ from core.output_geometry import build_output_geometry_for_size
 
 @dataclass(frozen=True)
 class OutputFormat:
+    """Container and behavior for Output Format."""
     out_w: int
     out_h: int
     hud_w: int
@@ -15,6 +18,7 @@ class OutputFormat:
 
 
 class LayoutPreviewController:
+    """Container and behavior for Layout Preview Controller."""
     def __init__(
         self,
         canvas: tk.Canvas,
@@ -22,6 +26,7 @@ class LayoutPreviewController:
         redraw_preview: Callable[[], None],
         is_locked: Callable[[], bool],
     ) -> None:
+        """Implement init logic."""
         self.canvas = canvas
         self._save_current_boxes = save_current_boxes
         self._redraw_preview = redraw_preview
@@ -65,6 +70,7 @@ class LayoutPreviewController:
         y0: int,
         scale: float,
     ) -> None:
+        """Update layout state."""
         self.layout_last["out_w"] = int(out_w)
         self.layout_last["out_h"] = int(out_h)
         self.layout_last["hud_w"] = int(hud_w)
@@ -87,6 +93,7 @@ class LayoutPreviewController:
 
     @staticmethod
     def _clamp(v: int, lo: int, hi: int) -> int:
+        """Implement clamp logic."""
         if v < lo:
             return lo
         if v > hi:
@@ -94,6 +101,7 @@ class LayoutPreviewController:
         return v
 
     def ensure_boxes_in_hud_area(self, hud_boxes: list[dict]) -> None:
+        """Implement ensure boxes in hud area logic."""
         out_w = int(self.layout_last.get("out_w") or 0)
         out_h = int(self.layout_last.get("out_h") or 0)
         if out_w <= 0 or out_h <= 0:
@@ -134,6 +142,7 @@ class LayoutPreviewController:
         area_h: int,
         load_current_boxes: Callable[[], list[dict]] | None = None,
     ) -> list[dict]:
+        """Implement draw layout preview logic."""
         area_w = max(200, int(area_w))
         area_h = max(200, int(area_h))
 
@@ -194,11 +203,13 @@ class LayoutPreviewController:
             self.ensure_boxes_in_hud_area(hud_boxes)
 
         def out_to_canvas(x: int, y: int) -> tuple[int, int]:
+            """Implement out to canvas logic."""
             cx = int(x0 + (x * scale))
             cy = int(y0 + (y * scale))
             return cx, cy
 
         def _draw_rect_outline(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
+            """Implement draw rect outline logic."""
             c0x, c0y = out_to_canvas(int(x), int(y))
             c1x, c1y = out_to_canvas(int(x) + int(w), int(y) + int(h))
             self.canvas.create_rectangle(c0x, c0y, c1x, c1y)
@@ -250,12 +261,14 @@ class LayoutPreviewController:
 
     @staticmethod
     def _get_active_box_by_type(hud_boxes: list[dict], box_type: str) -> dict | None:
+        """Implement get active box by type logic."""
         for b in hud_boxes:
             if str(b.get("type") or "") == box_type:
                 return b
         return None
 
     def canvas_to_out_xy(self, cx: float, cy: float) -> tuple[float, float]:
+        """Implement canvas to out xy logic."""
         x0 = float(self.layout_last.get("x0") or 0)
         y0 = float(self.layout_last.get("y0") or 0)
         scale = float(self.layout_last.get("scale") or 1.0)
@@ -264,6 +277,7 @@ class LayoutPreviewController:
         return ((cx - x0) / scale, (cy - y0) / scale)
 
     def hud_bounds_out(self) -> tuple[int, int, int, int]:
+        """Implement hud bounds out logic."""
         out_w = int(self.layout_last.get("out_w") or 0)
         out_h = int(self.layout_last.get("out_h") or 0)
         hud_x0 = int(self.layout_last.get("hud_x0") or 0)
@@ -275,6 +289,7 @@ class LayoutPreviewController:
         return hud_x0, hud_x1, hud_y0, hud_y1
 
     def clamp_box_in_hud(self, b: dict) -> None:
+        """Implement clamp box in hud logic."""
         hud_x0, hud_x1, y0, out_h = self.hud_bounds_out()
         try:
             x = float(b.get("x", 0))
@@ -305,6 +320,7 @@ class LayoutPreviewController:
         b["h"] = int(round(h))
 
     def hit_test_box(self, event_x: int, event_y: int, hud_boxes: list[dict], enabled_types: set[str]) -> tuple[str | None, str]:
+        """Implement hit test box logic."""
         if int(self.layout_last.get("out_w") or 0) <= 0:
             return None, ""
 
@@ -359,6 +375,7 @@ class LayoutPreviewController:
 
     @staticmethod
     def cursor_for_mode(mode: str) -> str:
+        """Implement cursor for mode logic."""
         if mode == "move":
             return "fleur"
         if mode in ("n", "s"):
@@ -372,6 +389,7 @@ class LayoutPreviewController:
         return ""
 
     def on_layout_hover(self, e: Any, hud_boxes: list[dict], enabled_types: set[str]) -> None:
+        """Implement on layout hover logic."""
         if self._is_locked():
             try:
                 self.canvas.configure(cursor="")
@@ -387,12 +405,14 @@ class LayoutPreviewController:
             pass
 
     def on_layout_leave(self, _e: Any = None) -> None:
+        """Implement on layout leave logic."""
         try:
             self.canvas.configure(cursor="")
         except Exception:
             pass
 
     def on_layout_mouse_down(self, e: Any, hud_boxes: list[dict], enabled_types: set[str]) -> None:
+        """Implement on layout mouse down logic."""
         if self._is_locked():
             return
 
@@ -421,6 +441,7 @@ class LayoutPreviewController:
         self.hud_start_h = float(b.get("h", 100))
 
     def on_layout_mouse_move(self, e: Any, hud_boxes: list[dict]) -> None:
+        """Implement on layout mouse move logic."""
         if self._is_locked():
             return
         if self.hud_active_id is None or self.hud_mode == "":
@@ -468,6 +489,7 @@ class LayoutPreviewController:
         self._redraw_preview()
 
     def on_layout_mouse_up(self, _e: Any = None) -> None:
+        """Implement on layout mouse up logic."""
         if self._is_locked():
             return
         if self.hud_active_id is None:

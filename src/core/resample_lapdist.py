@@ -1,3 +1,5 @@
+"""Lap-distance resampling and interpolation utilities."""
+
 from __future__ import annotations
 
 import math
@@ -7,12 +9,14 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ResampledRun:
+    """Container and behavior for Resampled Run."""
     lapdist_grid: list[float]
     channels: dict[str, list[float]]  # alle resample-ten Kanäle als float
     n_out: int
 
 
 def build_lapdist_grid(lapdist_a: list[float], lapdist_b: list[float], step: float) -> list[float]:
+    """Build and return lapdist grid."""
     if step <= 0:
         raise ValueError("step muss > 0 sein")
 
@@ -48,6 +52,7 @@ def resample_run_linear(
     lapdist_grid: list[float],
     channel_names: list[str],
 ) -> ResampledRun:
+    """Resample run linear."""
     if len(lapdist_in) < 2:
         raise ValueError("lapdist_in hat zu wenig Samples.")
     for name in channel_names:
@@ -99,10 +104,12 @@ def resample_run_linear(
 
 
 def _lerp(a: float, b: float, t: float) -> float:
+    """Implement lerp logic."""
     return (1.0 - t) * a + t * b
 
 
 def _to_float(v: Any) -> float:
+    """Convert value to float."""
     if isinstance(v, bool):
         return 1.0 if v else 0.0
     if isinstance(v, (int, float)):
@@ -117,6 +124,7 @@ def _to_float(v: Any) -> float:
 
 
 def _min_max_finite(xs: list[float]) -> tuple[float, float]:
+    """Implement min max finite logic."""
     mn = float("inf")
     mx = float("-inf")
     for v in xs:
@@ -132,6 +140,7 @@ def _min_max_finite(xs: list[float]) -> tuple[float, float]:
 
 
 def _count_non_increasing(xs: list[float]) -> int:
+    """Implement count non increasing logic."""
     bad = 0
     prev = xs[0]
     for i in range(1, len(xs)):

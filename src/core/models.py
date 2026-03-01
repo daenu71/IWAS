@@ -1,3 +1,5 @@
+"""Data models and migration helpers for UI/render payload contracts."""
+
 from __future__ import annotations
 
 import math
@@ -6,6 +8,7 @@ from typing import Any
 
 
 def _to_int(value: Any, default: int = 0) -> int:
+    """Convert value to int."""
     try:
         return int(value)
     except Exception:
@@ -16,6 +19,7 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
+    """Convert value to float."""
     try:
         return float(value)
     except Exception:
@@ -23,6 +27,7 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
+    """Convert value to bool."""
     try:
         return bool(value)
     except Exception:
@@ -30,6 +35,7 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
 
 def _to_int_or_none(value: Any) -> int | None:
+    """Convert value to int or none."""
     if value is None:
         return None
     try:
@@ -42,6 +48,7 @@ def _to_int_or_none(value: Any) -> int | None:
 
 
 def _set_if_changed(target: dict[str, Any], key: str, value: Any) -> bool:
+    """Implement set if changed logic."""
     if target.get(key) == value:
         return False
     target[key] = value
@@ -49,6 +56,7 @@ def _set_if_changed(target: dict[str, Any], key: str, value: Any) -> bool:
 
 
 def _merge_known_keys(existing: Any, known: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Implement merge known keys logic."""
     out = dict(existing) if isinstance(existing, dict) else {}
     changed = not isinstance(existing, dict)
     for k, v in known.items():
@@ -67,6 +75,7 @@ VIDEO_CUT_DEFAULTS: dict[str, float] = {
 
 
 def _normalize_video_mode_value(raw: Any) -> str:
+    """Normalize video mode value."""
     if isinstance(raw, bool):
         return "cut" if raw else "full"
     if isinstance(raw, (int, float)):
@@ -91,6 +100,7 @@ def _normalize_video_mode_value(raw: Any) -> str:
 
 
 def _normalize_video_cut_seconds_value(raw: Any, default: float) -> float:
+    """Normalize video cut seconds value."""
     try:
         value = float(raw)
     except Exception:
@@ -103,6 +113,7 @@ def _normalize_video_cut_seconds_value(raw: Any, default: float) -> float:
 
 
 def _coerce_legacy_bool(raw: Any) -> bool:
+    """Coerce legacy bool."""
     if isinstance(raw, bool):
         return bool(raw)
     if isinstance(raw, (int, float)):
@@ -119,6 +130,7 @@ def _coerce_legacy_bool(raw: Any) -> bool:
 
 
 def migrate_video_state_contract_dict(data: dict[str, Any], *, allow_video_cut_fallback: bool = False) -> bool:
+    """Migrate video state contract dict."""
     if not isinstance(data, dict):
         return False
 
@@ -143,6 +155,7 @@ def migrate_video_state_contract_dict(data: dict[str, Any], *, allow_video_cut_f
 
 
 def migrate_profile_contract_dict(data: dict[str, Any]) -> bool:
+    """Migrate profile contract dict."""
     if not isinstance(data, dict):
         return False
 
@@ -156,6 +169,7 @@ def migrate_profile_contract_dict(data: dict[str, Any]) -> bool:
 
 
 def migrate_ui_last_run_contract_dict(data: dict[str, Any]) -> bool:
+    """Migrate ui last run contract dict."""
     if not isinstance(data, dict):
         return False
     migrated = migrate_layout_contract_dict(data)
@@ -165,11 +179,13 @@ def migrate_ui_last_run_contract_dict(data: dict[str, Any]) -> bool:
 
 @dataclass
 class HudFrameConfig:
+    """Container and behavior for Hud Frame Config."""
     orientation: str = "vertical"
     anchor: str = "center"
     frame_thickness_px: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "orientation": str(self.orientation),
             "anchor": str(self.anchor),
@@ -178,6 +194,7 @@ class HudFrameConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "HudFrameConfig":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
 
         orientation = str(data.get("orientation") or "vertical").strip().lower()
@@ -199,6 +216,7 @@ class HudFrameConfig:
 
 @dataclass
 class VideoTransformConfig:
+    """Container and behavior for Video Transform Config."""
     scale_pct: int = 100
     shift_x_px: int = 0
     shift_y_px: int = 0
@@ -207,6 +225,7 @@ class VideoTransformConfig:
     fit_button_mode: str = "fit_height"
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "scale_pct": int(self.scale_pct),
             "shift_x_px": int(self.shift_x_px),
@@ -218,6 +237,7 @@ class VideoTransformConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None, *, video_layout: str = "LR") -> "VideoTransformConfig":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
         default_fit = "fit_height" if str(video_layout) == "LR" else "fit_width"
         fit_button_mode = str(data.get("fit_button_mode") or default_fit).strip().lower()
@@ -235,10 +255,12 @@ class VideoTransformConfig:
 
 @dataclass
 class HudFreeConfig:
+    """Container and behavior for Hud Free Config."""
     bg_alpha: int = 255
     boxes_abs_out: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "bg_alpha": int(self.bg_alpha),
             "boxes_abs_out": {
@@ -255,6 +277,7 @@ class HudFreeConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "HudFreeConfig":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
         boxes_raw = data.get("boxes_abs_out")
         boxes: dict[str, dict[str, int]] = {}
@@ -276,6 +299,7 @@ class HudFreeConfig:
 
 @dataclass
 class LayoutConfig:
+    """Container and behavior for Layout Config."""
     layout_version: int = 1
     video_layout: str = "LR"
     hud_mode: str = "frame"
@@ -284,6 +308,7 @@ class LayoutConfig:
     hud_free: HudFreeConfig = field(default_factory=HudFreeConfig)
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "layout_version": int(self.layout_version),
             "video_layout": str(self.video_layout),
@@ -295,6 +320,7 @@ class LayoutConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "LayoutConfig":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
 
         video_layout = str(data.get("video_layout") or "LR").strip().upper()
@@ -319,6 +345,7 @@ class LayoutConfig:
 
 
 def migrate_layout_contract_dict(data: dict[str, Any]) -> bool:
+    """Migrate layout contract dict."""
     if not isinstance(data, dict):
         return False
 
@@ -368,12 +395,14 @@ def migrate_layout_contract_dict(data: dict[str, Any]) -> bool:
 
 @dataclass
 class OutputFormat:
+    """Container and behavior for Output Format."""
     aspect: str = ""
     preset: str = ""
     quality: str = ""
     hud_width_px: int = 0
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "aspect": str(self.aspect),
             "preset": str(self.preset),
@@ -383,6 +412,7 @@ class OutputFormat:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "OutputFormat":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
         return cls(
             aspect=str(data.get("aspect") or ""),
@@ -394,6 +424,7 @@ class OutputFormat:
 
 @dataclass
 class HudBox:
+    """Container and behavior for Hud Box."""
     type: str = ""
     x: int = 0
     y: int = 0
@@ -401,6 +432,7 @@ class HudBox:
     h: int = 0
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "type": str(self.type),
             "x": int(self.x),
@@ -411,6 +443,7 @@ class HudBox:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "HudBox":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
         return cls(
             type=str(data.get("type") or ""),
@@ -423,13 +456,16 @@ class HudBox:
 
 @dataclass
 class HudLayoutState:
+    """Container and behavior for Hud Layout State."""
     hud_layout_data: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def key_from(out_preset: str, hud_w: int) -> str:
+        """Implement key from logic."""
         return f"{out_preset}|hud{hud_w}"
 
     def current_boxes_for_key(self, key: str) -> list[HudBox]:
+        """Implement current boxes for key logic."""
         raw = self.hud_layout_data.get(key) if isinstance(self.hud_layout_data, dict) else None
         if not isinstance(raw, list):
             return []
@@ -440,6 +476,7 @@ class HudLayoutState:
         return out
 
     def set_current_boxes_for_key(self, key: str, boxes: list[HudBox]) -> None:
+        """Implement set current boxes for key logic."""
         if not isinstance(self.hud_layout_data, dict):
             self.hud_layout_data = {}
         out: list[dict[str, Any]] = []
@@ -453,12 +490,14 @@ class HudLayoutState:
 
 @dataclass
 class PngSideState:
+    """Container and behavior for Png Side State."""
     zoom: float = 1.0
     off_x: int = 0
     off_y: int = 0
     fit_to_height: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         return {
             "zoom": float(self.zoom),
             "off_x": int(self.off_x),
@@ -468,6 +507,7 @@ class PngSideState:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "PngSideState":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
         return cls(
             zoom=_to_float(data.get("zoom", 1.0), 1.0),
@@ -479,13 +519,16 @@ class PngSideState:
 
 @dataclass
 class PngViewState:
+    """Container and behavior for Png View State."""
     png_view_data: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def key_from(out_preset: str, hud_w: int) -> str:
+        """Implement key from logic."""
         return f"{out_preset}|hud{hud_w}"
 
     def load_current(self, key: str) -> tuple[PngSideState, PngSideState]:
+        """Load data current."""
         d = self.png_view_data.get(key) if isinstance(self.png_view_data, dict) else None
         if not isinstance(d, dict):
             return PngSideState(), PngSideState()
@@ -504,6 +547,7 @@ class PngViewState:
         return left, right
 
     def save_current(self, key: str, left: PngSideState, right: PngSideState) -> None:
+        """Save data current."""
         if not isinstance(self.png_view_data, dict):
             self.png_view_data = {}
         self.png_view_data[key] = {
@@ -520,6 +564,7 @@ class PngViewState:
 
 @dataclass
 class Profile:
+    """Container and behavior for Profile."""
     version: int | str = PROFILE_SCHEMA_VERSION
     videos: list[str] = field(default_factory=list)
     csvs: list[str] = field(default_factory=list)
@@ -535,6 +580,7 @@ class Profile:
     video_minimum_between_two_curves: float = VIDEO_CUT_DEFAULTS["video_minimum_between_two_curves"]
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         out = {
             "version": int(_to_int(self.version, PROFILE_SCHEMA_VERSION)),
             "videos": [str(v) for v in self.videos],
@@ -566,6 +612,7 @@ class Profile:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "Profile":
+        """Implement from dict logic."""
         data = dict(d) if isinstance(d, dict) else {}
         migrate_profile_contract_dict(data)
         videos_raw = data.get("videos")
@@ -601,6 +648,7 @@ class Profile:
 
 @dataclass
 class AppModel:
+    """Container and behavior for App Model."""
     output: OutputFormat = field(default_factory=OutputFormat)
     hud_layout: HudLayoutState = field(default_factory=HudLayoutState)
     png_view: PngViewState = field(default_factory=PngViewState)
@@ -613,6 +661,7 @@ class AppModel:
 
 @dataclass
 class RenderPayload:
+    """Container and behavior for Render Payload."""
     version: int | str = 1
     videos: list[str] = field(default_factory=list)
     csvs: list[str] = field(default_factory=list)
@@ -643,6 +692,7 @@ class RenderPayload:
     layout_config: LayoutConfig = field(default_factory=LayoutConfig)
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert value to dict."""
         out = {
             "version": self.version,
             "videos": list(self.videos),
@@ -675,6 +725,7 @@ class RenderPayload:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "RenderPayload":
+        """Implement from dict logic."""
         data = d if isinstance(d, dict) else {}
         return cls(
             version=data.get("version", 1),

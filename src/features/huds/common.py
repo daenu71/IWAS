@@ -1,3 +1,5 @@
+"""Shared HUD drawing and formatting helpers."""
+
 from __future__ import annotations
 
 import math
@@ -54,6 +56,7 @@ TABLE_HUD_NAMES: set[str] = {
 
 
 def _coerce_rgba(col: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Coerce rgba."""
     r, g, b, a = col
     return (
         int(max(0, min(255, int(r)))),
@@ -64,6 +67,7 @@ def _coerce_rgba(col: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
 
 
 def _coerce_bool(v: Any, default: bool) -> bool:
+    """Coerce bool."""
     if isinstance(v, bool):
         return bool(v)
     s = str(v).strip().lower()
@@ -75,6 +79,7 @@ def _coerce_bool(v: Any, default: bool) -> bool:
 
 
 def _coerce_int(v: Any, default: int, lo: int, hi: int) -> int:
+    """Coerce int."""
     try:
         iv = int(float(v))
     except Exception:
@@ -94,6 +99,7 @@ def configure_hud_text_style(
     brighten_enable: Any = True,
     debug_force_visible: Any = False,
 ) -> None:
+    """Implement configure hud text style logic."""
     global _HUD_TEXT_SHADOW_ENABLE
     global _HUD_TEXT_SHADOW_OFFSET_PX
     global _HUD_TEXT_SHADOW_ALPHA
@@ -107,6 +113,7 @@ def configure_hud_text_style(
 
 
 def _coerce_rgba_any(col: Any, default: tuple[int, int, int, int] = COL_WHITE) -> tuple[int, int, int, int]:
+    """Coerce rgba any."""
     if isinstance(col, (tuple, list)):
         if len(col) >= 4:
             return _coerce_rgba((int(col[0]), int(col[1]), int(col[2]), int(col[3])))
@@ -116,12 +123,14 @@ def _coerce_rgba_any(col: Any, default: tuple[int, int, int, int] = COL_WHITE) -
 
 
 def _luma_255_srgb_relative(rgb: tuple[int, int, int]) -> float:
+    """Implement luma 255 srgb relative logic."""
     r, g, b = rgb
     rf = float(max(0.0, min(1.0, float(r) / 255.0)))
     gf = float(max(0.0, min(1.0, float(g) / 255.0)))
     bf = float(max(0.0, min(1.0, float(b) / 255.0)))
 
     def _srgb_to_linear(c: float) -> float:
+        """Implement srgb to linear logic."""
         if c <= 0.04045:
             return c / 12.92
         return ((c + 0.055) / 1.055) ** 2.4
@@ -133,6 +142,7 @@ def _luma_255_srgb_relative(rgb: tuple[int, int, int]) -> float:
 
 
 def _draw_text_debug_marker_once(dr: Any) -> None:
+    """Implement draw text debug marker once logic."""
     if not bool(_HUD_TEXT_DEBUG_FORCE_VISIBLE):
         return
     seen = False
@@ -157,6 +167,7 @@ def _draw_text_debug_marker_once(dr: Any) -> None:
 
 
 def _brighten_text_rgba(fill: tuple[int, int, int, int], enabled: bool) -> tuple[int, int, int, int]:
+    """Implement brighten text rgba logic."""
     if not bool(enabled):
         return fill
     r, g, b, a = fill
@@ -192,6 +203,7 @@ def draw_text_with_shadow(
     shadow_offset_px: int | tuple[int, int] | None = None,
     brighten_enable: bool | None = None,
 ) -> None:
+    """Implement draw text with shadow logic."""
     txt = str(text)
     if txt == "":
         return
@@ -239,6 +251,7 @@ def _darken_rgba(
     delta: int = 8,
     min_alpha: int = 0,
 ) -> tuple[int, int, int, int]:
+    """Implement darken rgba logic."""
     r, g, b, a = _coerce_rgba(col)
     # Keep stripes subtle but visible in encoded video output.
     d = int(max(2, round(float(delta) * 2.0)))
@@ -253,6 +266,7 @@ def draw_hud_background(
     box: tuple[int, int, int, int],
     col_bg: tuple[int, int, int, int] = COL_HUD_BG,
 ) -> None:
+    """Implement draw hud background logic."""
     x0, y0, w, h = box
     if int(w) <= 0 or int(h) <= 0:
         return
@@ -271,6 +285,7 @@ def choose_tick_step(
     max_segments: int = 5,
     target_segments: int | None = None,
 ) -> float | None:
+    """Choose tick step."""
     lo = float(min(y_min, y_max))
     hi = float(max(y_min, y_max))
     span = hi - lo
@@ -311,6 +326,7 @@ def build_value_boundaries(
     step: float,
     anchor: str = "bottom",
 ) -> list[float]:
+    """Build and return value boundaries."""
     lo = float(min(y_min, y_max))
     hi = float(max(y_min, y_max))
     s = float(step)
@@ -357,6 +373,7 @@ def draw_stripe_grid(
     col_bg: tuple[int, int, int, int] = COL_HUD_BG,
     darken_delta: int = 8,
 ) -> None:
+    """Implement draw stripe grid logic."""
     if int(w) <= 0 or int(y_bottom) <= int(y_top):
         return
 
@@ -408,6 +425,7 @@ def draw_stripe_grid(
 
 
 def _text_size(dr: Any, text: str, font_obj: Any) -> tuple[int, int]:
+    """Implement text size logic."""
     try:
         bb = dr.textbbox((0, 0), str(text), font=font_obj)
         return int(bb[2] - bb[0]), int(bb[3] - bb[1])
@@ -431,6 +449,7 @@ def draw_left_axis_labels(
     x_pad: int = 4,
     fallback_font_obj: Any | None = None,
 ) -> None:
+    """Implement draw left axis labels logic."""
     if int(w) <= 0 or int(y_bottom) <= int(y_top):
         return
     if not labels:
@@ -474,6 +493,7 @@ def draw_left_axis_labels(
 
 
 def format_int_or_1dp(v: float) -> str:
+    """Format int or 1dp."""
     vf = float(v)
     if abs(vf - round(vf)) < 1e-6:
         return str(int(round(vf)))
@@ -486,6 +506,7 @@ def should_suppress_boundary_label(
     v_max: float,
     suppress_zero: bool = False,
 ) -> bool:
+    """Return whether suppress boundary label."""
     lo = float(min(v_min, v_max))
     hi = float(max(v_min, v_max))
     tol = max(1e-6, abs(hi - lo) * 1e-6)
@@ -503,6 +524,7 @@ def should_suppress_boundary_label(
 
 
 def format_value_for_step(value: float, step: float, min_decimals: int = 0, max_decimals: int = 4) -> str:
+    """Format value for step."""
     s = abs(float(step))
     dec = 0
     while dec < int(max_decimals):
@@ -527,6 +549,7 @@ def filter_axis_labels_by_position(
     zero_y: int | None = None,
     pad_px: int = 2,
 ) -> list[tuple[int, str]]:
+    """Filter axis labels by position."""
     if not labels:
         return []
     y0 = int(min(y_top, y_bottom))
@@ -551,6 +574,7 @@ def value_boundaries_to_y(
     y_top: int,
     y_bottom: int,
 ) -> list[int]:
+    """Implement value boundaries to y logic."""
     ys: list[int] = []
     y0 = int(min(y_top, y_bottom))
     y1 = int(max(y_top, y_bottom))

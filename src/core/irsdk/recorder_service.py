@@ -1,3 +1,5 @@
+"""IRSDK recording lifecycle orchestration."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -38,7 +40,9 @@ _LAP_META_SIGNAL_NAMES: tuple[str, ...] = ("PlayerTrackSurface", "PlayerCarMyInc
 
 
 class RecorderService:
+    """Container and behavior for Recorder Service."""
     def __init__(self, client: IRSDKClient | None = None) -> None:
+        """Implement init logic."""
         self._client = client or IRSDKClient()
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -83,25 +87,30 @@ class RecorderService:
 
     @property
     def running(self) -> bool:
+        """Implement running logic."""
         with self._lock:
             thread = self._thread
         return bool(thread is not None and thread.is_alive())
 
     @property
     def connected(self) -> bool:
+        """Implement connected logic."""
         return self._client.is_connected
 
     @property
     def sample_count(self) -> int:
+        """Sample count."""
         with self._lock:
             return self._sample_count
 
     @property
     def sample_hz(self) -> int:
+        """Sample hz."""
         with self._lock:
             return self._sample_hz
 
     def get_status(self) -> dict[str, Any]:
+        """Implement get status logic."""
         with self._lock:
             status: dict[str, Any] = {
                 "running": bool(self._thread is not None and self._thread.is_alive()),
@@ -120,6 +129,7 @@ class RecorderService:
         return status
 
     def start(self, sample_hz: int) -> None:
+        """Start."""
         hz = self._normalize_hz(sample_hz)
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -170,6 +180,7 @@ class RecorderService:
         thread.start()
 
     def stop(self) -> None:
+        """Stop."""
         with self._lock:
             thread = self._thread
         if thread is None:
@@ -190,10 +201,12 @@ class RecorderService:
                 self._thread = None
 
     def get_buffer_snapshot(self) -> list[dict[str, Any]]:
+        """Implement get buffer snapshot logic."""
         with self._lock:
             return list(self._buffer)
 
     def _run_loop(self) -> None:
+        """Run loop."""
         with self._lock:
             sample_hz = self._sample_hz
             log_every_samples = max(120, sample_hz if sample_hz > 0 else 120)
@@ -264,12 +277,14 @@ class RecorderService:
                     self._thread = None
 
     def _sleep_interruptible(self, seconds: float) -> None:
+        """Implement sleep interruptible logic."""
         if seconds <= 0.0:
             self._stop_event.wait(0.0)
             return
         self._stop_event.wait(seconds)
 
     def _initialize_channels(self) -> None:
+        """Implement initialize channels logic."""
         if self._channels_initialized:
             return
 
@@ -340,6 +355,7 @@ class RecorderService:
         recorded_channels: list[str],
         channel_info: dict[str, dict[str, Any]],
     ) -> dict[str, str]:
+        """Build and return dtype decisions."""
         decisions: dict[str, str] = {}
         for name in recorded_channels:
             info = channel_info.get(name) or {}
@@ -350,6 +366,7 @@ class RecorderService:
 
     @staticmethod
     def _format_dtype_decision(info: dict[str, Any]) -> str | None:
+        """Format dtype decision."""
         explicit = info.get("dtype")
         if explicit is not None:
             text = str(explicit).strip()
@@ -393,6 +410,7 @@ class RecorderService:
 
     @staticmethod
     def _format_missing_channels_for_log(items: list[Any]) -> str:
+        """Format missing channels for log."""
         parts: list[str] = []
         for item in items:
             if isinstance(item, dict):
@@ -412,6 +430,7 @@ class RecorderService:
         return ", ".join(parts)
 
     def _inject_broadcast_fields(self, sample: dict[str, Any]) -> None:
+        """Implement inject broadcast fields logic."""
         if not isinstance(sample, dict):
             return
         raw = sample.get("raw")
@@ -427,6 +446,7 @@ class RecorderService:
         raw["SessionUniqueID"] = session_unique_id
 
     def _write_session_meta(self) -> None:
+        """Write session meta."""
         with self._lock:
             if self._session_meta_written or not self._channels_initialized:
                 return
@@ -471,12 +491,14 @@ class RecorderService:
             self._debug_log_line(f"session_meta_write_failed error={type(exc).__name__}:{exc}")
 
     def _resolve_session_meta_path(self) -> Path | None:
+        """Resolve session meta path."""
         session_dir = self._ensure_session_dir()
         if session_dir is not None:
             return session_dir / "session_meta.json"
         return Path.cwd() / "session_meta.json"
 
     def _try_write_session_info_yaml(self) -> None:
+        """Implement try write session info yaml logic."""
         if self._session_info_yaml_saved:
             return
         with self._lock:
@@ -544,12 +566,14 @@ class RecorderService:
             self._debug_log_line(f"sessioninfo_yaml_write_failed attempt={attempt} error={type(exc).__name__}:{exc}")
 
     def _resolve_session_info_yaml_path(self) -> Path | None:
+        """Resolve session info yaml path."""
         session_dir = self._ensure_session_dir()
         if session_dir is None:
             return None
         return session_dir / "session_info.yaml"
 
     def _ensure_session_dir(self) -> Path | None:
+        """Implement ensure session dir logic."""
         with self._lock:
             if self._session_dir is not None:
                 return self._session_dir
@@ -594,12 +618,14 @@ class RecorderService:
         return resolved
 
     def _resolve_session_root_dir(self) -> Path | None:
+        """Resolve session root dir."""
         try:
             return get_coaching_storage_dir()
         except Exception:
             return Path.cwd()
 
     def _debug_log_pyarrow_probe_once(self) -> None:
+        """Implement debug log pyarrow probe once logic."""
         with self._lock:
             if self._debug_pyarrow_probe_logged:
                 return
@@ -611,6 +637,7 @@ class RecorderService:
             _LOG.warning("irsdk parquet backend unavailable: pyarrow not installed in current interpreter")
 
     def _debug_log_line(self, message: str) -> None:
+        """Implement debug log line logic."""
         path = self._debug_artifact_path(_DEBUG_RECORDER_LOG_FILENAME)
         if path is None:
             return
@@ -623,6 +650,7 @@ class RecorderService:
             return
 
     def _debug_write_json(self, filename: str, payload: dict[str, Any]) -> None:
+        """Implement debug write json logic."""
         path = self._debug_artifact_path(filename)
         if path is None:
             return
@@ -633,6 +661,7 @@ class RecorderService:
             return
 
     def _debug_append_jsonl(self, filename: str, payload: dict[str, Any]) -> None:
+        """Implement debug append jsonl logic."""
         path = self._debug_artifact_path(filename)
         if path is None:
             return
@@ -645,6 +674,7 @@ class RecorderService:
             return
 
     def _debug_artifact_path(self, filename: str) -> Path | None:
+        """Implement debug artifact path logic."""
         with self._lock:
             session_dir = self._session_dir
         if session_dir is None:
@@ -652,6 +682,7 @@ class RecorderService:
         return session_dir / filename
 
     def _debug_dump_session_info_probe(self, *, reason: str, attempt: int) -> None:
+        """Implement debug dump session info probe logic."""
         with self._lock:
             self._debug_session_info_probe_writes += 1
             probe_writes = self._debug_session_info_probe_writes
@@ -676,6 +707,7 @@ class RecorderService:
         self._debug_log_line(f"sessioninfo_probe reason={reason} attempt={attempt}")
 
     def _debug_maybe_dump_sample(self, sample: dict[str, Any], sample_count: int) -> None:
+        """Implement debug maybe dump sample logic."""
         raw = sample.get("raw")
         if not isinstance(raw, dict):
             return
@@ -738,6 +770,7 @@ class RecorderService:
         missing_channels: list[Any],
         channel_info: dict[str, dict[str, Any]],
     ) -> None:
+        """Write vars dump once."""
         self._ensure_session_dir()
         with self._lock:
             if self._vars_dump_written:
@@ -786,6 +819,7 @@ class RecorderService:
         )
 
     def _debug_maybe_dump_target_probe(self, sample: dict[str, Any], *, sample_count: int) -> None:
+        """Implement debug maybe dump target probe logic."""
         if sample_count < 1:
             return
         raw = sample.get("raw")
@@ -842,6 +876,7 @@ class RecorderService:
         self._debug_log_line(f"target_probe_written sample_count={sample_count} targets={len(targets)}")
 
     def _read_existing_vars_dump(self) -> dict[str, Any]:
+        """Read existing vars dump."""
         path = self._debug_artifact_path(_VARS_DUMP_FILENAME)
         if path is None or not path.exists():
             return {}
@@ -861,6 +896,7 @@ class RecorderService:
         missing_channels: list[Any],
         channel_info: dict[str, dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """Build and return target resolution snapshot."""
         recorded_set = {str(name) for name in recorded_channels}
         missing_by_spec: dict[str, dict[str, Any]] = {}
         for item in missing_channels:
@@ -931,6 +967,7 @@ class RecorderService:
         available_channels: dict[str, dict[str, Any]],
         aliases: tuple[str, ...] | list[str],
     ) -> list[str]:
+        """Find available names for aliases."""
         out: list[str] = []
         seen: set[str] = set()
         for alias in aliases:
@@ -951,6 +988,7 @@ class RecorderService:
 
     @staticmethod
     def _find_available_wheel_group_names(available_channels: dict[str, dict[str, Any]], *, base_name: str) -> list[str]:
+        """Find available wheel group names."""
         out: list[str] = []
         seen: set[str] = set()
         base_key = "".join(ch.lower() for ch in str(base_name or "") if ch.isalnum())
@@ -980,6 +1018,7 @@ class RecorderService:
         return out
 
     def _merge_session_info_meta_from_yaml(self, yaml_text: str, *, session_info_saved_ts: float) -> bool:
+        """Implement merge session info meta from yaml logic."""
         try:
             with self._lock:
                 recorder_start_ts = self._session_start_wall_ts
@@ -1008,6 +1047,7 @@ class RecorderService:
             return False
 
     def _merge_session_meta_fields(self, fields: dict[str, Any]) -> None:
+        """Implement merge session meta fields logic."""
         meta_path = self._resolve_session_meta_path()
         if meta_path is None:
             return
@@ -1035,6 +1075,7 @@ class RecorderService:
             self._debug_log_line(f"session_meta_merge_failed error={type(exc).__name__}:{exc}")
 
     def _update_session_identity_fields(self, fields: dict[str, Any]) -> None:
+        """Update session identity fields."""
         if not isinstance(fields, dict):
             return
         allowed = (
@@ -1062,6 +1103,7 @@ class RecorderService:
             self._session_identity_fields.update(updates)
 
     def _maybe_rename_session_dir_from_identity(self) -> None:
+        """Implement maybe rename session dir from identity logic."""
         with self._lock:
             current_dir = self._session_dir
             start_wall_ts = self._session_start_wall_ts or time.time()
@@ -1099,6 +1141,7 @@ class RecorderService:
 
     @staticmethod
     def _resolve_session_folder_id_token(identity_fields: dict[str, Any]) -> Any:
+        """Resolve session folder id token."""
         session_unique_id = identity_fields.get("SessionUniqueID")
         if session_unique_id not in (None, ""):
             text = str(session_unique_id).strip()
@@ -1115,6 +1158,7 @@ class RecorderService:
         return None
 
     def _persist_pending_session_rename(self, session_dir: Path, target_name: str, *, error: Exception | None = None) -> None:
+        """Implement persist pending session rename logic."""
         marker_path = Path(session_dir) / _PENDING_RENAME_FILENAME
         payload: dict[str, Any] = {
             "target_name": str(target_name),
@@ -1129,6 +1173,7 @@ class RecorderService:
             self._debug_log_line(f"session_dir_rename_pending_write_failed error={type(exc).__name__}:{exc}")
 
     def _try_apply_pending_session_rename(self, session_dir: Path) -> Path:
+        """Implement try apply pending session rename logic."""
         session_dir = Path(session_dir)
         marker_path = session_dir / _PENDING_RENAME_FILENAME
         if not marker_path.exists():
@@ -1167,6 +1212,7 @@ class RecorderService:
         return target_dir
 
     def _append_active_run_sample(self, sample: dict[str, Any]) -> None:
+        """Implement append active run sample logic."""
         if not isinstance(sample, dict):
             return
 
@@ -1258,6 +1304,7 @@ class RecorderService:
                 )
 
     def _start_run_storage(self, run_id: int) -> None:
+        """Start run storage."""
         session_dir = self._ensure_session_dir()
         if session_dir is None:
             return
@@ -1301,6 +1348,7 @@ class RecorderService:
             self._active_run_writer = writer
 
     def _finalize_run(self, run_id: int | None, *, reason: str | None = None) -> None:
+        """Implement finalize run logic."""
         writer: ParquetRunWriter | None = None
         meta: dict[str, Any] | None = None
         final_run_id = run_id
@@ -1433,6 +1481,7 @@ class RecorderService:
             )
 
     def _finalize_active_run_if_any(self, *, reason: str | None = None) -> None:
+        """Implement finalize active run if any logic."""
         with self._lock:
             run_id = self._active_run_id
             has_meta = isinstance(self._active_run_meta, dict)
@@ -1442,6 +1491,7 @@ class RecorderService:
         self._finalize_run(run_id, reason=reason)
 
     def _write_run_meta_file(self, run_id: int, run_meta: dict[str, Any]) -> None:
+        """Write run meta file."""
         meta_path = self._resolve_run_meta_path(run_id)
         if meta_path is None:
             return
@@ -1454,12 +1504,14 @@ class RecorderService:
             self._debug_log_line(f"run_meta_write_failed run_id={run_id} error={type(exc).__name__}:{exc}")
 
     def _resolve_run_meta_path(self, run_id: int) -> Path | None:
+        """Resolve run meta path."""
         session_dir = self._ensure_session_dir()
         if session_dir is not None:
             return session_dir / f"run_{run_id:04d}_meta.json"
         return Path.cwd() / f"run_{run_id:04d}_meta.json"
 
     def _resolve_lap_meta_path(self, run_id: int, lap_index: int) -> Path | None:
+        """Resolve lap meta path."""
         session_dir = self._ensure_session_dir()
         lap_seq = max(1, int(lap_index) + 1)
         if session_dir is not None:
@@ -1467,6 +1519,7 @@ class RecorderService:
         return Path.cwd() / f"run_{run_id:04d}_lap_{lap_seq:04d}_meta.json"
 
     def _write_json_atomic(self, path: Path, payload: dict[str, Any]) -> bool:
+        """Write json atomic."""
         tmp_path = path.with_name(f"{path.name}.tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1482,6 +1535,7 @@ class RecorderService:
             return False
 
     def _mark_session_finalized_if_possible(self) -> None:
+        """Implement mark session finalized if possible logic."""
         with self._lock:
             if self._session_finalized_marked:
                 return
@@ -1499,6 +1553,7 @@ class RecorderService:
             self._debug_log_line(f"session_finalized_failed error={type(exc).__name__}:{exc}")
 
     def _record_chunk_io_summary(self, *, active_run_id: int, summary: dict[str, Any]) -> None:
+        """Implement record chunk io summary logic."""
         if not isinstance(summary, dict):
             return
         run_id_value = active_run_id if active_run_id is not None else -1
@@ -1543,6 +1598,7 @@ class RecorderService:
 
     @staticmethod
     def _format_io_summary_for_status(summary: dict[str, Any] | None) -> str | None:
+        """Format io summary for status."""
         if not isinstance(summary, dict):
             return None
         ok = bool(summary.get("ok"))
@@ -1568,11 +1624,13 @@ class RecorderService:
 
     @staticmethod
     def _is_env_flag_enabled(name: str) -> bool:
+        """Return whether env flag enabled."""
         raw = str(os.environ.get(name, "") or "").strip().lower()
         return raw in ("1", "true", "yes", "on")
 
     @staticmethod
     def _coerce_optional_float(value: Any) -> float | None:
+        """Coerce optional float."""
         try:
             return float(value)
         except Exception:
@@ -1580,6 +1638,7 @@ class RecorderService:
 
     @staticmethod
     def _coerce_optional_int(value: Any) -> int | None:
+        """Coerce optional int."""
         try:
             return int(value)
         except Exception:
@@ -1587,6 +1646,7 @@ class RecorderService:
 
     @staticmethod
     def _coerce_optional_bool(value: Any) -> bool | None:
+        """Coerce optional bool."""
         if isinstance(value, bool):
             return value
         if value is None:
@@ -1605,6 +1665,7 @@ class RecorderService:
         return None
 
     def _ensure_run_detector_from_session_type(self, session_type: Any) -> None:
+        """Implement ensure run detector from session type logic."""
         if session_type is None:
             return
         normalized = str(session_type).strip().lower()
@@ -1627,6 +1688,7 @@ class RecorderService:
         self._debug_log_line(f"run_detector_ready session_type={normalized}")
 
     def _process_run_detector(self, sample: dict[str, Any]) -> None:
+        """Implement process run detector logic."""
         with self._lock:
             detector = self._run_detector
             session_type = self._session_type or "unknown"
@@ -1649,6 +1711,7 @@ class RecorderService:
             self._handle_run_event(event, session_type=session_type)
 
     def _handle_run_event(self, event: dict[str, Any], *, session_type: str) -> None:
+        """Implement handle run event logic."""
         event_type = str(event.get("type") or "")
         reason = str(event.get("reason") or "unknown")
         ts = event.get("timestamp")
@@ -1691,12 +1754,14 @@ class RecorderService:
 
     @staticmethod
     def _buffer_capacity_for_hz(sample_hz: int) -> int:
+        """Implement buffer capacity for hz logic."""
         if sample_hz <= 0:
             return 240
         return max(1, int(sample_hz) * 2)
 
     @staticmethod
     def _normalize_hz(sample_hz: int) -> int:
+        """Normalize hz."""
         try:
             hz = int(sample_hz)
         except Exception:

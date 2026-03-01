@@ -1,3 +1,5 @@
+"""SessionInfo parsing and metadata extraction utilities."""
+
 from __future__ import annotations
 
 import re
@@ -10,6 +12,7 @@ def extract_session_meta(
     recorder_start_ts: float | int | None = None,
     session_info_saved_ts: float | int | None = None,
 ) -> dict[str, Any]:
+    """Extract session meta."""
     text = str(session_info_yaml or "")
     meta: dict[str, Any] = {}
     if not text.strip():
@@ -65,6 +68,7 @@ def extract_session_meta(
 
 
 def normalize_session_type(raw_session_type: Any) -> str:
+    """Normalize session type."""
     raw = str(raw_session_type or "").strip()
     if not raw:
         return "unknown"
@@ -82,6 +86,7 @@ def normalize_session_type(raw_session_type: Any) -> str:
 
 
 def _safe_yaml_parse(text: str) -> Any:
+    """Implement safe yaml parse logic."""
     try:
         import yaml  # type: ignore
 
@@ -91,14 +96,17 @@ def _safe_yaml_parse(text: str) -> Any:
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
+    """Implement as dict logic."""
     return value if isinstance(value, dict) else {}
 
 
 def _as_list(value: Any) -> list[Any]:
+    """Implement as list logic."""
     return value if isinstance(value, list) else []
 
 
 def _select_driver(driver_info: dict[str, Any]) -> dict[str, Any]:
+    """Select driver."""
     drivers = _as_list(driver_info.get("Drivers"))
     driver_car_idx = driver_info.get("DriverCarIdx")
     try:
@@ -129,6 +137,7 @@ def _select_driver(driver_info: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_primary_session_type(root: dict[str, Any], session_info: dict[str, Any]) -> Any:
+    """Extract primary session type."""
     current_session_num = _coerce_int(
         _coalesce(
             root.get("SessionNum"),
@@ -152,6 +161,7 @@ def _extract_primary_session_type(root: dict[str, Any], session_info: dict[str, 
 
 
 def _find_first_value_for_key(value: Any, key: str) -> Any:
+    """Find first value for key."""
     if isinstance(value, dict):
         if key in value:
             return value.get(key)
@@ -169,6 +179,7 @@ def _find_first_value_for_key(value: Any, key: str) -> Any:
 
 
 def _regex_extract_scalar(text: str, key: str) -> str | None:
+    """Implement regex extract scalar logic."""
     match = re.search(rf"(?m)^\s*{re.escape(key)}\s*:\s*(.+?)\s*$", text)
     if not match:
         return None
@@ -179,6 +190,7 @@ def _regex_extract_scalar(text: str, key: str) -> str | None:
 
 
 def _coerce_int(value: Any) -> int | None:
+    """Coerce int."""
     try:
         return int(value)
     except Exception:
@@ -186,6 +198,7 @@ def _coerce_int(value: Any) -> int | None:
 
 
 def _coalesce(*values: Any) -> Any:
+    """Implement coalesce logic."""
     for value in values:
         if value is None:
             continue
@@ -196,6 +209,7 @@ def _coalesce(*values: Any) -> Any:
 
 
 def _set_if_present(target: dict[str, Any], key: str, value: Any) -> None:
+    """Implement set if present logic."""
     if value is None:
         return
     target[key] = value
@@ -207,6 +221,7 @@ def _with_timestamps(
     recorder_start_ts: float | int | None,
     session_info_saved_ts: float | int | None,
 ) -> dict[str, Any]:
+    """Implement with timestamps logic."""
     if recorder_start_ts is not None:
         meta["recorder_start_ts"] = recorder_start_ts
     if session_info_saved_ts is not None:

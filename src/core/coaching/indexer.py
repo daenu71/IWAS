@@ -1,3 +1,5 @@
+"""Runtime module for core/coaching/indexer.py."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,6 +28,7 @@ _MIN_VALID_LAP_SAMPLES = 60
 
 @dataclass
 class NodeSummary:
+    """Container and behavior for Node Summary."""
     total_time_s: float | None = None
     laps: int | None = None
     laps_total_display: int | None = None
@@ -37,6 +40,7 @@ class NodeSummary:
 
 @dataclass
 class CoachingTreeNode:
+    """Container and behavior for Coaching Tree Node."""
     id: str
     kind: str
     label: str
@@ -55,6 +59,7 @@ class CoachingTreeNode:
 
 @dataclass
 class CoachingIndex:
+    """Container and behavior for Coaching Index."""
     root_dir: Path
     tracks: list[CoachingTreeNode]
     nodes_by_id: dict[str, CoachingTreeNode]
@@ -66,6 +71,7 @@ class CoachingIndex:
 
 @dataclass
 class _RunScan:
+    """Container and behavior for Run Scan."""
     run_id: int
     parquet_path: Path | None
     meta_path: Path | None
@@ -77,6 +83,7 @@ class _RunScan:
 
 @dataclass
 class _SessionScan:
+    """Container and behavior for Session Scan."""
     session_dir: Path
     folder_name: str
     track: str
@@ -94,6 +101,7 @@ class _SessionScan:
 
 @dataclass
 class _SessionCacheEntry:
+    """Container and behavior for Session Cache Entry."""
     signature: tuple[Any, ...]
     parsed: _SessionScan
 
@@ -102,6 +110,7 @@ _SESSION_CACHE: dict[str, _SessionCacheEntry] = {}
 
 
 def scan_storage(root_dir: Path) -> CoachingIndex:
+    """Scan storage."""
     root = Path(root_dir)
     tracks: list[CoachingTreeNode] = []
     nodes_by_id: dict[str, CoachingTreeNode] = {}
@@ -194,6 +203,7 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
 
 
 def _scan_session_dir_cached(session_dir: Path) -> _SessionScan | None:
+    """Scan session dir cached."""
     key = _cache_key(session_dir)
     signature, children = _session_cache_signature(session_dir)
     if signature is None:
@@ -209,6 +219,7 @@ def _scan_session_dir_cached(session_dir: Path) -> _SessionScan | None:
 
 
 def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None = None) -> _SessionScan | None:
+    """Scan session dir uncached."""
     if children is None:
         try:
             children = list(session_dir.iterdir())
@@ -380,6 +391,7 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
 
 @dataclass
 class _ParsedFolderName:
+    """Container and behavior for Parsed Folder Name."""
     track: str
     car: str
     session_type: str
@@ -388,6 +400,7 @@ class _ParsedFolderName:
 
 
 def _parse_session_folder_name(folder_name: str) -> _ParsedFolderName:
+    """Parse session folder name."""
     parts = str(folder_name or "").split("__")
     if len(parts) >= 6:
         date_part, time_part = parts[0], parts[1]
@@ -413,6 +426,7 @@ def _parse_session_folder_name(folder_name: str) -> _ParsedFolderName:
 
 
 def _parse_lap_meta_filename(filename: str) -> tuple[int | None, int] | None:
+    """Parse lap meta filename."""
     name = str(filename or "")
     with_run = _RUN_LAP_META_WITH_RUN_RE.match(name)
     if with_run:
@@ -433,6 +447,7 @@ def _parse_lap_meta_filename(filename: str) -> tuple[int | None, int] | None:
 
 
 def _maybe_rename_offline_testing_unknown_session_dir(session_dir: Path) -> Path:
+    """Implement maybe rename offline testing unknown session dir logic."""
     path = Path(session_dir)
     parts = path.name.split("__")
     if len(parts) < 6:
@@ -457,6 +472,7 @@ def _maybe_rename_offline_testing_unknown_session_dir(session_dir: Path) -> Path
 
 
 def _parse_folder_ts(date_part: str, time_part: str) -> float | None:
+    """Parse folder ts."""
     try:
         dt = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H%M%S")
     except Exception:
@@ -468,6 +484,7 @@ def _parse_folder_ts(date_part: str, time_part: str) -> float | None:
 
 
 def _read_json_dict(path: Path | None) -> dict[str, Any]:
+    """Read json dict."""
     if path is None:
         return {}
     try:
@@ -490,6 +507,7 @@ def _compute_run_summary(
     parquet_path: Path | None,
     meta_path: Path | None,
 ) -> NodeSummary:
+    """Compute run summary."""
     complete_durations = [
         d
         for d in (
@@ -528,6 +546,7 @@ def _compute_run_summary(
 
 
 def _compute_session_summary(runs: list[_RunScan], *, fallback_last_ts: float | None) -> NodeSummary:
+    """Compute session summary."""
     if not runs:
         return NodeSummary(
             total_time_s=None,
@@ -555,6 +574,7 @@ def _compute_session_summary(runs: list[_RunScan], *, fallback_last_ts: float | 
 
 def _augment_single_run_from_debug_samples(*, session_dir: Path, runs: list[_RunScan]) -> None:
     # Backfill for sessions where recorder produced only one run file but debug stream shows more laps.
+    """Implement augment single run from debug samples logic."""
     if len(runs) != 1:
         return
     snapshot = _read_debug_lap_snapshot(session_dir)
@@ -590,6 +610,7 @@ def _expand_lap_segments_from_counters(
     target_completed: int,
     target_total: int,
 ) -> list[dict[str, Any]]:
+    """Implement expand lap segments from counters logic."""
     by_lap_no: dict[int, dict[str, Any]] = {}
     for seg in existing_segments:
         if not isinstance(seg, dict):
@@ -642,6 +663,7 @@ def _expand_lap_segments_from_counters(
 
 
 def _read_debug_lap_snapshot(session_dir: Path) -> dict[str, Any] | None:
+    """Read debug lap snapshot."""
     path = session_dir / _DEBUG_SAMPLES_FILENAME
     if not path.exists():
         return None
@@ -672,6 +694,7 @@ def _read_debug_lap_snapshot(session_dir: Path) -> dict[str, Any] | None:
 
 
 def _extract_debug_lap_snapshot_from_lines(lines: list[str]) -> dict[str, Any] | None:
+    """Extract debug lap snapshot from lines."""
     for line in reversed(lines):
         text = str(line or "").strip()
         if not text:
@@ -707,6 +730,7 @@ def _extract_debug_lap_snapshot_from_lines(lines: list[str]) -> dict[str, Any] |
 
 
 def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
+    """Build and return session event node."""
     session_path = session.session_dir
     session_id_str = _stable_path_id(session_path)
     run_nodes: list[CoachingTreeNode] = []
@@ -746,6 +770,7 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
 
 
 def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
+    """Build and return run node."""
     session_id_str = _stable_path_id(session.session_dir)
     lap_nodes: list[CoachingTreeNode] = []
     for idx, segment in enumerate(run.lap_segments):
@@ -795,6 +820,7 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
 
 
 def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dict[str, Any]) -> CoachingTreeNode:
+    """Build and return lap node."""
     session_id_str = _stable_path_id(session.session_dir)
     lap_no = _coerce_optional_int(segment.get("lap_no"))
     lap_incomplete = _segment_lap_incomplete(segment)
@@ -842,12 +868,14 @@ def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dic
 
 
 def _register_tree_nodes(nodes_by_id: dict[str, CoachingTreeNode], node: CoachingTreeNode) -> None:
+    """Implement register tree nodes logic."""
     nodes_by_id[node.id] = node
     for child in node.children:
         _register_tree_nodes(nodes_by_id, child)
 
 
 def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
+    """Implement aggregate summary logic."""
     if not nodes:
         return NodeSummary()
     total_time_values = [n.summary.total_time_s for n in nodes if n.summary.total_time_s is not None]
@@ -872,6 +900,7 @@ def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
 # - lap_offtrack: lap had at least one offtrack sample.
 # - best(valid): only laps with lap_incomplete=False and lap_offtrack=False.
 def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
+    """Implement segment lap incomplete logic."""
     lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
     if lap_complete is not None:
         incomplete = not lap_complete
@@ -887,6 +916,7 @@ def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
 
 
 def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
+    """Implement segment lap offtrack logic."""
     surface = _coerce_optional_bool(segment.get("offtrack_surface"))
     if surface is not None:
         return surface
@@ -899,6 +929,7 @@ def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
 
 
 def _segment_lap_valid(segment: dict[str, Any]) -> bool:
+    """Implement segment lap valid logic."""
     explicit = _coerce_optional_bool(segment.get("valid_lap"))
     lap_incomplete = _segment_lap_incomplete(segment)
     lap_offtrack = _segment_lap_offtrack(segment)
@@ -920,6 +951,7 @@ def _segment_lap_valid(segment: dict[str, Any]) -> bool:
 
 
 def _segment_is_fragment(segment: dict[str, Any]) -> bool:
+    """Implement segment is fragment logic."""
     duration = _lap_duration_seconds(segment)
     if duration is not None and duration < _MIN_VALID_LAP_TIME_S:
         return True
@@ -930,6 +962,7 @@ def _segment_is_fragment(segment: dict[str, Any]) -> bool:
 
 
 def _segment_passes_sanity(segment: dict[str, Any]) -> bool:
+    """Implement segment passes sanity logic."""
     duration = _lap_duration_seconds(segment)
     if duration is None or duration < _MIN_VALID_LAP_TIME_S:
         return False
@@ -940,6 +973,7 @@ def _segment_passes_sanity(segment: dict[str, Any]) -> bool:
 
 
 def _segment_sample_count(segment: dict[str, Any]) -> int | None:
+    """Implement segment sample count logic."""
     sample_count = _coerce_optional_int(segment.get("sample_count"))
     if sample_count is not None and sample_count >= 0:
         return sample_count
@@ -954,6 +988,7 @@ def _segment_sample_count(segment: dict[str, Any]) -> int | None:
 
 
 def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_segments: list[dict[str, Any]]) -> None:
+    """Implement refresh segment validity from parquet logic."""
     if parquet_path is None or not parquet_path.exists() or not lap_segments:
         return
     try:
@@ -1072,6 +1107,7 @@ def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_seg
 
 
 def _segment_sample_bounds(segment: dict[str, Any], *, row_count: int) -> tuple[int, int] | None:
+    """Implement segment sample bounds logic."""
     start_idx = _coerce_optional_int(segment.get("start_sample"))
     end_idx = _coerce_optional_int(segment.get("end_sample"))
     if start_idx is None or end_idx is None:
@@ -1089,6 +1125,7 @@ def _segment_sample_bounds(segment: dict[str, Any], *, row_count: int) -> tuple[
 
 
 def _enforce_unique_lap_numbers(lap_segments: list[dict[str, Any]]) -> None:
+    """Implement enforce unique lap numbers logic."""
     canonical_index_by_lap_no: dict[int, int] = {}
     for idx, segment in enumerate(lap_segments):
         if not isinstance(segment, dict):
@@ -1112,12 +1149,14 @@ def _enforce_unique_lap_numbers(lap_segments: list[dict[str, Any]]) -> None:
 
 
 def _segment_duration_sort_key(segment: dict[str, Any]) -> tuple[float, int]:
+    """Implement segment duration sort key logic."""
     duration = _lap_duration_seconds(segment)
     sample_count = _segment_sample_count(segment)
     return (float(duration) if duration is not None else -1.0, int(sample_count) if sample_count is not None else -1)
 
 
 def _mark_segment_duplicate_fragment(segment: dict[str, Any], *, lap_no: int) -> None:
+    """Implement mark segment duplicate fragment logic."""
     segment["lap_complete"] = False
     segment["is_complete"] = False
     segment["lap_incomplete"] = True
@@ -1133,10 +1172,12 @@ def _mark_segment_duplicate_fragment(segment: dict[str, Any], *, lap_no: int) ->
 
 
 def _count_completed_laps(lap_segments: list[dict[str, Any]]) -> int:
+    """Implement count completed laps logic."""
     return sum(1 for segment in lap_segments if isinstance(segment, dict) and not _segment_lap_incomplete(segment))
 
 
 def _best_valid_lap_from_segments(lap_segments: list[dict[str, Any]]) -> float | None:
+    """Implement best valid lap from segments logic."""
     valid_by_lap_no: dict[int, float] = {}
     valid_without_lap_no: list[float] = []
     for segment in lap_segments:
@@ -1159,6 +1200,7 @@ def _best_valid_lap_from_segments(lap_segments: list[dict[str, Any]]) -> float |
 
 
 def _lap_validity_stats(lap_segments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Implement lap validity stats logic."""
     total = 0
     incomplete = 0
     offtrack = 0
@@ -1185,6 +1227,7 @@ def _lap_validity_stats(lap_segments: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _has_valid_lap_metadata(lap_segments: list[dict[str, Any]]) -> bool:
+    """Return whether valid lap metadata."""
     for segment in lap_segments:
         if not isinstance(segment, dict):
             continue
@@ -1200,6 +1243,7 @@ def _apply_lap_meta_to_segments(
     lap_segments: list[dict[str, Any]],
     lap_meta_paths: dict[int, Path],
 ) -> dict[str, Any]:
+    """Apply lap meta to segments."""
     found_files = 0
     applied_segments = 0
     validity_applied = 0
@@ -1333,6 +1377,7 @@ def _apply_lap_meta_to_segments(
 
 
 def _debug_log_run_lap_diagnostics(*, run_dir: Path, run_id: int, lap_segments: list[dict[str, Any]]) -> None:
+    """Implement debug log run lap diagnostics logic."""
     if not _is_debug_lap_diagnostics_enabled() or not _LOG.isEnabledFor(logging.DEBUG):
         return
     surface_counts = _collect_debug_surface_counts(run_dir)
@@ -1369,6 +1414,7 @@ def _debug_log_run_lap_diagnostics(*, run_dir: Path, run_id: int, lap_segments: 
 
 
 def _collect_debug_surface_counts(run_dir: Path) -> dict[int, int]:
+    """Collect debug surface counts."""
     path = run_dir / _DEBUG_SAMPLES_FILENAME
     if not path.exists():
         return {}
@@ -1403,6 +1449,7 @@ def _resolve_lap_meta_segment_index(
     lap_seq: int,
     data: dict[str, Any],
 ) -> int | None:
+    """Resolve lap meta segment index."""
     explicit_index = _coerce_optional_int(data.get("lap_index"))
     if explicit_index is not None and 0 <= explicit_index < len(lap_segments):
         return explicit_index
@@ -1434,6 +1481,7 @@ def _resolve_lap_meta_segment_index(
 
 
 def _match_segment_index_by_lap_no(*, lap_segments: list[dict[str, Any]], lap_value: int) -> int | None:
+    """Implement match segment index by lap no logic."""
     for idx, segment in enumerate(lap_segments):
         if not isinstance(segment, dict):
             continue
@@ -1452,6 +1500,7 @@ def _build_normalized_lap_summary(
     lap_offtrack: bool,
     lap_valid: bool,
 ) -> dict[str, Any]:
+    """Build and return normalized lap summary."""
     lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
     offtrack_surface = _coerce_optional_bool(segment.get("offtrack_surface"))
     incident_delta = _coerce_optional_int(segment.get("incident_delta"))
@@ -1480,6 +1529,7 @@ def _build_normalized_lap_summary(
 
 
 def _session_label(session: _SessionScan) -> str:
+    """Implement session label logic."""
     ts_text = _format_dt_short(session.parsed_folder_ts or session.last_driven_ts)
     type_text = str(session.session_type or "Unknown")
     sid = str(session.session_id or session.folder_name)
@@ -1490,6 +1540,7 @@ def _session_label(session: _SessionScan) -> str:
 
 
 def _format_dt_short(ts: float | None) -> str:
+    """Format dt short."""
     if ts is None:
         return "Unknown time"
     try:
@@ -1499,6 +1550,7 @@ def _format_dt_short(ts: float | None) -> str:
 
 
 def _duration_from_run_meta(run_meta: dict[str, Any]) -> float | None:
+    """Implement duration from run meta logic."""
     start = _coerce_optional_float(run_meta.get("start_session_time"))
     end = _coerce_optional_float(run_meta.get("end_session_time"))
     if start is None or end is None:
@@ -1510,6 +1562,7 @@ def _duration_from_run_meta(run_meta: dict[str, Any]) -> float | None:
 
 
 def _lap_duration_seconds(segment: dict[str, Any]) -> float | None:
+    """Implement lap duration seconds logic."""
     if not isinstance(segment, dict):
         return None
     duration = _coerce_optional_float(segment.get("duration_s"))
@@ -1526,10 +1579,12 @@ def _lap_duration_seconds(segment: dict[str, Any]) -> float | None:
 
 
 def _best_effort_last_driven_ts(session_dir: Path, parsed_folder_ts: float | None) -> float | None:
+    """Implement best effort last driven ts logic."""
     return _max_optional(parsed_folder_ts, _path_mtime_ts(session_dir))
 
 
 def _path_mtime_ts(path: Path | None) -> float | None:
+    """Implement path mtime ts logic."""
     if path is None:
         return None
     try:
@@ -1539,6 +1594,7 @@ def _path_mtime_ts(path: Path | None) -> float | None:
 
 
 def _meta_str(meta: dict[str, Any], key: str) -> str | None:
+    """Implement meta str logic."""
     value = meta.get(key)
     if value is None:
         return None
@@ -1547,6 +1603,7 @@ def _meta_str(meta: dict[str, Any], key: str) -> str | None:
 
 
 def _coerce_optional_float(value: Any) -> float | None:
+    """Coerce optional float."""
     try:
         return float(value)
     except Exception:
@@ -1554,6 +1611,7 @@ def _coerce_optional_float(value: Any) -> float | None:
 
 
 def _coerce_optional_int(value: Any) -> int | None:
+    """Coerce optional int."""
     try:
         return int(value)
     except Exception:
@@ -1561,6 +1619,7 @@ def _coerce_optional_int(value: Any) -> int | None:
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:
+    """Coerce optional bool."""
     if isinstance(value, bool):
         return value
     if value is None:
@@ -1580,10 +1639,12 @@ def _coerce_optional_bool(value: Any) -> bool | None:
 
 
 def _sort_key_text(value: Any) -> str:
+    """Sort key text."""
     return str(value or "").lower()
 
 
 def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None, list[Path]]:
+    """Implement session cache signature logic."""
     try:
         children = list(session_dir.iterdir())
         dir_stat = session_dir.stat()
@@ -1618,6 +1679,7 @@ def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None,
 
 
 def _stable_path_id(path: Path) -> str:
+    """Implement stable path id logic."""
     try:
         return str(path.resolve())
     except Exception:
@@ -1625,16 +1687,19 @@ def _stable_path_id(path: Path) -> str:
 
 
 def _cache_key(path: Path) -> str:
+    """Implement cache key logic."""
     return _stable_path_id(path)
 
 
 def _prune_cache(live_keys: set[str]) -> None:
+    """Implement prune cache logic."""
     stale = [key for key in _SESSION_CACHE.keys() if key not in live_keys]
     for key in stale:
         _SESSION_CACHE.pop(key, None)
 
 
 def _max_optional(*values: float | None) -> float | None:
+    """Implement max optional logic."""
     valid = [v for v in values if v is not None]
     if not valid:
         return None
@@ -1642,6 +1707,7 @@ def _max_optional(*values: float | None) -> float | None:
 
 
 def _safe_now_ts() -> float:
+    """Implement safe now ts logic."""
     try:
         return datetime.now().timestamp()
     except Exception:
@@ -1649,6 +1715,7 @@ def _safe_now_ts() -> float:
 
 
 def _is_debug_coaching_enabled() -> bool:
+    """Return whether debug coaching enabled."""
     raw = os.environ.get("IWAS_DEBUG_COACHING")
     if raw is None:
         return False
@@ -1657,6 +1724,7 @@ def _is_debug_coaching_enabled() -> bool:
 
 
 def _is_debug_lap_diagnostics_enabled() -> bool:
+    """Return whether debug lap diagnostics enabled."""
     raw = os.environ.get("IWAS_COACHING_DEBUG_LAP_DIAGNOSTICS")
     if raw is None:
         return False
