@@ -61,13 +61,14 @@ class LapSegmenter:
         self.current_lap_start_index: int | None = None
         self.current_lap_start_ts: float | None = None
         self.current_lap_no: int | None = None
-        self.current_offtrack_surface = False
+        self.current_offtrack_incident = False
         self.current_sample_count = 0
         self.current_track_surface_min: int | None = None
         self.current_track_surface_max: int | None = None
         self.current_track_surface_values: Counter[int] = Counter()
         self.current_incident_min: int | None = None
         self.current_incident_max: int | None = None
+        self._prev_incident_count: int | None = None
         self.segments: list[dict[str, Any]] = []
         self._observed_track_surface_values: Counter[int] = Counter()
         self._debug_surface_values_logged = False
@@ -219,7 +220,7 @@ class LapSegmenter:
         incident_delta = 0
         if self.current_incident_min is not None and self.current_incident_max is not None:
             incident_delta = max(0, int(self.current_incident_max) - int(self.current_incident_min))
-        offtrack_surface = bool(self.current_offtrack_surface)
+        offtrack_surface = bool(self.current_offtrack_incident)
         valid_lap = bool(
             lap_complete
             and self._passes_lap_sanity(lap_time_s=lap_time_s, sample_count=sample_count)
@@ -330,15 +331,13 @@ class LapSegmenter:
             self.current_track_surface_values[int(enum_value)] += 1
             self._observed_track_surface_values[int(enum_value)] += 1
 
-        surface_class = self.classify_track_surface(
-            track_surface,
-            is_on_track_car=is_on_track_car,
-            on_pit_road=on_pit_road,
-        )
-        if surface_class == _TRACK_SURFACE_OFF_TRACK:
-            self.current_offtrack_surface = True
         if incident_count is None:
             return
+        if self._prev_incident_count is not None:
+            step = incident_count - self._prev_incident_count
+            if step in (1, 2):
+                self.current_offtrack_incident = True
+        self._prev_incident_count = incident_count
         if self.current_incident_min is None or incident_count < self.current_incident_min:
             self.current_incident_min = int(incident_count)
         if self.current_incident_max is None or incident_count > self.current_incident_max:
@@ -346,13 +345,14 @@ class LapSegmenter:
 
     def _reset_current_lap_meta(self) -> None:
         """Implement reset current lap meta logic."""
-        self.current_offtrack_surface = False
+        self.current_offtrack_incident = False
         self.current_sample_count = 0
         self.current_track_surface_min = None
         self.current_track_surface_max = None
         self.current_track_surface_values = Counter()
         self.current_incident_min = None
         self.current_incident_max = None
+        self._prev_incident_count = None
 
     @staticmethod
     def _read_value(sample: dict[str, Any], key: str) -> Any:

@@ -1031,21 +1031,11 @@ def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_seg
         slice_pit = pit_values[start_idx : end_idx + 1]
         slice_on_track = on_track_values[start_idx : end_idx + 1]
 
-        offtrack_surface = False
         track_min: int | None = None
         track_max: int | None = None
         track_counter: dict[int, int] = {}
-        for idx, raw_surface in enumerate(slice_tracks):
+        for raw_surface in slice_tracks:
             enum_value = _coerce_optional_int(raw_surface)
-            on_pit_road = _coerce_optional_bool(slice_pit[idx]) if idx < len(slice_pit) else None
-            is_on_track_car = _coerce_optional_bool(slice_on_track[idx]) if idx < len(slice_on_track) else None
-            surface_class = LapSegmenter.classify_track_surface(
-                raw_surface,
-                on_pit_road=on_pit_road,
-                is_on_track_car=is_on_track_car,
-            )
-            if surface_class == "OFF_TRACK":
-                offtrack_surface = True
             if enum_value is None:
                 continue
             if track_min is None or enum_value < track_min:
@@ -1054,20 +1044,29 @@ def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_seg
                 track_max = enum_value
             track_counter[enum_value] = int(track_counter.get(enum_value, 0)) + 1
 
+        offtrack_incident = False
         incident_min: int | None = None
         incident_max: int | None = None
+        prev_inc: int | None = None
         for raw_incident in slice_incidents:
-            incident = _coerce_optional_int(raw_incident)
-            if incident is None:
+            inc = _coerce_optional_int(raw_incident)
+            if inc is None:
+                prev_inc = None
                 continue
-            if incident_min is None or incident < incident_min:
-                incident_min = incident
-            if incident_max is None or incident > incident_max:
-                incident_max = incident
+            if prev_inc is not None:
+                step = inc - prev_inc
+                if step in (1, 2):
+                    offtrack_incident = True
+            prev_inc = inc
+            if incident_min is None or inc < incident_min:
+                incident_min = inc
+            if incident_max is None or inc > incident_max:
+                incident_max = inc
         incident_delta = 0
         if incident_min is not None and incident_max is not None:
             incident_delta = max(0, int(incident_max - incident_min))
 
+        offtrack_surface = offtrack_incident
         segment["offtrack_surface"] = bool(offtrack_surface)
         segment["lap_offtrack"] = bool(offtrack_surface)
         segment["incident_delta"] = int(incident_delta)
