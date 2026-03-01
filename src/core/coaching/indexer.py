@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from core.coaching.lap_segmenter import LapSegmenter
 from core.coaching.lap_metrics import RunLapMetrics, compute_run_lap_metrics
 from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZED_FILENAME
 
@@ -19,6 +20,8 @@ _RUN_LAP_META_WITH_RUN_RE = re.compile(r"^run_(\d+)_lap_(\d+)_meta\.json$", re.I
 _LAP_META_RE = re.compile(r"^lap_(\d+)_meta\.json$", re.IGNORECASE)
 _LOG = logging.getLogger(__name__)
 _DEBUG_SAMPLES_FILENAME = "debug_samples.jsonl"
+_MIN_VALID_LAP_TIME_S = 30.0
+_MIN_VALID_LAP_SAMPLES = 60
 
 
 @dataclass
@@ -300,7 +303,10 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             lap_segments=lap_segments,
             lap_meta_paths=lap_meta_paths,
         )
+        _refresh_segment_validity_from_parquet(parquet_path=parquet_path, lap_segments=lap_segments)
+        _enforce_unique_lap_numbers(lap_segments)
         run_meta["lap_meta_status"] = lap_meta_status
+        _debug_log_run_lap_diagnostics(run_dir=session_dir, run_id=run_id, lap_segments=lap_segments)
         run_summary = _compute_run_summary(
             run_meta,
             lap_segments=lap_segments,
@@ -868,11 +874,16 @@ def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
 def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
     lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
     if lap_complete is not None:
-        return not lap_complete
-    explicit = _coerce_optional_bool(segment.get("lap_incomplete"))
-    if explicit is not None:
-        return explicit
-    return not bool(segment.get("is_complete", True))
+        incomplete = not lap_complete
+    else:
+        explicit = _coerce_optional_bool(segment.get("lap_incomplete"))
+        if explicit is not None:
+            incomplete = explicit
+        else:
+            incomplete = not bool(segment.get("is_complete", True))
+    if incomplete:
+        return True
+    return _segment_is_fragment(segment)
 
 
 def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
@@ -889,9 +900,236 @@ def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
 
 def _segment_lap_valid(segment: dict[str, Any]) -> bool:
     explicit = _coerce_optional_bool(segment.get("valid_lap"))
-    if explicit is not None:
-        return bool(explicit and not _segment_lap_incomplete(segment))
-    return not _segment_lap_incomplete(segment) and not _segment_lap_offtrack(segment)
+    lap_incomplete = _segment_lap_incomplete(segment)
+    lap_offtrack = _segment_lap_offtrack(segment)
+    incident_delta = _coerce_optional_int(segment.get("incident_delta"))
+    if incident_delta is None or incident_delta < 0:
+        incident_delta = 0
+    lap_no = _coerce_optional_int(segment.get("lap_no"))
+    passes_sanity = _segment_passes_sanity(segment)
+    if explicit is None:
+        explicit = not lap_incomplete and not lap_offtrack and incident_delta == 0
+    return bool(
+        explicit
+        and not lap_incomplete
+        and not lap_offtrack
+        and incident_delta == 0
+        and passes_sanity
+        and lap_no != 0
+    )
+
+
+def _segment_is_fragment(segment: dict[str, Any]) -> bool:
+    duration = _lap_duration_seconds(segment)
+    if duration is not None and duration < _MIN_VALID_LAP_TIME_S:
+        return True
+    sample_count = _segment_sample_count(segment)
+    if sample_count is not None and sample_count < _MIN_VALID_LAP_SAMPLES:
+        return True
+    return False
+
+
+def _segment_passes_sanity(segment: dict[str, Any]) -> bool:
+    duration = _lap_duration_seconds(segment)
+    if duration is None or duration < _MIN_VALID_LAP_TIME_S:
+        return False
+    sample_count = _segment_sample_count(segment)
+    if sample_count is not None and sample_count < _MIN_VALID_LAP_SAMPLES:
+        return False
+    return True
+
+
+def _segment_sample_count(segment: dict[str, Any]) -> int | None:
+    sample_count = _coerce_optional_int(segment.get("sample_count"))
+    if sample_count is not None and sample_count >= 0:
+        return sample_count
+    start_idx = _coerce_optional_int(segment.get("start_sample"))
+    end_idx = _coerce_optional_int(segment.get("end_sample"))
+    if start_idx is None or end_idx is None:
+        start_idx = _coerce_optional_int(segment.get("start_idx"))
+        end_idx = _coerce_optional_int(segment.get("end_idx"))
+    if start_idx is None or end_idx is None or end_idx < start_idx:
+        return None
+    return int(end_idx - start_idx + 1)
+
+
+def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_segments: list[dict[str, Any]]) -> None:
+    if parquet_path is None or not parquet_path.exists() or not lap_segments:
+        return
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+    except Exception:
+        return
+
+    try:
+        table = pq.read_table(
+            parquet_path,
+            columns=["PlayerTrackSurface", "PlayerCarMyIncidentCount", "OnPitRoad", "IsOnTrackCar"],
+        )
+    except Exception:
+        return
+
+    row_count = int(table.num_rows)
+    if row_count <= 0:
+        return
+    names = set(table.schema.names)
+    track_values = table.column("PlayerTrackSurface").to_pylist() if "PlayerTrackSurface" in names else [None] * row_count
+    incident_values = (
+        table.column("PlayerCarMyIncidentCount").to_pylist() if "PlayerCarMyIncidentCount" in names else [None] * row_count
+    )
+    pit_values = table.column("OnPitRoad").to_pylist() if "OnPitRoad" in names else [None] * row_count
+    on_track_values = table.column("IsOnTrackCar").to_pylist() if "IsOnTrackCar" in names else [None] * row_count
+
+    for segment in lap_segments:
+        if not isinstance(segment, dict):
+            continue
+        bounds = _segment_sample_bounds(segment, row_count=row_count)
+        if bounds is None:
+            continue
+        start_idx, end_idx = bounds
+        if end_idx < start_idx:
+            continue
+        sample_count = int(end_idx - start_idx + 1)
+        segment["sample_count"] = sample_count
+        slice_tracks = track_values[start_idx : end_idx + 1]
+        slice_incidents = incident_values[start_idx : end_idx + 1]
+        slice_pit = pit_values[start_idx : end_idx + 1]
+        slice_on_track = on_track_values[start_idx : end_idx + 1]
+
+        offtrack_surface = False
+        track_min: int | None = None
+        track_max: int | None = None
+        track_counter: dict[int, int] = {}
+        for idx, raw_surface in enumerate(slice_tracks):
+            enum_value = _coerce_optional_int(raw_surface)
+            on_pit_road = _coerce_optional_bool(slice_pit[idx]) if idx < len(slice_pit) else None
+            is_on_track_car = _coerce_optional_bool(slice_on_track[idx]) if idx < len(slice_on_track) else None
+            surface_class = LapSegmenter.classify_track_surface(
+                raw_surface,
+                on_pit_road=on_pit_road,
+                is_on_track_car=is_on_track_car,
+            )
+            if surface_class == "OFF_TRACK":
+                offtrack_surface = True
+            if enum_value is None:
+                continue
+            if track_min is None or enum_value < track_min:
+                track_min = enum_value
+            if track_max is None or enum_value > track_max:
+                track_max = enum_value
+            track_counter[enum_value] = int(track_counter.get(enum_value, 0)) + 1
+
+        incident_min: int | None = None
+        incident_max: int | None = None
+        for raw_incident in slice_incidents:
+            incident = _coerce_optional_int(raw_incident)
+            if incident is None:
+                continue
+            if incident_min is None or incident < incident_min:
+                incident_min = incident
+            if incident_max is None or incident > incident_max:
+                incident_max = incident
+        incident_delta = 0
+        if incident_min is not None and incident_max is not None:
+            incident_delta = max(0, int(incident_max - incident_min))
+
+        segment["offtrack_surface"] = bool(offtrack_surface)
+        segment["lap_offtrack"] = bool(offtrack_surface)
+        segment["incident_delta"] = int(incident_delta)
+        if track_min is not None:
+            segment["track_surface_min"] = int(track_min)
+        if track_max is not None:
+            segment["track_surface_max"] = int(track_max)
+        if track_counter:
+            top3 = sorted(track_counter.items(), key=lambda kv: (-int(kv[1]), int(kv[0])))[:3]
+            segment["track_surface_values"] = [[int(v), int(c)] for v, c in top3]
+        if incident_min is not None:
+            segment["incident_min"] = int(incident_min)
+        if incident_max is not None:
+            segment["incident_max"] = int(incident_max)
+
+        lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
+        if lap_complete is None:
+            lap_incomplete = _coerce_optional_bool(segment.get("lap_incomplete"))
+            if lap_incomplete is not None:
+                lap_complete = not lap_incomplete
+        if lap_complete is None:
+            lap_complete = bool(segment.get("is_complete", False))
+        if bool(lap_complete) and not _segment_passes_sanity(segment):
+            lap_complete = False
+        segment["lap_complete"] = bool(lap_complete)
+        segment["is_complete"] = bool(lap_complete)
+        segment["lap_incomplete"] = not bool(lap_complete)
+        valid_lap = bool(
+            bool(lap_complete)
+            and _segment_passes_sanity(segment)
+            and not bool(offtrack_surface)
+            and int(incident_delta) == 0
+            and _coerce_optional_int(segment.get("lap_no")) != 0
+        )
+        segment["valid_lap"] = bool(valid_lap)
+        segment["is_valid"] = bool(valid_lap)
+
+
+def _segment_sample_bounds(segment: dict[str, Any], *, row_count: int) -> tuple[int, int] | None:
+    start_idx = _coerce_optional_int(segment.get("start_sample"))
+    end_idx = _coerce_optional_int(segment.get("end_sample"))
+    if start_idx is None or end_idx is None:
+        start_idx = _coerce_optional_int(segment.get("start_idx"))
+        end_idx = _coerce_optional_int(segment.get("end_idx"))
+    if start_idx is None or end_idx is None:
+        return None
+    if start_idx < 0:
+        start_idx = 0
+    if end_idx >= row_count:
+        end_idx = row_count - 1
+    if end_idx < start_idx:
+        return None
+    return (int(start_idx), int(end_idx))
+
+
+def _enforce_unique_lap_numbers(lap_segments: list[dict[str, Any]]) -> None:
+    canonical_index_by_lap_no: dict[int, int] = {}
+    for idx, segment in enumerate(lap_segments):
+        if not isinstance(segment, dict):
+            continue
+        lap_no = _coerce_optional_int(segment.get("lap_no"))
+        if lap_no is None:
+            continue
+        canonical_idx = canonical_index_by_lap_no.get(lap_no)
+        if canonical_idx is None:
+            canonical_index_by_lap_no[lap_no] = idx
+            continue
+        canonical_segment = lap_segments[canonical_idx]
+        if not isinstance(canonical_segment, dict):
+            canonical_index_by_lap_no[lap_no] = idx
+            continue
+        if _segment_duration_sort_key(segment) > _segment_duration_sort_key(canonical_segment):
+            _mark_segment_duplicate_fragment(canonical_segment, lap_no=lap_no)
+            canonical_index_by_lap_no[lap_no] = idx
+        else:
+            _mark_segment_duplicate_fragment(segment, lap_no=lap_no)
+
+
+def _segment_duration_sort_key(segment: dict[str, Any]) -> tuple[float, int]:
+    duration = _lap_duration_seconds(segment)
+    sample_count = _segment_sample_count(segment)
+    return (float(duration) if duration is not None else -1.0, int(sample_count) if sample_count is not None else -1)
+
+
+def _mark_segment_duplicate_fragment(segment: dict[str, Any], *, lap_no: int) -> None:
+    segment["lap_complete"] = False
+    segment["is_complete"] = False
+    segment["lap_incomplete"] = True
+    segment["valid_lap"] = False
+    segment["is_valid"] = False
+    segment["fragment"] = True
+    segment["fragment_lap_no"] = int(lap_no)
+    segment.pop("lap_no", None)
+    segment.pop("lap_num", None)
+    reason = str(segment.get("reason") or "")
+    if "fragment_duplicate_lap_no" not in reason:
+        segment["reason"] = f"{reason}|fragment_duplicate_lap_no" if reason else "fragment_duplicate_lap_no"
 
 
 def _count_completed_laps(lap_segments: list[dict[str, Any]]) -> int:
@@ -899,13 +1137,22 @@ def _count_completed_laps(lap_segments: list[dict[str, Any]]) -> int:
 
 
 def _best_valid_lap_from_segments(lap_segments: list[dict[str, Any]]) -> float | None:
-    valid_times = [
-        duration
-        for segment in lap_segments
-        if isinstance(segment, dict)
-        for duration in [_lap_duration_seconds(segment)]
-        if duration is not None and duration >= 0.0 and _segment_lap_valid(segment)
-    ]
+    valid_by_lap_no: dict[int, float] = {}
+    valid_without_lap_no: list[float] = []
+    for segment in lap_segments:
+        if not isinstance(segment, dict):
+            continue
+        duration = _lap_duration_seconds(segment)
+        if duration is None or duration < 0.0 or not _segment_lap_valid(segment):
+            continue
+        lap_no = _coerce_optional_int(segment.get("lap_no"))
+        if lap_no is None:
+            valid_without_lap_no.append(duration)
+            continue
+        previous = valid_by_lap_no.get(lap_no)
+        if previous is None or duration > previous:
+            valid_by_lap_no[lap_no] = duration
+    valid_times = list(valid_by_lap_no.values()) + valid_without_lap_no
     if not valid_times:
         return None
     return min(valid_times)
@@ -1007,8 +1254,6 @@ def _apply_lap_meta_to_segments(
         valid_lap = _coerce_optional_bool(data.get("valid_lap"))
         if incident_delta is not None and incident_delta < 0:
             incident_delta = 0
-        if valid_lap is None and lap_complete is not None and offtrack_surface is not None and incident_delta is not None:
-            valid_lap = bool(lap_complete and not offtrack_surface and incident_delta == 0)
 
         if lap_complete is not None:
             segment["lap_complete"] = bool(lap_complete)
@@ -1020,6 +1265,14 @@ def _apply_lap_meta_to_segments(
             segment["lap_offtrack"] = bool(offtrack_surface)
         if incident_delta is not None:
             segment["incident_delta"] = int(incident_delta)
+        if valid_lap is None and lap_complete is not None and offtrack_surface is not None and incident_delta is not None:
+            valid_lap = bool(
+                lap_complete
+                and not offtrack_surface
+                and incident_delta == 0
+                and _segment_passes_sanity(segment)
+                and _coerce_optional_int(segment.get("lap_no")) != 0
+            )
         if valid_lap is not None:
             segment["valid_lap"] = bool(valid_lap)
             segment["is_valid"] = bool(valid_lap)
@@ -1077,6 +1330,71 @@ def _apply_lap_meta_to_segments(
         "validity_applied": validity_applied,
         "unresolved_files": unresolved_files,
     }
+
+
+def _debug_log_run_lap_diagnostics(*, run_dir: Path, run_id: int, lap_segments: list[dict[str, Any]]) -> None:
+    if not _is_debug_lap_diagnostics_enabled() or not _LOG.isEnabledFor(logging.DEBUG):
+        return
+    surface_counts = _collect_debug_surface_counts(run_dir)
+    if surface_counts:
+        values = sorted((int(value), int(count)) for value, count in surface_counts.items())
+        _LOG.debug("coaching.indexer run=%s/%04d debug_samples track_surface_values=%s", run_dir.name, run_id, values)
+    for idx, segment in enumerate(lap_segments):
+        if not isinstance(segment, dict):
+            continue
+        lap_no = _coerce_optional_int(segment.get("lap_no"))
+        lap_time_s = _lap_duration_seconds(segment)
+        lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
+        offtrack_surface = _coerce_optional_bool(segment.get("offtrack_surface"))
+        incident_delta = _coerce_optional_int(segment.get("incident_delta"))
+        valid_lap = _coerce_optional_bool(segment.get("valid_lap"))
+        sample_count = _segment_sample_count(segment)
+        _LOG.debug(
+            "coaching.indexer run=%s/%04d lap_idx=%s lap_no=%s lap_time_s=%s lap_complete=%s offtrack_surface=%s incident_delta=%s valid_lap=%s sample_count=%s track_min=%s track_max=%s incidents=%s/%s",
+            run_dir.name,
+            run_id,
+            idx,
+            lap_no,
+            lap_time_s,
+            lap_complete,
+            offtrack_surface,
+            incident_delta,
+            valid_lap,
+            sample_count,
+            segment.get("track_surface_min"),
+            segment.get("track_surface_max"),
+            segment.get("incident_min"),
+            segment.get("incident_max"),
+        )
+
+
+def _collect_debug_surface_counts(run_dir: Path) -> dict[int, int]:
+    path = run_dir / _DEBUG_SAMPLES_FILENAME
+    if not path.exists():
+        return {}
+    counts: dict[int, int] = {}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                raw = obj.get("raw")
+                if not isinstance(raw, dict):
+                    continue
+                value = _coerce_optional_int(raw.get("PlayerTrackSurface"))
+                if value is None:
+                    continue
+                counts[value] = int(counts.get(value, 0)) + 1
+    except Exception:
+        return {}
+    return counts
 
 
 def _resolve_lap_meta_segment_index(
@@ -1146,6 +1464,9 @@ def _build_normalized_lap_summary(
         incident_delta = 0
     if valid_lap is None:
         valid_lap = bool(lap_valid)
+    if lap_incomplete:
+        lap_complete = False
+        valid_lap = False
     return {
         "lap_time_s": lap_time_s,
         "lap_complete": bool(lap_complete),
@@ -1329,6 +1650,14 @@ def _safe_now_ts() -> float:
 
 def _is_debug_coaching_enabled() -> bool:
     raw = os.environ.get("IWAS_DEBUG_COACHING")
+    if raw is None:
+        return False
+    text = str(raw).strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _is_debug_lap_diagnostics_enabled() -> bool:
+    raw = os.environ.get("IWAS_COACHING_DEBUG_LAP_DIAGNOSTICS")
     if raw is None:
         return False
     text = str(raw).strip().lower()

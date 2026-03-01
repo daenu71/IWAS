@@ -283,7 +283,7 @@ def _lap_is_incomplete(summary: NodeSummary, *, lap_summary: dict[str, object]) 
 def _lap_is_offtrack(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
     if bool(getattr(summary, "lap_offtrack", False)):
         return True
-    for key in ("offtrack_surface", "lap_offtrack"):
+    for key in ("offtrack_surface", "lap_offtrack", "offtrack"):
         if key in lap_summary:
             explicit = _coerce_optional_bool(lap_summary.get(key))
             if explicit is not None:

@@ -1,14 +1,33 @@
 from __future__ import annotations
 
+from collections import Counter
+import logging
+import os
 from typing import Any
 
 
-_TRACK_SURFACE_OFFTRACK_ENUMS: set[int] = {0, 1}
+_LOG = logging.getLogger(__name__)
+
+_TRACK_SURFACE_ON_TRACK = "ON_TRACK"
+_TRACK_SURFACE_OFF_TRACK = "OFF_TRACK"
+_TRACK_SURFACE_PIT = "PIT"
+_TRACK_SURFACE_UNKNOWN = "UNKNOWN"
+
 _TRACK_SURFACE_OFFTRACK_NAMES: set[str] = {
     "offtrack",
-    "notinworld",
     "off",
     "offworld",
+}
+_TRACK_SURFACE_PIT_NAMES: set[str] = {
+    "pitroad",
+    "pitstall",
+    "inpits",
+    "inpitstall",
+    "approachingpits",
+}
+_TRACK_SURFACE_ON_TRACK_NAMES: set[str] = {
+    "ontrack",
+    "track",
 }
 
 
@@ -19,10 +38,15 @@ class LapSegmenter:
         use_ontrack_gate: bool = True,
         wrap_hi: float = 0.99,
         wrap_lo: float = 0.01,
+        min_valid_lap_time_s: float = 30.0,
+        min_valid_lap_samples: int = 60,
     ) -> None:
         self.use_ontrack_gate = bool(use_ontrack_gate)
         self.wrap_hi = float(wrap_hi)
         self.wrap_lo = float(wrap_lo)
+        self.min_valid_lap_time_s = max(0.0, float(min_valid_lap_time_s))
+        self.min_valid_lap_samples = max(1, int(min_valid_lap_samples))
+        self._debug_enabled = self._is_debug_enabled()
         self.reset()
 
     def reset(self, run_id: int | None = None) -> None:
@@ -33,9 +57,15 @@ class LapSegmenter:
         self.current_lap_start_ts: float | None = None
         self.current_lap_no: int | None = None
         self.current_offtrack_surface = False
+        self.current_sample_count = 0
+        self.current_track_surface_min: int | None = None
+        self.current_track_surface_max: int | None = None
+        self.current_track_surface_values: Counter[int] = Counter()
         self.current_incident_min: int | None = None
         self.current_incident_max: int | None = None
         self.segments: list[dict[str, Any]] = []
+        self._observed_track_surface_values: Counter[int] = Counter()
+        self._debug_surface_values_logged = False
 
         self._counter_change_seen = False
         self._wrap_cooldown_active = False
@@ -52,6 +82,7 @@ class LapSegmenter:
         counter_key, counter_value = self._select_lap_counter(sample_dict)
         lapdistpct = self._coerce_float(self._read_value(sample_dict, "LapDistPct"))
         is_on_track = self._coerce_bool(self._read_value(sample_dict, "IsOnTrackCar"))
+        on_pit_road = self._coerce_bool(self._read_value(sample_dict, "OnPitRoad"))
         track_surface = self._read_value(sample_dict, "PlayerTrackSurface")
         incident_count = self._coerce_int(self._read_value(sample_dict, "PlayerCarMyIncidentCount"))
 
@@ -94,7 +125,12 @@ class LapSegmenter:
                 self._start_segment(sample_index, now_ts, lap_no=next_lap_no)
                 self._wrap_cooldown_active = True
 
-        self._accumulate_current_lap_sample(track_surface=track_surface, incident_count=incident_count)
+        self._accumulate_current_lap_sample(
+            track_surface=track_surface,
+            incident_count=incident_count,
+            is_on_track_car=is_on_track,
+            on_pit_road=on_pit_road,
+        )
         self.last_lapdistpct = lapdistpct
         return events
 
@@ -104,6 +140,7 @@ class LapSegmenter:
             end_ts=now_ts,
             reason="run_end",
         )
+        self._debug_log_surface_values_once()
         if close_event is None:
             return []
         return [close_event]
@@ -162,18 +199,28 @@ class LapSegmenter:
         if end_sample_index < start_index:
             return None
 
-        lap_complete = reason in {"counter_change", "distpct_wrap"}
+        sample_count = max(0, int(end_sample_index - start_index + 1))
+        lap_time_s = self._compute_lap_time_s(self.current_lap_start_ts, end_ts)
+        structural_complete = reason in {"counter_change", "distpct_wrap"}
+        lap_complete = bool(structural_complete and self._passes_lap_sanity(lap_time_s=lap_time_s, sample_count=sample_count))
         incident_delta = 0
         if self.current_incident_min is not None and self.current_incident_max is not None:
             incident_delta = max(0, int(self.current_incident_max) - int(self.current_incident_min))
         offtrack_surface = bool(self.current_offtrack_surface)
-        valid_lap = bool(lap_complete and not offtrack_surface and incident_delta == 0)
+        valid_lap = bool(
+            lap_complete
+            and self._passes_lap_sanity(lap_time_s=lap_time_s, sample_count=sample_count)
+            and not offtrack_surface
+            and incident_delta == 0
+        )
         lap_index = len(self.segments)
         segment: dict[str, Any] = {
             "lap_index": int(lap_index),
             "start_idx": int(start_index),
             "end_idx": int(end_sample_index),
             "reason": str(reason),
+            "lap_time_s": lap_time_s,
+            "sample_count": int(sample_count),
             "lap_complete": bool(lap_complete),
             "offtrack_surface": offtrack_surface,
             "incident_delta": int(incident_delta),
@@ -189,8 +236,23 @@ class LapSegmenter:
             segment["start_ts"] = float(self.current_lap_start_ts)
         if end_ts is not None:
             segment["end_ts"] = float(end_ts)
+        if self._debug_enabled:
+            segment["track_surface_min"] = self.current_track_surface_min
+            segment["track_surface_max"] = self.current_track_surface_max
+            if self.current_track_surface_values:
+                segment["track_surface_values"] = [
+                    [int(value), int(count)] for value, count in self.current_track_surface_values.most_common(3)
+                ]
+            if self.current_incident_min is not None:
+                segment["incident_min"] = int(self.current_incident_min)
+            if self.current_incident_max is not None:
+                segment["incident_max"] = int(self.current_incident_max)
+
+        self._apply_duplicate_lap_policy(segment)
         self.segments.append(segment)
 
+        lap_complete = bool(segment.get("lap_complete"))
+        valid_lap = bool(segment.get("valid_lap"))
         event: dict[str, Any] = {
             "type": "LAP_END",
             "reason": str(reason),
@@ -206,16 +268,60 @@ class LapSegmenter:
             event["start_ts"] = float(self.current_lap_start_ts)
         if end_ts is not None:
             event["end_ts"] = float(end_ts)
+        if lap_time_s is not None:
+            event["lap_time_s"] = float(lap_time_s)
+        event["sample_count"] = int(sample_count)
+        if self._debug_enabled and _LOG.isEnabledFor(logging.DEBUG):
+            lap_no = self._coerce_int(segment.get("lap_no"))
+            _LOG.debug(
+                "coaching.lap_segmenter run=%s lap_no=%s reason=%s lap_time_s=%s sample_count=%s lap_complete=%s offtrack=%s incident_delta=%s valid=%s track_min=%s track_max=%s uniq=%s incidents=%s/%s",
+                self.run_id,
+                lap_no,
+                reason,
+                lap_time_s,
+                sample_count,
+                lap_complete,
+                offtrack_surface,
+                incident_delta,
+                valid_lap,
+                self.current_track_surface_min,
+                self.current_track_surface_max,
+                len(self.current_track_surface_values),
+                self.current_incident_min,
+                self.current_incident_max,
+            )
         self.current_lap_start_index = None
         self.current_lap_start_ts = None
         self.current_lap_no = None
         self._reset_current_lap_meta()
         return event
 
-    def _accumulate_current_lap_sample(self, *, track_surface: Any, incident_count: int | None) -> None:
+    def _accumulate_current_lap_sample(
+        self,
+        *,
+        track_surface: Any,
+        incident_count: int | None,
+        is_on_track_car: bool | None,
+        on_pit_road: bool | None,
+    ) -> None:
         if self.current_lap_start_index is None:
             return
-        if self._is_offtrack_track_surface(track_surface):
+        self.current_sample_count += 1
+        enum_value = self._coerce_int(track_surface)
+        if enum_value is not None:
+            if self.current_track_surface_min is None or enum_value < self.current_track_surface_min:
+                self.current_track_surface_min = enum_value
+            if self.current_track_surface_max is None or enum_value > self.current_track_surface_max:
+                self.current_track_surface_max = enum_value
+            self.current_track_surface_values[int(enum_value)] += 1
+            self._observed_track_surface_values[int(enum_value)] += 1
+
+        surface_class = self.classify_track_surface(
+            track_surface,
+            is_on_track_car=is_on_track_car,
+            on_pit_road=on_pit_road,
+        )
+        if surface_class == _TRACK_SURFACE_OFF_TRACK:
             self.current_offtrack_surface = True
         if incident_count is None:
             return
@@ -226,6 +332,10 @@ class LapSegmenter:
 
     def _reset_current_lap_meta(self) -> None:
         self.current_offtrack_surface = False
+        self.current_sample_count = 0
+        self.current_track_surface_min = None
+        self.current_track_surface_max = None
+        self.current_track_surface_values = Counter()
         self.current_incident_min = None
         self.current_incident_max = None
 
@@ -271,15 +381,135 @@ class LapSegmenter:
         except Exception:
             return None
 
-    @classmethod
-    def _is_offtrack_track_surface(cls, value: Any) -> bool:
-        normalized = cls._normalize_enum_text(value)
-        if normalized and normalized in _TRACK_SURFACE_OFFTRACK_NAMES:
-            return True
-        enum_value = cls._coerce_int(value)
-        if enum_value is None:
+    def _passes_lap_sanity(self, *, lap_time_s: float | None, sample_count: int) -> bool:
+        if lap_time_s is None or lap_time_s < self.min_valid_lap_time_s:
             return False
-        return enum_value in _TRACK_SURFACE_OFFTRACK_ENUMS
+        if sample_count < self.min_valid_lap_samples:
+            return False
+        return True
+
+    @staticmethod
+    def _compute_lap_time_s(start_ts: float | None, end_ts: float | None) -> float | None:
+        if start_ts is None or end_ts is None:
+            return None
+        lap_time_s = float(end_ts) - float(start_ts)
+        if lap_time_s < 0.0:
+            return None
+        return float(lap_time_s)
+
+    @classmethod
+    def classify_track_surface(
+        cls,
+        value: Any,
+        *,
+        is_on_track_car: bool | None = None,
+        on_pit_road: bool | None = None,
+    ) -> str:
+        normalized = cls._normalize_enum_text(value)
+        if normalized:
+            if normalized in _TRACK_SURFACE_OFFTRACK_NAMES:
+                return _TRACK_SURFACE_OFF_TRACK
+            if normalized in _TRACK_SURFACE_PIT_NAMES:
+                return _TRACK_SURFACE_PIT
+            if normalized in _TRACK_SURFACE_ON_TRACK_NAMES:
+                return _TRACK_SURFACE_ON_TRACK
+
+        enum_value = cls._coerce_int(value)
+        if enum_value is not None:
+            if enum_value < 0:
+                if on_pit_road is True:
+                    return _TRACK_SURFACE_PIT
+                if is_on_track_car is True:
+                    return _TRACK_SURFACE_OFF_TRACK
+                return _TRACK_SURFACE_UNKNOWN
+            if enum_value == 0:
+                return _TRACK_SURFACE_OFF_TRACK
+            if enum_value == 1:
+                return _TRACK_SURFACE_PIT
+            if enum_value == 2:
+                if on_pit_road is True:
+                    return _TRACK_SURFACE_PIT
+                if is_on_track_car is True:
+                    return _TRACK_SURFACE_OFF_TRACK
+                return _TRACK_SURFACE_UNKNOWN
+            if enum_value == 3:
+                return _TRACK_SURFACE_ON_TRACK
+            if on_pit_road is True:
+                return _TRACK_SURFACE_PIT
+            if is_on_track_car is False:
+                return _TRACK_SURFACE_OFF_TRACK
+            if is_on_track_car is True:
+                return _TRACK_SURFACE_ON_TRACK
+            # Unknown future positive codes are safer as offtrack for lap validity.
+            return _TRACK_SURFACE_OFF_TRACK
+
+        if on_pit_road is True:
+            return _TRACK_SURFACE_PIT
+        if is_on_track_car is True:
+            return _TRACK_SURFACE_ON_TRACK
+        return _TRACK_SURFACE_UNKNOWN
+
+    def _apply_duplicate_lap_policy(self, new_segment: dict[str, Any]) -> None:
+        lap_no = self._coerce_int(new_segment.get("lap_no"))
+        if lap_no is None:
+            return
+        for existing in self.segments:
+            existing_lap_no = self._coerce_int(existing.get("lap_no"))
+            if existing_lap_no != lap_no:
+                continue
+            if self._segment_duration_sort_key(existing) >= self._segment_duration_sort_key(new_segment):
+                self._mark_as_fragment(new_segment, lap_no=lap_no, clear_lap_no=True)
+            else:
+                self._mark_as_fragment(existing, lap_no=lap_no, clear_lap_no=True)
+
+    @classmethod
+    def _segment_duration_sort_key(cls, segment: dict[str, Any]) -> tuple[float, int]:
+        lap_time_s = cls._coerce_float(segment.get("lap_time_s"))
+        if lap_time_s is None:
+            start_ts = cls._coerce_float(segment.get("start_ts"))
+            end_ts = cls._coerce_float(segment.get("end_ts"))
+            if start_ts is not None and end_ts is not None and end_ts >= start_ts:
+                lap_time_s = end_ts - start_ts
+        sample_count = cls._coerce_int(segment.get("sample_count"))
+        if sample_count is None:
+            start_idx = cls._coerce_int(segment.get("start_idx"))
+            end_idx = cls._coerce_int(segment.get("end_idx"))
+            if start_idx is not None and end_idx is not None and end_idx >= start_idx:
+                sample_count = int(end_idx - start_idx + 1)
+        return (float(lap_time_s) if lap_time_s is not None else -1.0, int(sample_count) if sample_count is not None else -1)
+
+    @staticmethod
+    def _mark_as_fragment(segment: dict[str, Any], *, lap_no: int | None = None, clear_lap_no: bool = False) -> None:
+        if lap_no is None:
+            lap_no = LapSegmenter._coerce_int(segment.get("lap_no"))
+        segment["lap_complete"] = False
+        segment["is_complete"] = False
+        segment["lap_incomplete"] = True
+        segment["valid_lap"] = False
+        segment["is_valid"] = False
+        segment["fragment"] = True
+        if lap_no is not None:
+            segment["fragment_lap_no"] = int(lap_no)
+        if clear_lap_no:
+            segment.pop("lap_no", None)
+            segment.pop("lap_num", None)
+        reason = str(segment.get("reason") or "")
+        if "fragment_duplicate_lap_no" not in reason:
+            segment["reason"] = f"{reason}|fragment_duplicate_lap_no" if reason else "fragment_duplicate_lap_no"
+
+    def _debug_log_surface_values_once(self) -> None:
+        if not self._debug_enabled or self._debug_surface_values_logged:
+            return
+        self._debug_surface_values_logged = True
+        if not _LOG.isEnabledFor(logging.DEBUG):
+            return
+        values = sorted((int(value), int(count)) for value, count in self._observed_track_surface_values.items())
+        _LOG.debug("coaching.lap_segmenter run=%s track_surface_values=%s", self.run_id, values)
+
+    @staticmethod
+    def _is_debug_enabled() -> bool:
+        value = os.getenv("IWAS_COACHING_DEBUG_LAP_SEGMENTER", "")
+        return value.strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _normalize_enum_text(value: Any) -> str:
