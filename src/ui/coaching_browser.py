@@ -58,18 +58,20 @@ class CoachingBrowser(ttk.Frame):
 
         self.tree = ttk.Treeview(
             tree_wrap,
-            columns=("kind", "summary", "last"),
+            columns=("kind", "time", "lap", "last"),
             show="tree headings",
             selectmode="browse",
         )
         self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.heading("#0", text="Name")
         self.tree.heading("kind", text="Type")
-        self.tree.heading("summary", text="Summary")
+        self.tree.heading("time", text="Time")
+        self.tree.heading("lap", text="Laps")
         self.tree.heading("last", text="Last Driven")
         self.tree.column("#0", width=280, stretch=True)
         self.tree.column("kind", width=80, stretch=False, anchor="w")
-        self.tree.column("summary", width=260, stretch=True, anchor="w")
+        self.tree.column("time", width=130, stretch=False, anchor="w")
+        self.tree.column("lap", width=70, stretch=False, anchor="e")
         self.tree.column("last", width=150, stretch=False, anchor="w")
 
         y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self._tree_yview)
@@ -156,7 +158,8 @@ class CoachingBrowser(ttk.Frame):
         """Implement insert node logic."""
         values = (
             node.kind,
-            _format_summary(node),
+            _format_time_col(node),
+            _format_lap_col(node),
             _format_last_driven(node.summary.last_driven_ts),
         )
         self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids))
@@ -230,20 +233,13 @@ class CoachingBrowser(ttk.Frame):
         self.after(1, self._refresh_overlays)
 
     def _build_best_text(self, index: CoachingIndex, best_ids: set[str]) -> None:
-        """Populate _best_text: maps iid → the exact time substring to paint purple."""
+        """Populate _best_text: maps iid → the exact time text to paint purple."""
         for iid in best_ids:
             node = index.nodes_by_id.get(iid)
             if node is None:
                 continue
-            full = _format_summary(node)
-            if node.kind == "lap":
-                # Lap summary: "1:35.23" or "1:35.23 incomplete" — first token is the time
-                purple_text = full.split(" ", 1)[0]
-            else:
-                # Non-lap summary: "t=…  laps=…  best=1:35.23" — find "best=…"
-                idx = full.find("best=")
-                purple_text = full[idx:] if idx >= 0 else ""
-            if purple_text and purple_text not in ("na", "best=na"):
+            purple_text = _format_time_col(node)
+            if purple_text and purple_text != "na":
                 self._best_text[iid] = purple_text
 
     def _clear_overlays(self) -> None:
@@ -253,7 +249,7 @@ class CoachingBrowser(ttk.Frame):
         self._best_overlays.clear()
 
     def _refresh_overlays(self) -> None:
-        """Recreate purple overlay labels over the best-time text in the Summary column."""
+        """Recreate purple overlay labels over the best-time text in the Time column."""
         self._clear_overlays()
         if not self._best_text:
             return
@@ -269,11 +265,11 @@ class CoachingBrowser(ttk.Frame):
         for iid, purple_text in self._best_text.items():
             if not self.tree.exists(iid):
                 continue
-            bbox = self.tree.bbox(iid, "summary")
+            bbox = self.tree.bbox(iid, "time")
             if not bbox:
                 continue
             x, y, w, h = bbox
-            cell_text = self.tree.set(iid, "summary")
+            cell_text = self.tree.set(iid, "time")
             purple_idx = cell_text.find(purple_text)
             prefix = cell_text[:purple_idx] if purple_idx >= 0 else ""
             lbl_x = x + 4 + font.measure(prefix)
@@ -414,6 +410,34 @@ def _format_lap_summary(summary: NodeSummary, *, lap_summary: dict[str, object])
     if status is not None:
         parts.append(status)
     return " ".join(parts)
+
+
+def _format_time_col(node: CoachingTreeNode) -> str:
+    """Zeit-Spalte: beste Zeit (Track/Car/Session/Run) oder Lap-Zeit (Lap)."""
+    summary = node.summary
+    if node.kind == "lap":
+        t = summary.total_time_s
+        if t is None:
+            lap_summary = _node_lap_summary(node)
+            t = _coerce_optional_float(lap_summary.get("lap_time_s"))
+        return _format_lap_seconds(t)
+    if summary.fastest_lap_s is not None:
+        return _format_lap_seconds(summary.fastest_lap_s)
+    return "na"
+
+
+def _format_lap_col(node: CoachingTreeNode) -> str:
+    """Lap-Spalte: Summe der Laps (Track/Car/Session/Run) oder Status (Lap)."""
+    summary = node.summary
+    if node.kind == "lap":
+        lap_summary = _node_lap_summary(node)
+        if _lap_is_incomplete(summary, lap_summary=lap_summary):
+            return "incomplete"
+        if _lap_is_offtrack(summary, lap_summary=lap_summary):
+            return "offtrack"
+        return "OK"
+    total = int(summary.laps_total_display) if summary.laps_total_display is not None else int(summary.laps or 0)
+    return str(total)
 
 
 def _lap_status(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str | None:
