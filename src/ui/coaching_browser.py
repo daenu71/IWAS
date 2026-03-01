@@ -13,6 +13,8 @@ from core.coaching.indexer import CoachingIndex, CoachingTreeNode, NodeSummary
 RefreshCallback = Callable[[], CoachingIndex | None]
 NodeCallback = Callable[[CoachingTreeNode], None]
 
+_PURPLE = "#BF7FFF"
+
 
 class CoachingBrowser(ttk.Frame):
     """Container and behavior for Coaching Browser."""
@@ -70,6 +72,7 @@ class CoachingBrowser(ttk.Frame):
         y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         y_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=y_scroll.set)
+        self.tree.tag_configure("best_time", foreground=_PURPLE)
 
         actions = ttk.Frame(self)
         actions.grid(row=2, column=0, sticky="ew", pady=(6, 4))
@@ -127,8 +130,9 @@ class CoachingBrowser(ttk.Frame):
             self._stats_var.set("No sessions loaded.")
             self._update_action_buttons()
             return
+        best_ids = _compute_best_ids(index)
         for node in index.tracks:
-            self._insert_node("", node)
+            self._insert_node("", node, best_ids=best_ids)
         self._restore_expanded_state()
         if selected_id and self.tree.exists(selected_id):
             self.tree.selection_set(selected_id)
@@ -139,16 +143,17 @@ class CoachingBrowser(ttk.Frame):
         )
         self._update_action_buttons()
 
-    def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
+    def _insert_node(self, parent_iid: str, node: CoachingTreeNode, *, best_ids: set[str]) -> None:
         """Implement insert node logic."""
+        tags = ("best_time",) if node.id in best_ids else ()
         values = (
             node.kind,
             _format_summary(node),
             _format_last_driven(node.summary.last_driven_ts),
         )
-        self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids))
+        self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids), tags=tags)
         for child in node.children:
-            self._insert_node(node.id, child)
+            self._insert_node(node.id, child, best_ids=best_ids)
 
     def _capture_expanded_state(self) -> None:
         """Implement capture expanded state logic."""
@@ -225,6 +230,75 @@ class CoachingBrowser(ttk.Frame):
             self._btn_delete.state(["!disabled"])
         else:
             self._btn_delete.state(["disabled"])
+
+
+def _best_time_for_node(node: CoachingTreeNode) -> float | None:
+    """Return comparison time for best-time highlighting (None or ≤0 means no valid time)."""
+    if node.kind == "lap":
+        return node.summary.total_time_s
+    return node.summary.fastest_lap_s
+
+
+def _find_best_id(nodes: list[CoachingTreeNode]) -> str | None:
+    """Return the id of the node with the smallest valid time among *nodes*, or None."""
+    best_id: str | None = None
+    best_t: float | None = None
+    for node in nodes:
+        t = _best_time_for_node(node)
+        if t is not None and t > 0 and (best_t is None or t < best_t):
+            best_t = t
+            best_id = node.id
+    return best_id
+
+
+def _compute_best_ids(index: CoachingIndex) -> set[str]:
+    """Return the set of node IDs that should be highlighted in purple.
+
+    Highlighting rules per level:
+      L1 – one track node (globally fastest best= across all tracks)
+      L2 – one car node per track (fastest within track)
+      L3 – one session node per car (fastest within car)
+      L4 – one run node per car (fastest across ALL sessions of that car)
+      L5 – one lap node per car (fastest across ALL runs of that car)
+    """
+    result: set[str] = set()
+
+    # Level 1: fastest track globally
+    bid = _find_best_id(index.tracks)
+    if bid:
+        result.add(bid)
+
+    for track in index.tracks:
+        # Level 2: fastest car within this track
+        bid = _find_best_id(track.children)
+        if bid:
+            result.add(bid)
+
+        for car in track.children:
+            # Level 3: fastest session within this car
+            bid = _find_best_id(car.children)
+            if bid:
+                result.add(bid)
+
+            # Collect all runs and laps across every session of this car
+            all_runs: list[CoachingTreeNode] = []
+            all_laps: list[CoachingTreeNode] = []
+            for session in car.children:
+                for run in session.children:
+                    all_runs.append(run)
+                    all_laps.extend(run.children)
+
+            # Level 4: fastest run (one per car, across all sessions)
+            bid = _find_best_id(all_runs)
+            if bid:
+                result.add(bid)
+
+            # Level 5: fastest lap (one per car, across all runs; includes incomplete/offtrack)
+            bid = _find_best_id(all_laps)
+            if bid:
+                result.add(bid)
+
+    return result
 
 
 def _format_summary(node: CoachingTreeNode) -> str:
