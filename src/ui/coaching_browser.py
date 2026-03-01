@@ -295,7 +295,7 @@ class CoachingBrowser(ttk.Frame):
             purple_idx = cell_text.find(purple_text)
             prefix = cell_text[:purple_idx] if purple_idx >= 0 else ""
             lbl_x = x + 4 + font.measure(prefix)
-            lbl_bg = sel_bg if iid in selected else row_bg
+            lbl_bg = row_bg
             lbl = tk.Label(
                 self.tree,
                 text=purple_text,
