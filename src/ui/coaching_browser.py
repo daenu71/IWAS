@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 from datetime import datetime
 from typing import Callable
@@ -41,6 +42,8 @@ class CoachingBrowser(ttk.Frame):
         self._expanded_ids: set[str] = set()
         self._message_var = tk.StringVar(value="")
         self._stats_var = tk.StringVar(value="No sessions loaded.")
+        self._best_overlays: list[tk.Label] = []
+        self._best_text: dict[str, str] = {}  # iid → purple time text
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -69,10 +72,9 @@ class CoachingBrowser(ttk.Frame):
         self.tree.column("summary", width=260, stretch=True, anchor="w")
         self.tree.column("last", width=150, stretch=False, anchor="w")
 
-        y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
+        y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self._tree_yview)
         y_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=y_scroll.set)
-        self.tree.tag_configure("best_time", foreground=_PURPLE)
 
         actions = ttk.Frame(self)
         actions.grid(row=2, column=0, sticky="ew", pady=(6, 4))
@@ -85,6 +87,9 @@ class CoachingBrowser(ttk.Frame):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", self._on_double_click)
+        self.tree.bind("<<TreeviewOpen>>", lambda _: self.after(5, self._refresh_overlays), add="+")
+        self.tree.bind("<<TreeviewClose>>", lambda _: self.after(5, self._refresh_overlays), add="+")
+        self.tree.bind("<MouseWheel>", lambda _: self.after(1, self._refresh_overlays), add="+")
         self._update_action_buttons()
 
     def set_index(self, index: CoachingIndex | None) -> None:
@@ -124,15 +129,18 @@ class CoachingBrowser(ttk.Frame):
 
     def _rebuild_tree(self, *, selected_id: str | None) -> None:
         """Implement rebuild tree logic."""
+        self._clear_overlays()
+        self._best_text.clear()
         self.tree.delete(*self.tree.get_children(""))
         index = self._index
         if index is None:
             self._stats_var.set("No sessions loaded.")
             self._update_action_buttons()
             return
-        best_ids = _compute_best_ids(index)
         for node in index.tracks:
-            self._insert_node("", node, best_ids=best_ids)
+            self._insert_node("", node)
+        best_ids = _compute_best_ids(index)
+        self._build_best_text(index, best_ids)
         self._restore_expanded_state()
         if selected_id and self.tree.exists(selected_id):
             self.tree.selection_set(selected_id)
@@ -142,18 +150,18 @@ class CoachingBrowser(ttk.Frame):
             f"Sessions: {index.session_count}  Runs: {index.run_count}  Laps: {index.lap_count}"
         )
         self._update_action_buttons()
+        self.after(10, self._refresh_overlays)
 
-    def _insert_node(self, parent_iid: str, node: CoachingTreeNode, *, best_ids: set[str]) -> None:
+    def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
         """Implement insert node logic."""
-        tags = ("best_time",) if node.id in best_ids else ()
         values = (
             node.kind,
             _format_summary(node),
             _format_last_driven(node.summary.last_driven_ts),
         )
-        self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids), tags=tags)
+        self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids))
         for child in node.children:
-            self._insert_node(node.id, child, best_ids=best_ids)
+            self._insert_node(node.id, child)
 
     def _capture_expanded_state(self) -> None:
         """Implement capture expanded state logic."""
@@ -185,6 +193,7 @@ class CoachingBrowser(ttk.Frame):
     def _on_tree_select(self, _event=None) -> None:
         """Implement on tree select logic."""
         self._update_action_buttons()
+        self.after(1, self._refresh_overlays)
         node = self.selected_node()
         if node is None:
             return
@@ -214,6 +223,74 @@ class CoachingBrowser(ttk.Frame):
             return
         if callable(self._on_delete_node):
             self._on_delete_node(node)
+
+    def _tree_yview(self, *args) -> None:
+        """Handle yview scroll and keep overlays in sync."""
+        self.tree.yview(*args)
+        self.after(1, self._refresh_overlays)
+
+    def _build_best_text(self, index: CoachingIndex, best_ids: set[str]) -> None:
+        """Populate _best_text: maps iid → the exact time substring to paint purple."""
+        for iid in best_ids:
+            node = index.nodes_by_id.get(iid)
+            if node is None:
+                continue
+            full = _format_summary(node)
+            if node.kind == "lap":
+                # Lap summary: "1:35.23" or "1:35.23 incomplete" — first token is the time
+                purple_text = full.split(" ", 1)[0]
+            else:
+                # Non-lap summary: "t=…  laps=…  best=1:35.23" — find "best=…"
+                idx = full.find("best=")
+                purple_text = full[idx:] if idx >= 0 else ""
+            if purple_text and purple_text not in ("na", "best=na"):
+                self._best_text[iid] = purple_text
+
+    def _clear_overlays(self) -> None:
+        """Destroy all existing overlay labels."""
+        for lbl in self._best_overlays:
+            lbl.destroy()
+        self._best_overlays.clear()
+
+    def _refresh_overlays(self) -> None:
+        """Recreate purple overlay labels over the best-time text in the Summary column."""
+        self._clear_overlays()
+        if not self._best_text:
+            return
+        style = ttk.Style()
+        row_bg = style.lookup("Treeview", "fieldbackground") or "#FFFFFF"
+        sel_bg = style.lookup("Treeview", "selectbackground") or "#0078D4"
+        try:
+            font_name = style.lookup("Treeview", "font")
+            font = tkfont.nametofont(font_name) if font_name else tkfont.nametofont("TkDefaultFont")
+        except Exception:
+            font = tkfont.nametofont("TkDefaultFont")
+        selected = set(self.tree.selection())
+        for iid, purple_text in self._best_text.items():
+            if not self.tree.exists(iid):
+                continue
+            bbox = self.tree.bbox(iid, "summary")
+            if not bbox:
+                continue
+            x, y, w, h = bbox
+            cell_text = self.tree.set(iid, "summary")
+            purple_idx = cell_text.find(purple_text)
+            prefix = cell_text[:purple_idx] if purple_idx >= 0 else ""
+            lbl_x = x + 4 + font.measure(prefix)
+            lbl_bg = sel_bg if iid in selected else row_bg
+            lbl = tk.Label(
+                self.tree,
+                text=purple_text,
+                fg=_PURPLE,
+                bg=lbl_bg,
+                font=font,
+                anchor="w",
+                borderwidth=0,
+                padx=0,
+                pady=0,
+            )
+            lbl.place(x=lbl_x, y=y + 1, width=font.measure(purple_text) + 2, height=h - 2)
+            self._best_overlays.append(lbl)
 
     def _update_action_buttons(self) -> None:
         """Update action buttons."""
@@ -255,18 +332,13 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
     """Return the set of node IDs that should be highlighted in purple.
 
     Highlighting rules per level:
-      L1 – one track node (globally fastest best= across all tracks)
+      L1 – Track nodes: NO highlighting
       L2 – one car node per track (fastest within track)
       L3 – one session node per car (fastest within car)
       L4 – one run node per car (fastest across ALL sessions of that car)
-      L5 – one lap node per car (fastest across ALL runs of that car)
+      L5 – one lap node per car (fastest valid lap — not incomplete, not offtrack)
     """
     result: set[str] = set()
-
-    # Level 1: fastest track globally
-    bid = _find_best_id(index.tracks)
-    if bid:
-        result.add(bid)
 
     for track in index.tracks:
         # Level 2: fastest car within this track
@@ -280,20 +352,23 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
             if bid:
                 result.add(bid)
 
-            # Collect all runs and laps across every session of this car
             all_runs: list[CoachingTreeNode] = []
             all_laps: list[CoachingTreeNode] = []
             for session in car.children:
                 for run in session.children:
                     all_runs.append(run)
-                    all_laps.extend(run.children)
+                    for lap in run.children:
+                        lap_sum = _node_lap_summary(lap)
+                        if not _lap_is_incomplete(lap.summary, lap_summary=lap_sum) \
+                                and not _lap_is_offtrack(lap.summary, lap_summary=lap_sum):
+                            all_laps.append(lap)
 
             # Level 4: fastest run (one per car, across all sessions)
             bid = _find_best_id(all_runs)
             if bid:
                 result.add(bid)
 
-            # Level 5: fastest lap (one per car, across all runs; includes incomplete/offtrack)
+            # Level 5: fastest valid lap (not incomplete, not offtrack)
             bid = _find_best_id(all_laps)
             if bid:
                 result.add(bid)
