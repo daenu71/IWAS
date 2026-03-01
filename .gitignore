@@ -21,7 +21,6 @@ config/png_view.json
 /config/profiles
 config/startframes.json
 config/ui_last_run.json
-/docs
 /input
 /.idea/.gitignore
 /.idea/*.iml
