@@ -1632,68 +1632,37 @@ class SettingsView(ttk.Frame):
 class CoachingView(ttk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master)
-        self.columnconfigure(0, weight=3)
-        self.columnconfigure(1, weight=2)
+        self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         self._coaching_index: CoachingIndex | None = None
-        self._details_var = tk.StringVar(value="Select a node to see details.")
-        self._status_vars: dict[str, tk.StringVar] = {}
         self._status_poll_after_id: str | None = None
-        self._last_writer_error_seen: str | None = None
 
         layout = ttk.Frame(self, padding=12)
         layout.grid(row=0, column=0, sticky="nsew")
-        layout.columnconfigure(0, weight=3)
-        layout.columnconfigure(1, weight=2)
+        layout.columnconfigure(0, weight=1)
         layout.rowconfigure(0, weight=1)
 
         browser = ttk.LabelFrame(layout, text="Browser", padding=10)
-        browser.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        browser.grid(row=0, column=0, sticky="nsew")
         browser.columnconfigure(0, weight=1)
-        browser.rowconfigure(0, weight=1)
+        browser.rowconfigure(1, weight=1)
 
-        right = ttk.Frame(layout)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-        right.rowconfigure(1, weight=1)
-
-        details = ttk.LabelFrame(right, text="Details", padding=10)
-        details.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
-        details.columnconfigure(0, weight=1)
-        ttk.Label(details, textvariable=self._details_var, justify="left", anchor="nw").grid(
-            row=0, column=0, sticky="nsew"
-        )
-
-        status = ttk.LabelFrame(right, text="Status", padding=10)
-        status.grid(row=1, column=0, sticky="nsew")
-        status.columnconfigure(1, weight=1)
-        for row_idx, key in enumerate(
-            ("connection", "session_type", "run_active", "sample_count", "dropped", "write_lag", "last_io", "writer_error")
-        ):
-            label_text = {
-                "connection": "connected",
-                "session_type": "sessionType",
-                "run_active": "run active",
-                "sample_count": "sample count",
-                "dropped": "dropped",
-                "write_lag": "write lag",
-                "last_io": "last io",
-                "writer_error": "write error",
-            }[key]
-            ttk.Label(status, text=f"{label_text}:").grid(row=row_idx, column=0, sticky="w", padx=(0, 8), pady=1)
-            var = tk.StringVar(value="na")
-            self._status_vars[key] = var
-            ttk.Label(status, textvariable=var).grid(row=row_idx, column=1, sticky="w", pady=1)
+        conn_bar = ttk.Frame(browser)
+        conn_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self._conn_dot = tk.Canvas(conn_bar, width=12, height=12, highlightthickness=0)
+        self._conn_dot.grid(row=0, column=0, padx=(0, 4))
+        self._conn_dot.create_oval(2, 2, 10, 10, fill="#ef4444", outline="")
+        self._conn_label = ttk.Label(conn_bar, text="Disconnected")
+        self._conn_label.config(foreground="#ef4444")
+        self._conn_label.grid(row=0, column=1, sticky="w")
 
         self._browser_widget = CoachingBrowser(
             browser,
             on_refresh=self._refresh_coaching_index,
             on_open_folder=self._open_coaching_node_folder,
             on_delete_node=self._delete_coaching_node,
-            on_select_node=self._show_coaching_node_details,
         )
-        self._browser_widget.grid(row=0, column=0, sticky="nsew")
+        self._browser_widget.grid(row=1, column=0, sticky="nsew")
         self._refresh_coaching_index()
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.after(300, self._poll_recorder_status)
@@ -1710,30 +1679,6 @@ class CoachingView(ttk.Frame):
         self._browser_widget.set_index(index)
         self._browser_widget.set_message(f"Scanned: {index.root_dir}")
         return index
-
-    def _show_coaching_node_details(self, node: CoachingTreeNode) -> None:
-        lines: list[str] = [f"Type: {node.kind}", f"Name: {node.label}"]
-        if node.session_path is not None:
-            lines.append(f"Session: {node.session_path}")
-        if node.path is not None:
-            lines.append(f"Path: {node.path}")
-        if node.run_id is not None:
-            lines.append(f"Run ID: {node.run_id}")
-        if node.summary.total_time_s is not None:
-            lines.append(f"Total Time: {node.summary.total_time_s:.2f}s")
-        if node.summary.laps is not None:
-            lines.append(f"Laps: {int(node.summary.laps)}")
-        if node.summary.fastest_lap_s is not None:
-            lines.append(f"Fastest Lap: {node.summary.fastest_lap_s:.2f}s")
-        if node.is_active_session:
-            lines.append("Active session: yes")
-        if node.is_finalized:
-            lines.append("Finalized: yes")
-        for key, value in sorted(node.meta.items()):
-            if value is None or value == "":
-                continue
-            lines.append(f"{key}: {value}")
-        self._details_var.set("\n".join(lines))
 
     def _open_coaching_node_folder(self, node: CoachingTreeNode) -> None:
         target = node.session_path if node.kind == "run" else node.path or node.session_path
@@ -1825,44 +1770,17 @@ class CoachingView(ttk.Frame):
 
     def _poll_recorder_status(self) -> None:
         service = globals().get("irsdk_recorder_service")
-        if service is None:
-            self._status_vars["connection"].set("disconnected")
-            self._status_vars["session_type"].set("na")
-            self._status_vars["run_active"].set("na")
-            self._status_vars["sample_count"].set("0")
-            self._status_vars["dropped"].set("na")
-            self._status_vars["write_lag"].set("na")
-            self._status_vars["last_io"].set("na")
-            self._status_vars["writer_error"].set("na")
-        else:
+        connected = False
+        if service is not None:
             try:
                 status = service.get_status() if hasattr(service, "get_status") else {}
             except Exception:
                 status = {}
-            connected = status.get("connected")
-            self._status_vars["connection"].set("connected" if connected else "disconnected")
-            self._status_vars["session_type"].set(str(status.get("session_type") or "na"))
-            run_active = status.get("run_active")
-            if run_active is None:
-                self._status_vars["run_active"].set("na")
-            else:
-                self._status_vars["run_active"].set("yes" if bool(run_active) else "no")
-            sample_count = status.get("sample_count")
-            self._status_vars["sample_count"].set(str(sample_count if sample_count is not None else "0"))
-            dropped = status.get("dropped")
-            self._status_vars["dropped"].set(str(dropped if dropped is not None else "na"))
-            write_lag = status.get("write_lag")
-            self._status_vars["write_lag"].set(str(write_lag if write_lag is not None else "na"))
-            last_io = status.get("last_io")
-            self._status_vars["last_io"].set(str(last_io if last_io else "na"))
-            writer_error = str(status.get("writer_error") or "").strip()
-            self._status_vars["writer_error"].set(writer_error if writer_error else "na")
-            if writer_error and writer_error != self._last_writer_error_seen:
-                self._last_writer_error_seen = writer_error
-                self._browser_widget.set_message(f"Recorder write error: {writer_error}")
-            if not writer_error:
-                self._last_writer_error_seen = None
-
+            connected = bool(status.get("connected"))
+        color = "#22c55e" if connected else "#ef4444"
+        self._conn_dot.delete("all")
+        self._conn_dot.create_oval(2, 2, 10, 10, fill=color, outline="")
+        self._conn_label.config(text="Connected" if connected else "Disconnected", foreground=color)
         try:
             self._status_poll_after_id = self.after(400, self._poll_recorder_status)
         except Exception:
