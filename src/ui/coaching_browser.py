@@ -68,7 +68,7 @@ class CoachingBrowser(ttk.Frame):
         self.tree.heading("time", text="Time")
         self.tree.heading("lap", text="Laps")
         self.tree.heading("last", text="Last Driven")
-        self.tree.column("#0", width=280, stretch=True)
+        self.tree.column("#0", width=280, minwidth=200, stretch=True)
         self.tree.column("kind", width=80, stretch=False, anchor="w")
         self.tree.column("time", width=130, stretch=False, anchor="w")
         self.tree.column("lap", width=70, stretch=False, anchor="e")
@@ -92,6 +92,7 @@ class CoachingBrowser(ttk.Frame):
         self.tree.bind("<<TreeviewOpen>>", lambda _: self.after(5, self._refresh_overlays), add="+")
         self.tree.bind("<<TreeviewClose>>", lambda _: self.after(5, self._refresh_overlays), add="+")
         self.tree.bind("<MouseWheel>", lambda _: self.after(1, self._refresh_overlays), add="+")
+        self.tree.bind("<Configure>", lambda _: self.after(10, self._refresh_overlays), add="+")
         self._update_action_buttons()
 
     def set_index(self, index: CoachingIndex | None) -> None:
