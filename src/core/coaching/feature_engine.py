@@ -86,6 +86,7 @@ def extract_corner_features(
     parquet_path = Path(parquet_path)
     schema = FeatureSchema.load(schema_path)
     contract = AnalysisContract(contract_path)
+    schema_feature_defaults = _schema_feature_defaults(schema)
 
     data = _read_parquet_as_dict(parquet_path)
     n = len(data.get("LapDistPct", []))
@@ -109,6 +110,7 @@ def extract_corner_features(
             contract_hash=contract.contract_hash,
             corner_map_version=corner_map_version,
             lap_validity_flag=lap_validity_flag,
+            schema_feature_defaults=schema_feature_defaults,
             snapshots_dir=Path(snapshots_dir) if snapshots_dir else None,
         )
         rows.append(row)
@@ -138,6 +140,7 @@ def _process_corner(
     contract_hash: str,
     corner_map_version: int,
     lap_validity_flag: bool,
+    schema_feature_defaults: dict[str, Any],
     snapshots_dir: Path | None,
 ) -> dict[str, Any]:
     corner_id = int(corner["corner_id"])
@@ -168,6 +171,7 @@ def _process_corner(
         "compression_present_map": corner.get("compression_present"),
         "lap_validity_flag": lap_validity_flag,
     }
+    row.update(schema_feature_defaults)
 
     row.update(_group_rotation_via_load(sl))
     row.update(_group_friction_ellipse(sl, grip_usage))
@@ -189,6 +193,17 @@ def _process_corner(
         )
 
     return row
+
+
+def _schema_feature_defaults(schema: FeatureSchema) -> dict[str, Any]:
+    """Return per-feature defaults for schema conformance and confidence meta."""
+    defaults: dict[str, Any] = {}
+    for features in schema._groups.values():
+        for feature in features:
+            defaults.setdefault(feature.id, None)
+            if feature.low_confidence:
+                defaults.setdefault(f"{feature.id}_confidence", "low")
+    return defaults
 
 
 # ---------------------------------------------------------------------------
