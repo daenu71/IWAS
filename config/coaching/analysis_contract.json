@@ -1,0 +1,81 @@
+{
+  "_comment": "Analysis Contract v1 – defines required/optional IRSDK channels and internal unit normalization",
+  "version": "1.0.0",
+  "required_channels": [
+    "LapDistPct",
+    "LapDist",
+    "SessionTime",
+    "Speed",
+    "YawRate",
+    "LatAccel",
+    "LongAccel",
+    "VertAccel",
+    "Throttle",
+    "Brake",
+    "SteeringWheelAngle",
+    "Gear",
+    "RPM"
+  ],
+  "optional_channels": [
+    "SteeringWheelTorque",
+    "SteeringWheelPctTorque",
+    "LFTireTempL",
+    "LFTireTempM",
+    "LFTireTempR",
+    "RFTireTempL",
+    "RFTireTempM",
+    "RFTireTempR",
+    "ABSactive",
+    "TractionControl"
+  ],
+  "units": {
+    "Speed": {
+      "internal": "m/s",
+      "note": "iRacing delivers m/s natively; no conversion needed"
+    },
+    "SteeringWheelAngle": {
+      "internal": "rad",
+      "note": "iRacing delivers rad natively; no conversion needed"
+    },
+    "YawRate": {
+      "internal": "rad/s",
+      "note": "iRacing delivers rad/s natively; no conversion needed"
+    },
+    "LatAccel": {
+      "internal": "m/s²",
+      "note": "iRacing delivers m/s² natively; no conversion needed"
+    },
+    "LongAccel": {
+      "internal": "m/s²",
+      "note": "iRacing delivers m/s² natively; no conversion needed"
+    },
+    "VertAccel": {
+      "internal": "m/s²",
+      "note": "iRacing delivers m/s² natively; no conversion needed"
+    },
+    "Throttle": {
+      "internal": "fraction [0,1]",
+      "note": "iRacing delivers fraction 0–1 natively"
+    },
+    "Brake": {
+      "internal": "fraction [0,1]",
+      "note": "iRacing delivers fraction 0–1 natively"
+    },
+    "LapDistPct": {
+      "internal": "fraction [0,1]",
+      "note": "iRacing delivers fraction 0–1 natively"
+    },
+    "LapDist": {
+      "internal": "m",
+      "note": "iRacing delivers meters natively"
+    },
+    "SessionTime": {
+      "internal": "s",
+      "note": "iRacing delivers seconds natively"
+    },
+    "RPM": {
+      "internal": "rpm",
+      "note": "iRacing delivers rpm natively"
+    }
+  }
+}
