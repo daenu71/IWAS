@@ -6314,7 +6314,8 @@ def render_split_screen(
     has_nvenc = ("h264_nvenc" in available_encoders) or ("hevc_nvenc" in available_encoders)
     has_qsv = ("h264_qsv" in available_encoders) or ("hevc_qsv" in available_encoders)
     has_amf = ("h264_amf" in available_encoders) or ("hevc_amf" in available_encoders)
-    print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
+    encoder_order = [enc.vcodec for enc in encode_candidates]
+    print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} fallback_order={encoder_order}")
 
     # 5) FFmpeg Run
     specs_by_vcodec = {enc.vcodec: enc for enc in encode_candidates}
@@ -6923,7 +6924,8 @@ def render_split_screen_sync(
     has_nvenc = ("h264_nvenc" in available_encoders) or ("hevc_nvenc" in available_encoders)
     has_qsv = ("h264_qsv" in available_encoders) or ("hevc_qsv" in available_encoders)
     has_amf = ("h264_amf" in available_encoders) or ("hevc_amf" in available_encoders)
-    print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} (cpu=libx264 immer)")
+    encoder_order = [enc.vcodec for enc in encode_candidates]
+    print(f"[gpu] nvenc={has_nvenc} qsv={has_qsv} amf={has_amf} fallback_order={encoder_order}")
 
     # 5) FFmpeg Run
     if csv_load_debug:
