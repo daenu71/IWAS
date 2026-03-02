@@ -241,6 +241,24 @@ class RecorderService:
                     # Connection may have dropped in read_sample().
                     self._sleep_interruptible(0.05)
                     continue
+
+                # Session-Change-Detection: compare SessionUniqueID in the incoming
+                # sample against the cached identity.  Only trigger when *both* the
+                # old and the new ID are non-empty/non-zero (guard against the very
+                # first sample after a fresh connect where old_sid is still unset).
+                raw_for_sid = sample.get("raw") if isinstance(sample, dict) else None
+                if isinstance(raw_for_sid, dict):
+                    new_sid = raw_for_sid.get("SessionUniqueID")
+                    with self._lock:
+                        old_sid = self._session_identity_fields.get("SessionUniqueID")
+                    if new_sid not in (None, "", 0) and old_sid not in (None, "", 0):
+                        try:
+                            sid_changed = int(new_sid) != int(old_sid)
+                        except (TypeError, ValueError):
+                            sid_changed = str(new_sid) != str(old_sid)
+                        if sid_changed:
+                            self._on_session_change(new_sid)
+
                 self._inject_broadcast_fields(sample)
                 self._process_run_detector(sample)
                 self._append_active_run_sample(sample)
@@ -1534,6 +1552,47 @@ class RecorderService:
                 pass
             _LOG.warning("irsdk atomic json write failed for path=%s (%s)", path, exc)
             return False
+
+    def _on_session_change(self, new_id: Any) -> None:
+        """Handle an iRacing session change detected via SessionUniqueID.
+
+        Called when the SessionUniqueID in a live telemetry sample differs from
+        the previously cached value while the connection remains active.  Cleans
+        up the old session and re-initialises all per-session state so the new
+        session is recorded independently.
+        """
+        _LOG.info("irsdk session_change detected new_session_id=%s", new_id)
+        self._debug_log_line(f"session_change detected new_session_id={new_id}")
+
+        # 1. Finalize any in-progress run from the old session.
+        self._finalize_active_run_if_any(reason="session_change")
+
+        # 2. Mark the old session as finalized.
+        self._mark_session_finalized_if_possible()
+
+        # 3. Reset all per-session state under the lock.
+        with self._lock:
+            self._session_dir = None
+            self._session_meta_written = False
+            self._session_info_yaml_saved = False
+            self._session_finalized_marked = False
+            self._session_identity_fields = {}
+            self._channels_initialized = False
+            self._recorded_channels = tuple(REQUESTED_CHANNELS)
+            self._missing_channels = ()
+            self._channel_info = {}
+            self._dtype_decisions = {}
+            self._run_detector = None
+            self._session_start_wall_ts = time.time()
+
+        # 4. Establish the new session directory.
+        self._ensure_session_dir()
+
+        # 5. Re-run channel discovery for the new session.
+        self._initialize_channels()
+
+        # 6. Write session_info.yaml for the new session.
+        self._try_write_session_info_yaml()
 
     def _mark_session_finalized_if_possible(self) -> None:
         """Implement mark session finalized if possible logic."""
