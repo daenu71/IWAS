@@ -1,0 +1,131 @@
+{
+  "_comment": "Feature Schema v1 – defines coaching features with their required/optional channels and output types",
+  "version": "1.0.0",
+  "groups": {
+    "timing": [
+      {
+        "id": "lap_time",
+        "label": "Rundenzeit",
+        "unit": "s",
+        "output_type": "scalar",
+        "requires": ["SessionTime", "LapDistPct"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "mini_sector_time",
+        "label": "Mini-Sektor-Zeit",
+        "unit": "s",
+        "output_type": "series",
+        "requires": ["SessionTime", "LapDistPct", "LapDist"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "control_inputs": [
+      {
+        "id": "throttle_trace",
+        "label": "Gas-Spur",
+        "unit": "fraction",
+        "output_type": "series",
+        "requires": ["LapDistPct", "Throttle"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "brake_trace",
+        "label": "Brems-Spur",
+        "unit": "fraction",
+        "output_type": "series",
+        "requires": ["LapDistPct", "Brake"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "steering_trace",
+        "label": "Lenkwinkel-Spur",
+        "unit": "rad",
+        "output_type": "series",
+        "requires": ["LapDistPct", "SteeringWheelAngle"],
+        "requires_optional": ["SteeringWheelTorque"],
+        "low_confidence": false
+      },
+      {
+        "id": "gear_trace",
+        "label": "Gang-Spur",
+        "unit": "integer",
+        "output_type": "series",
+        "requires": ["LapDistPct", "Gear", "RPM"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "dynamics": [
+      {
+        "id": "lateral_accel_trace",
+        "label": "Laterale Beschleunigung",
+        "unit": "m/s²",
+        "output_type": "series",
+        "requires": ["LapDistPct", "LatAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "longitudinal_accel_trace",
+        "label": "Longitudinale Beschleunigung",
+        "unit": "m/s²",
+        "output_type": "series",
+        "requires": ["LapDistPct", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "speed_trace",
+        "label": "Geschwindigkeit",
+        "unit": "m/s",
+        "output_type": "series",
+        "requires": ["LapDistPct", "Speed"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "yaw_rate_trace",
+        "label": "Gierrate",
+        "unit": "rad/s",
+        "output_type": "series",
+        "requires": ["LapDistPct", "YawRate"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "oversteer_index",
+        "label": "Übersteuern-Index",
+        "unit": "dimensionless",
+        "output_type": "series",
+        "requires": ["LapDistPct", "YawRate", "Speed", "SteeringWheelAngle"],
+        "requires_optional": [],
+        "low_confidence": true
+      }
+    ],
+    "tires": [
+      {
+        "id": "tire_temp_lf",
+        "label": "Reifentemperatur VL",
+        "unit": "°C",
+        "output_type": "series",
+        "requires": ["LapDistPct"],
+        "requires_optional": ["LFTireTempL", "LFTireTempM", "LFTireTempR"],
+        "low_confidence": true
+      },
+      {
+        "id": "tire_temp_rf",
+        "label": "Reifentemperatur VR",
+        "unit": "°C",
+        "output_type": "series",
+        "requires": ["LapDistPct"],
+        "requires_optional": ["RFTireTempL", "RFTireTempM", "RFTireTempR"],
+        "low_confidence": true
+      }
+    ]
+  }
+}
