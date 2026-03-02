@@ -25,7 +25,7 @@ def load_cfg(project_root: str | Path, config_file: str | Path = "config/default
     cfg_path = (root / config_file).resolve()
 
     cp = configparser.ConfigParser()
-    cp.read(cfg_path, encoding="utf-8")
+    cp.read(cfg_path, encoding="utf-8-sig")
 
     hud_width_px = _get_int(cp, "video_compare", "hud_width_px", 640)
 

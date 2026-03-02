@@ -164,10 +164,14 @@ def build_encode_specs(*, W: int, fps: float, available: set[str]) -> list[Encod
             )
         )
 
+    if "libx264" in available:
+        specs.append(EncodeSpec(vcodec="libx264", extra=build_encode_args("libx264", {"W": W}), fps=fps))
+
+    # LGPL-Fallback: mpeg4 ist in allen FFmpeg-Builds verfügbar
     specs.append(
         EncodeSpec(
-            vcodec="libx264",
-            extra=build_encode_args("libx264", {"W": W}),
+            vcodec="mpeg4",
+            extra=["-c:v", "mpeg4", "-pix_fmt", "yuv420p", "-q:v", "2"],
             fps=fps,
         )
     )
