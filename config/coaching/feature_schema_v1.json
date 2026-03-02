@@ -126,6 +126,332 @@
         "requires_optional": ["RFTireTempL", "RFTireTempM", "RFTireTempR"],
         "low_confidence": true
       }
+    ],
+    "rotation_via_load": [
+      {
+        "id": "rot_efficiency_load",
+        "label": "Rotationseffizienz via Last",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["YawRate", "LatAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "rot_dependency_steer",
+        "label": "Rotationsabhängigkeit Lenkung",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["YawRate", "SteeringWheelAngle"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "yawrate_rise_before_steer",
+        "label": "Gierwratenanstieg vor Lenkbewegung",
+        "unit": "LapDistPct",
+        "output_type": "scalar",
+        "requires": ["YawRate", "SteeringWheelAngle", "LapDistPct"],
+        "requires_optional": [],
+        "low_confidence": true
+      }
+    ],
+    "friction_ellipse": [
+      {
+        "id": "grip_usage_p95",
+        "label": "Gripauslastung P95",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "grip_usage_max",
+        "label": "Maximale Gripauslastung",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "grip_usage_std",
+        "label": "Gripauslastung Standardabweichung",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "yawrate_spike_count",
+        "label": "Anzahl Gierraten-Spitzen",
+        "unit": "count",
+        "output_type": "scalar",
+        "requires": ["YawRate"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "abs_active_ratio",
+        "label": "ABS-Aktivierungsanteil",
+        "unit": "fraction",
+        "output_type": "scalar",
+        "requires": [],
+        "requires_optional": ["ABSactive"],
+        "low_confidence": false
+      }
+    ],
+    "trail_braking": [
+      {
+        "id": "corr_long_lat",
+        "label": "Korrelation Long-/Lateralbeschleunigung (Einlenkphase)",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LongAccel", "LatAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "brake_release_slope",
+        "label": "Bremsfreigabe-Gradient",
+        "unit": "fraction/sample",
+        "output_type": "scalar",
+        "requires": ["Brake"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "lataccel_ramp_slope",
+        "label": "Lateralaufbau-Gradient",
+        "unit": "m/s²/sample",
+        "output_type": "scalar",
+        "requires": ["LatAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "yawrate_stability_std_entry",
+        "label": "Gierraten-Stabilität Einlenkphase",
+        "unit": "rad/s",
+        "output_type": "scalar",
+        "requires": ["YawRate"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "downshift_stability": [
+      {
+        "id": "gear_change_count_entry",
+        "label": "Gangwechsel in Einlenkphase",
+        "unit": "count",
+        "output_type": "scalar",
+        "requires": ["Gear"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "lataccel_at_gear_change_p95",
+        "label": "Lateralbeschleunigung bei Gangwechsel P95",
+        "unit": "m/s²",
+        "output_type": "scalar",
+        "requires": ["Gear", "LatAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "yawrate_var_post_shift",
+        "label": "Gierratenvarianz nach Schaltvorgang",
+        "unit": "rad²/s²",
+        "output_type": "scalar",
+        "requires": ["Gear", "YawRate"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "rpm_delta_on_shift",
+        "label": "Drehzahlsprung beim Schalten",
+        "unit": "rpm",
+        "output_type": "scalar",
+        "requires": ["Gear", "RPM"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "light_hands": [
+      {
+        "id": "torque_response_latency_ms",
+        "label": "Lenkmoment-Antwortlatenz",
+        "unit": "ms",
+        "output_type": "scalar",
+        "requires": [],
+        "requires_optional": ["SteeringWheelTorque", "YawRate"],
+        "low_confidence": true
+      },
+      {
+        "id": "angle_correction_latency_ms",
+        "label": "Lenkkorrektur-Antwortlatenz",
+        "unit": "ms",
+        "output_type": "scalar",
+        "requires": [],
+        "requires_optional": ["SteeringWheelAngle", "YawRate"],
+        "low_confidence": true
+      },
+      {
+        "id": "torque_peak_during_correction",
+        "label": "Spitzendrehmoment bei Korrektur",
+        "unit": "Nm",
+        "output_type": "scalar",
+        "requires": [],
+        "requires_optional": ["SteeringWheelTorque", "SteeringWheelAngle"],
+        "low_confidence": true
+      }
+    ],
+    "vertical_dynamics": [
+      {
+        "id": "vertaccel_min",
+        "label": "Minimale Vertikalbeschleunigung",
+        "unit": "m/s²",
+        "output_type": "scalar",
+        "requires": ["VertAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "vertaccel_max",
+        "label": "Maximale Vertikalbeschleunigung",
+        "unit": "m/s²",
+        "output_type": "scalar",
+        "requires": ["VertAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "crest_present",
+        "label": "Kuppe vorhanden",
+        "unit": "bool",
+        "output_type": "scalar",
+        "requires": ["VertAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "compression_present",
+        "label": "Bodenwelle vorhanden",
+        "unit": "bool",
+        "output_type": "scalar",
+        "requires": ["VertAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "decel_efficiency_vs_vertload",
+        "label": "Bremswirkung vs. Vertikallast",
+        "unit": "m/s²",
+        "output_type": "scalar",
+        "requires": ["LongAccel", "VertAccel"],
+        "requires_optional": [],
+        "low_confidence": true
+      }
+    ],
+    "limit_consistency": [
+      {
+        "id": "grip_usage_consistency_std",
+        "label": "Gripkonsistenz Standardabweichung",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "grip_usage_mean",
+        "label": "Mittlere Gripauslastung",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "exit_timing": [
+      {
+        "id": "throttle_onset_vs_yawrate_peak",
+        "label": "Gas-Einsatz vs. Gierraten-Peak",
+        "unit": "LapDistPct",
+        "output_type": "scalar",
+        "requires": ["Throttle", "YawRate", "LapDistPct"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "yawrate_at_throttle_on",
+        "label": "Gierrate bei Gas-Einsatz",
+        "unit": "rad/s",
+        "output_type": "scalar",
+        "requires": ["Throttle", "YawRate", "LapDistPct"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "throttle_progression_slope",
+        "label": "Gas-Aufbau-Gradient",
+        "unit": "fraction/sample",
+        "output_type": "scalar",
+        "requires": ["Throttle"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "compound_strategy": [
+      {
+        "id": "phase1_grip_usage_mean",
+        "label": "Phase 1 mittlere Gripauslastung",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "phase2_exit_speed",
+        "label": "Phase 2 Ausgangsgeschwindigkeit",
+        "unit": "m/s",
+        "output_type": "scalar",
+        "requires": ["Speed"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "curvature_peaks_count",
+        "label": "Anzahl Krümmungspeaks",
+        "unit": "count",
+        "output_type": "scalar",
+        "requires": ["YawRate", "Speed"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
+    ],
+    "dynamic_balance": [
+      {
+        "id": "balance_4d_variance",
+        "label": "4D-Balance-Varianz",
+        "unit": "dimensionless",
+        "output_type": "scalar",
+        "requires": ["Throttle", "Brake", "LatAccel", "LongAccel"],
+        "requires_optional": [],
+        "low_confidence": false
+      },
+      {
+        "id": "balance_4d_variance_peak_lapdist",
+        "label": "4D-Balance-Peak LapDistPct",
+        "unit": "LapDistPct",
+        "output_type": "scalar",
+        "requires": ["Throttle", "Brake", "LatAccel", "LongAccel", "LapDistPct"],
+        "requires_optional": [],
+        "low_confidence": false
+      }
     ]
   }
 }
