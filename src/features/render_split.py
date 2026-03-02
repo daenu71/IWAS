@@ -7025,12 +7025,19 @@ def render_split_screen_sync(
                     expected_bytes = int(hud_stream_w) * int(hud_stream_h) * 4
                     report_every = 5
                     report_state = {"last": 0}
+                    _proc_ref: dict = {"proc": None}
 
                     def _stdin_writer(stdin_pipe: Any) -> None:
                         def _write_frame_rgba(frame_bytes: bytes) -> None:
                             if len(frame_bytes) != expected_bytes:
                                 raise RuntimeError(
                                     f"HUD stream frame size mismatch: expected {expected_bytes} bytes, got {len(frame_bytes)}"
+                                )
+                            # Früherkennung: ffmpeg-Prozess bereits beendet?
+                            if _proc_ref["proc"] is not None and _proc_ref["proc"].poll() is not None:
+                                raise RuntimeError(
+                                    f"ffmpeg process terminated early (rc={_proc_ref['proc'].returncode}) "
+                                    "while streaming HUD frames."
                                 )
                             try:
                                 stdin_pipe.write(frame_bytes)
@@ -7059,6 +7066,7 @@ def render_split_screen_sync(
                         log_file=log_file,
                         live_stdout=live,
                         stdin_write_fn=_stdin_writer,
+                        proc_ref=_proc_ref,
                     )
                 else:
                     rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
@@ -7193,12 +7201,19 @@ def render_split_screen_sync(
             expected_bytes = int(hud_stream_w) * int(hud_stream_h) * 4
             report_every = 5
             report_state = {"last": 0}
+            _proc_ref: dict = {"proc": None}
 
             def _stdin_writer(stdin_pipe: Any) -> None:
                 def _write_frame_rgba(frame_bytes: bytes) -> None:
                     if len(frame_bytes) != expected_bytes:
                         raise RuntimeError(
                             f"HUD stream frame size mismatch: expected {expected_bytes} bytes, got {len(frame_bytes)}"
+                        )
+                    # Früherkennung: ffmpeg-Prozess bereits beendet?
+                    if _proc_ref["proc"] is not None and _proc_ref["proc"].poll() is not None:
+                        raise RuntimeError(
+                            f"ffmpeg process terminated early (rc={_proc_ref['proc'].returncode}) "
+                            "while streaming HUD frames."
                         )
                     try:
                         stdin_pipe.write(frame_bytes)
@@ -7226,6 +7241,7 @@ def render_split_screen_sync(
                 log_file=log_file,
                 live_stdout=live,
                 stdin_write_fn=_stdin_writer,
+                proc_ref=_proc_ref,
             )
         else:
             rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
