@@ -31,6 +31,7 @@ class RunDetector:
         self._active_since_ts: float | None = None
         self._last_lap_completed: int | None = None
         self._last_lap_change_ts: float | None = None
+        self._teleport_candidate_ts: float | None = None
 
     def update(self, sample: dict[str, Any], now_ts: float) -> list[dict[str, Any]]:
         """Update."""
@@ -85,6 +86,25 @@ class RunDetector:
     def _apply_end_rules(self, sample: dict[str, Any], now_ts: float, events: list[dict[str, Any]]) -> None:
         """Apply end rules."""
         if self.state != self.STATE_ACTIVE:
+            return
+
+        lap_completed = self._coerce_int(self._read_value(sample, "LapCompleted"))
+        if (
+            lap_completed is not None
+            and lap_completed == 0
+            and self._last_lap_completed is not None
+            and self._last_lap_completed > 2
+        ):
+            self._teleport_candidate_ts = now_ts
+
+        if (
+            self._teleport_candidate_ts is not None
+            and self._coerce_bool(self._read_value(sample, "OnPitRoad")) is True
+            and (now_ts - self._teleport_candidate_ts) < 3.0
+        ):
+            _LOG.info("RunDetector: Teleport-to-pit erkannt bei t=%.1f", now_ts)
+            self._teleport_candidate_ts = None
+            self._end(now_ts, "teleport_to_pit", events)
             return
 
         self._update_lap_progress(sample, now_ts)
@@ -143,6 +163,7 @@ class RunDetector:
         self._last_lap_completed = None
         self._last_lap_change_ts = None
         self._prev_on_pit_road = None
+        self._teleport_candidate_ts = None
 
     @staticmethod
     def _read_value(sample: dict[str, Any], key: str) -> Any:

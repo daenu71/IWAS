@@ -6,7 +6,7 @@ Usage:
 
 Loads every run_NNNN.parquet in the session folder, prints a ~1s-sampled
 telemetry table per file, and marks:
-  - OnPitRoad True→False  (pit exit / potential run-split)
+  - OnPitRoad True->False  (pit exit / potential run-split)
   - LapCompleted increase  (lap boundary)
   - Speed < 1.0 AND IsOnTrackCar == False  (slow / off-track)
 
@@ -149,7 +149,7 @@ def detect_events(
 ) -> tuple[list[int], list[int], list[int]]:
     """Scan all rows and return three lists of row indices:
 
-    pit_exits   — OnPitRoad changed True → False
+    pit_exits   — OnPitRoad changed True -> False
     lap_changes — LapCompleted increased
     slow_off    — onset of Speed < 1.0 AND IsOnTrackCar == False
     """
@@ -167,7 +167,7 @@ def detect_events(
         speed = _to_float(row.get("Speed"))
         lap = _to_int(row.get("LapCompleted"))
 
-        # OnPitRoad True → False
+        # OnPitRoad True -> False
         if prev_pit is True and pit is False:
             pit_exits.append(i)
 
@@ -256,7 +256,7 @@ def _table_row(
 def process_parquet(path: Path, lines: list[str]) -> int:
     """Analyse one parquet file; append text to *lines*.
 
-    Returns the number of OnPitRoad True→False transitions found.
+    Returns the number of OnPitRoad True->False transitions found.
     """
     try:
         all_rows = load_parquet_rows(path)
@@ -308,7 +308,7 @@ def process_parquet(path: Path, lines: list[str]) -> int:
 
         row_flags: list[str] = []
         if any(j in pit_exit_set for j in window):
-            row_flags.append("← PIT-EXIT")
+            row_flags.append("<- PIT-EXIT")
         if any(j in lap_change_set for j in window):
             row_flags.append("LAP+1")
         if any(j in slow_off_set for j in window):
@@ -329,13 +329,13 @@ def process_parquet(path: Path, lines: list[str]) -> int:
         lines.append(f"  Events in {path.name}:")
         for i in pit_exits:
             lines.append(
-                f"    [t={ts_str(i):>8}]  OnPitRoad True→False"
-                "  ← pit exit / potential run-split"
+                f"    [t={ts_str(i):>8}]  OnPitRoad True->False"
+                "  <- pit exit / potential run-split"
             )
         for i in lap_changes:
             prev = _to_int(all_rows[i - 1].get("LapCompleted")) if i > 0 else None
             cur = _to_int(all_rows[i].get("LapCompleted"))
-            lines.append(f"    [t={ts_str(i):>8}]  LapCompleted {prev}→{cur}")
+            lines.append(f"    [t={ts_str(i):>8}]  LapCompleted {prev}->{cur}")
         for i in slow_off:
             speed = _to_float(all_rows[i].get("Speed"))
             spd_str = f"{speed:.2f} m/s" if speed is not None else "N/A"
@@ -417,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     lines.append(f"  Parquet-Dateien gefunden     : {len(parquet_files)}")
     lines.append(
         f"  Erwartete Run-Splits           : {total_pit_exits}"
-        "  (OnPitRoad True→False Übergänge)"
+        "  (OnPitRoad True->False Uebergaenge)"
     )
     if total_pit_exits > 0:
         lines.append("")
@@ -428,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             "  wahrscheinliche Bug: _prev_on_pit_road wird in _end() nicht auf"
         )
         lines.append(
-            "  None zurückgesetzt → nach Run-Ende kein neuer Pit-Exit erkennbar."
+            "  None zurueckgesetzt -> nach Run-Ende kein neuer Pit-Exit erkennbar."
         )
         lines.append(
             "  Fix: self._prev_on_pit_road = None  in RunDetector._end()"

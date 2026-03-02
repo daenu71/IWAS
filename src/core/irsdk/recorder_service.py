@@ -223,6 +223,7 @@ class RecorderService:
                     self._client.connect()
                     if not self._client.is_connected:
                         self._debug_log_line("reconnect_failed")
+                        self._finalize_active_run_if_any(reason="session_end")
                         self._sleep_interruptible(1.0)
                         continue
                     self._debug_log_line("connect_ok")
@@ -269,7 +270,7 @@ class RecorderService:
                     # Unthrottled mode still yields briefly so the UI thread stays responsive.
                     self._sleep_interruptible(0.001)
         finally:
-            self._finalize_active_run_if_any(reason="loop_exit")
+            self._finalize_active_run_if_any(reason="session_end")
             self._mark_session_finalized_if_possible()
             self._client.disconnect()
             with self._lock:
