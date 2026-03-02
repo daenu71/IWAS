@@ -16,6 +16,23 @@ NodeCallback = Callable[[CoachingTreeNode], None]
 
 _PURPLE = "#BF7FFF"
 
+COACHING_TREE_COLUMN_WIDTHS: dict[str, int] = {
+    "#0": 280,
+    "kind": 80,
+    "time": 130,
+    "lap": 110,
+    "last": 150,
+}
+# Width allowance for the vertical scrollbar in the current ttk dark theme.
+COACHING_TREE_SCROLLBAR_WIDTH_PX = 16
+# Treeview left/right border + inner chrome allowance.
+COACHING_TREE_BORDER_PX = 2
+COACHING_BROWSER_CONTENT_WIDTH_PX = (
+    sum(COACHING_TREE_COLUMN_WIDTHS.values())
+    + COACHING_TREE_SCROLLBAR_WIDTH_PX
+    + COACHING_TREE_BORDER_PX
+)
+
 
 class CoachingBrowser(ttk.Frame):
     """Container and behavior for Coaching Browser."""
@@ -72,11 +89,41 @@ class CoachingBrowser(ttk.Frame):
         self.tree.heading("time", text="Time", anchor="w")
         self.tree.heading("lap", text="Laps", anchor="w")
         self.tree.heading("last", text="Last Driven", anchor="w")
-        self.tree.column("#0", width=280, minwidth=200, stretch=True, anchor="w")
-        self.tree.column("kind", width=80, stretch=False, anchor="w")
-        self.tree.column("time", width=130, stretch=False, anchor="w")
-        self.tree.column("lap", width=110, stretch=False, anchor="w")
-        self.tree.column("last", width=150, stretch=False, anchor="w")
+        self.tree.column(
+            "#0",
+            width=COACHING_TREE_COLUMN_WIDTHS["#0"],
+            minwidth=COACHING_TREE_COLUMN_WIDTHS["#0"],
+            stretch=False,
+            anchor="w",
+        )
+        self.tree.column(
+            "kind",
+            width=COACHING_TREE_COLUMN_WIDTHS["kind"],
+            minwidth=COACHING_TREE_COLUMN_WIDTHS["kind"],
+            stretch=False,
+            anchor="w",
+        )
+        self.tree.column(
+            "time",
+            width=COACHING_TREE_COLUMN_WIDTHS["time"],
+            minwidth=COACHING_TREE_COLUMN_WIDTHS["time"],
+            stretch=False,
+            anchor="w",
+        )
+        self.tree.column(
+            "lap",
+            width=COACHING_TREE_COLUMN_WIDTHS["lap"],
+            minwidth=COACHING_TREE_COLUMN_WIDTHS["lap"],
+            stretch=False,
+            anchor="w",
+        )
+        self.tree.column(
+            "last",
+            width=COACHING_TREE_COLUMN_WIDTHS["last"],
+            minwidth=COACHING_TREE_COLUMN_WIDTHS["last"],
+            stretch=False,
+            anchor="w",
+        )
 
         y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self._tree_yview)
         y_scroll.grid(row=0, column=1, sticky="ns")

@@ -54,7 +54,7 @@ from core.output_geometry import (
 )
 from ui.preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from ui.preview.png_preview import PngPreviewController
-from ui.coaching_browser import CoachingBrowser
+from ui.coaching_browser import COACHING_BROWSER_CONTENT_WIDTH_PX, CoachingBrowser
 from ui.controller import Controller, UIContext
 
 if TYPE_CHECKING:
@@ -1629,6 +1629,16 @@ class SettingsView(ttk.Frame):
         _run_update_check(root, show_up_to_date=True)
 
 
+COACHING_BROWSER_LABELFRAME_PADDING_X_PX = 10
+# Total left+right Labelframe border allowance.
+COACHING_BROWSER_LABELFRAME_BORDER_PX = 2
+COACHING_BROWSER_WIDTH_PX = (
+    COACHING_BROWSER_CONTENT_WIDTH_PX
+    + (COACHING_BROWSER_LABELFRAME_PADDING_X_PX * 2)
+    + COACHING_BROWSER_LABELFRAME_BORDER_PX
+)
+
+
 class CoachingView(ttk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master)
@@ -1636,18 +1646,32 @@ class CoachingView(ttk.Frame):
         self.rowconfigure(0, weight=1)
         self._coaching_index: CoachingIndex | None = None
         self._status_poll_after_id: str | None = None
+        self._browser_panel_width_px = COACHING_BROWSER_WIDTH_PX
+        self._last_layout_debug_widths: tuple[int, int] | None = None
 
         layout = ttk.Frame(self, padding=12)
         layout.grid(row=0, column=0, sticky="nsew")
-        layout.columnconfigure(0, weight=1)
+        layout.columnconfigure(0, weight=0)
+        layout.columnconfigure(1, weight=1)
         layout.rowconfigure(0, weight=1)
 
-        browser = ttk.LabelFrame(layout, text="Browser", padding=10)
-        browser.grid(row=0, column=0, sticky="nsew")
-        browser.columnconfigure(0, weight=1)
-        browser.rowconfigure(1, weight=1)
+        self._browser_panel = ttk.LabelFrame(layout, text="Browser", padding=COACHING_BROWSER_LABELFRAME_PADDING_X_PX)
+        self._browser_panel.grid(row=0, column=0, sticky="nsw")
+        self._browser_panel.configure(width=self._browser_panel_width_px)
+        self._browser_panel.grid_propagate(False)
+        self._browser_panel.columnconfigure(0, weight=1)
+        self._browser_panel.rowconfigure(1, weight=1)
 
-        conn_bar = ttk.Frame(browser)
+        self._browser_spacer = tk.Frame(layout, bd=0, highlightthickness=0)
+        self._browser_spacer.grid(row=0, column=1, sticky="nsew")
+        _apply_theme_to_tk_widget(
+            self._browser_spacer,
+            bg=CURRENT_THEME.colors.background,
+            background=CURRENT_THEME.colors.background,
+            highlightbackground=CURRENT_THEME.colors.background,
+        )
+
+        conn_bar = ttk.Frame(self._browser_panel)
         conn_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         self._conn_dot = tk.Canvas(conn_bar, width=12, height=12, highlightthickness=0)
         self._conn_dot.grid(row=0, column=0, padx=(0, 4))
@@ -1657,15 +1681,40 @@ class CoachingView(ttk.Frame):
         self._conn_label.grid(row=0, column=1, sticky="w")
 
         self._browser_widget = CoachingBrowser(
-            browser,
+            self._browser_panel,
             on_refresh=self._refresh_coaching_index,
             on_open_folder=self._open_coaching_node_folder,
             on_delete_node=self._delete_coaching_node,
         )
         self._browser_widget.grid(row=1, column=0, sticky="nsew")
+        if _debug_swallowed_enabled():
+            self.bind("<Configure>", self._debug_log_layout_widths, add="+")
+            self._browser_panel.bind("<Configure>", self._debug_log_layout_widths, add="+")
+            self._browser_widget.tree.bind("<Configure>", self._debug_log_layout_widths, add="+")
+            self.after(0, self._debug_log_layout_widths)
         self._refresh_coaching_index()
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.after(300, self._poll_recorder_status)
+
+    def _debug_log_layout_widths(self, _event=None) -> None:
+        if not _debug_swallowed_enabled():
+            return
+        try:
+            panel_width = int(self._browser_panel.winfo_width())
+            tree_width = int(self._browser_widget.tree.winfo_width())
+        except Exception:
+            return
+        snapshot = (panel_width, tree_width)
+        if snapshot == self._last_layout_debug_widths:
+            return
+        self._last_layout_debug_widths = snapshot
+        _LOG.debug(
+            "Coaching layout widths panel=%d tree=%d target_panel=%d target_tree=%d",
+            panel_width,
+            tree_width,
+            self._browser_panel_width_px,
+            COACHING_BROWSER_CONTENT_WIDTH_PX,
+        )
 
     def _coaching_root_dir(self) -> Path:
         try:
@@ -5548,4 +5597,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
