@@ -75,7 +75,7 @@ class CoachingBrowser(ttk.Frame):
         self.tree.column("#0", width=280, minwidth=200, stretch=True, anchor="w")
         self.tree.column("kind", width=80, stretch=False, anchor="w")
         self.tree.column("time", width=130, stretch=False, anchor="w")
-        self.tree.column("lap", width=70, stretch=False, anchor="w")
+        self.tree.column("lap", width=110, stretch=False, anchor="w")
         self.tree.column("last", width=150, stretch=False, anchor="w")
 
         y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self._tree_yview)
