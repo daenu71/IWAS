@@ -5087,6 +5087,7 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
         show_progress_with_cancel=show_progress_with_cancel,
         update_ui=root.update,
         show_preview_controls=show_preview_controls,
+        show_error=lambda msg: messagebox.showerror("Render-Fehler", str(msg), parent=root),
     )
     controller = Controller(
         ui=ui_ctx,
