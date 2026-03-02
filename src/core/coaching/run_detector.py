@@ -142,6 +142,7 @@ class RunDetector:
         self._active_since_ts = None
         self._last_lap_completed = None
         self._last_lap_change_ts = None
+        self._prev_on_pit_road = None
 
     @staticmethod
     def _read_value(sample: dict[str, Any], key: str) -> Any:
