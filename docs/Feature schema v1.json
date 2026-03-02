@@ -1,0 +1,780 @@
+{
+  "_meta": {
+    "schema_id": "feature_schema_v1",
+    "version": "1.0.0",
+    "created": "2026-03-02",
+    "description": "Feature Schema v1 fuer iWAS Coaching Sprint 2. Abgeleitet aus 12 Simracing-Thesen (Almeida + Gitgud). Dieses Schema ist Vertrag zwischen Feature-Engine und LLM-Interpretationslayer. Keine Schwellenwerte gut/schlecht — nur Rohdaten und abgeleitete Indikatoren.",
+    "scope": "Pro Corner, pro Lap. Scalars + optionale Snapshots.",
+    "llm_contract_note": "Das LLM empfaengt ausschliesslich Features aus diesem Schema. Fehlende Features = na. Keine Rohdaten. Keine Zeitreihen ausser explizit benannten Snapshots.",
+    "partial_handling": "Wenn ein Feature 'requires_optional' Kanaele benoetigt und diese fehlen, wird der Wert als null gesetzt und 'missing_reason' in der Artefakt-Meta dokumentiert.",
+    "speed_normalization_note": "Gradient-Features (rot_efficiency_load, rot_dependency_steer) sind Speed-abhaengig. Normalisierung per Speed-Klasse ist Aufgabe des LLM-Context-Layers in Sprint 3, nicht der Feature-Engine."
+  },
+
+  "engine_info": {
+    "analysis_engine_version": "0.1.0",
+    "schema_hash_algorithm": "sha256",
+    "corner_map_version_required": 1
+  },
+
+  "required_channels": [
+    "LapDistPct", "LapDist", "SessionTime",
+    "Speed", "YawRate", "LatAccel", "LongAccel", "VertAccel",
+    "Throttle", "Brake", "SteeringWheelAngle",
+    "Gear", "RPM"
+  ],
+
+  "optional_channels": [
+    "SteeringWheelTorque",
+    "SteeringWheelPctTorque",
+    "LFTireTempL", "LFTireTempM", "LFTireTempR",
+    "RFTireTempL", "RFTireTempM", "RFTireTempR",
+    "LRTireTempL", "LRTireTempM", "LRTireTempR",
+    "RRTireTempL", "RRTireTempM", "RRTireTempR",
+    "ABSactive",
+    "TractionControl"
+  ],
+
+  "core_derived_channels": [
+    {
+      "id": "grip_usage",
+      "formula": "sqrt(lat_accel^2 + long_accel^2)",
+      "unit": "m/s²",
+      "description": "Approximierter Gesamtgripverbrauch (Friction Circle Proxy). Kein echter Reifenkraftvektor, da Fahrzeugmasse fehlt.",
+      "requires": ["LatAccel", "LongAccel"]
+    },
+    {
+      "id": "ideal_yawrate",
+      "formula": "speed / radius_est",
+      "unit": "rad/s",
+      "description": "Theoretische Gierrate fuer neutrales Fahrzeugverhalten. radius_est aus CornerMap (curvature-basiert).",
+      "requires": ["Speed"],
+      "requires_corner_map": true
+    },
+    {
+      "id": "oversteer_index",
+      "formula": "yawrate - ideal_yawrate",
+      "unit": "rad/s",
+      "description": "Positiv = Uebersteuern (mehr Gierung als neutral). Negativ = Untersteuern.",
+      "requires": ["YawRate"],
+      "requires_derived": ["ideal_yawrate"]
+    },
+    {
+      "id": "understeer_index",
+      "formula": "ideal_yawrate - yawrate",
+      "unit": "rad/s",
+      "description": "Positiv = Untersteuern. Spiegelwert von oversteer_index.",
+      "requires": ["YawRate"],
+      "requires_derived": ["ideal_yawrate"]
+    },
+    {
+      "id": "input_jerk_brake",
+      "formula": "d2(brake)/dt2",
+      "unit": "1/s²",
+      "description": "Zweite Ableitung des Bremsdrucks — Proxy fuer Eingabe-Sanftheit.",
+      "requires": ["Brake"]
+    },
+    {
+      "id": "input_jerk_throttle",
+      "formula": "d2(throttle)/dt2",
+      "unit": "1/s²",
+      "description": "Zweite Ableitung des Gaspedals — Proxy fuer Ausgabe-Sanftheit.",
+      "requires": ["Throttle"]
+    }
+  ],
+
+  "feature_groups": [
+
+    {
+      "group_id": "rotation_via_load",
+      "thesis_ref": 1,
+      "thesis_title": "Rotation entsteht durch Lastverschiebung – nicht durch Lenkwinkel",
+      "book_source": ["Almeida", "Gitgud"],
+      "window": "entry",
+      "window_definition": "LapDistPct von turn_in bis min_speed (Apex Proxy)",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "rot_efficiency_load",
+          "label": "Load-Induced Rotation Efficiency",
+          "formula": "d(yawrate) / d(|long_accel|)",
+          "unit": "rad/s per m/s²",
+          "output_type": "scalar",
+          "description": "Wie stark steigt die Gierrate pro Einheit Laengsverzögerung. Hoch = Rotation kommt hauptsaechlich durch Lastverschiebung.",
+          "requires": ["YawRate", "LongAccel"],
+          "requires_optional": false,
+          "speed_sensitive": true,
+          "llm_hint": "Hoher Wert = Fahrer erzeugt Rotation effizient durch Bremsen/Lupfen, nicht durch Lenkwinkel."
+        },
+        {
+          "id": "rot_dependency_steer",
+          "label": "Steering-Induced Rotation Dependency",
+          "formula": "d(yawrate) / d(|steer_angle|)",
+          "unit": "rad/s per rad",
+          "output_type": "scalar",
+          "description": "Wie stark steigt die Gierrate pro Einheit Lenkwinkel. Niedrig = Fahrer lenkt wenig, benoetigt Last fuer Rotation.",
+          "requires": ["YawRate", "SteeringWheelAngle"],
+          "requires_optional": false,
+          "speed_sensitive": true,
+          "llm_hint": "Niedriger Wert in Kombination mit hohem rot_efficiency_load = saubere Lastrotation."
+        },
+        {
+          "id": "yawrate_rise_before_steer",
+          "label": "YawRate Rise Before Steering Increase",
+          "formula": "ratio: samples where d(yawrate)>0 AND d(|steer|)<0 / total entry samples",
+          "unit": "ratio [0..1]",
+          "output_type": "scalar",
+          "description": "Anteil der Entry-Phase, in der Gierrate steigt waehrend Lenkwinkel stabil bleibt oder sinkt.",
+          "requires": ["YawRate", "SteeringWheelAngle"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Nahe 1.0 = Fahrer hat Rotation vor dem Einlenken aufgebaut."
+        }
+      ]
+    },
+
+    {
+      "group_id": "friction_ellipse",
+      "thesis_ref": 2,
+      "thesis_title": "Friction Ellipse ist real – du kannst nicht alles gleichzeitig haben",
+      "book_source": ["Gitgud"],
+      "window": "full_corner",
+      "window_definition": "LapDistPct von brake_start bis throttle_full",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "grip_usage_p95",
+          "label": "Grip Usage 95th Percentile",
+          "formula": "percentile(grip_usage, 95)",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "95. Perzentile des Gesamtgripverbrauchs im Kurvenbereich. Zeigt nachhaltiges Limit-Niveau.",
+          "requires": ["LatAccel", "LongAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Elite-Fahrer halten diesen Wert konstant nahe dem physikalischen Maximum."
+        },
+        {
+          "id": "grip_usage_max",
+          "label": "Grip Usage Peak",
+          "formula": "max(grip_usage)",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Maximaler Gripverbrauch im Kurvenbereich. Einzelne Peaks koennen Instabilitaet anzeigen.",
+          "requires": ["LatAccel", "LongAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Grosse Differenz zwischen grip_usage_p95 und grip_usage_max deutet auf Slide-Events hin."
+        },
+        {
+          "id": "grip_usage_std",
+          "label": "Grip Usage Consistency (StdDev)",
+          "formula": "std(grip_usage)",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Standardabweichung des Gripverbrauchs — Konsistenz-Proxy.",
+          "requires": ["LatAccel", "LongAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Niedriger Wert = gleichmaessige Kraftausnutzung ohne Spikes."
+        },
+        {
+          "id": "yawrate_spike_count",
+          "label": "YawRate Instability Spike Count",
+          "formula": "count(|d(yawrate)/dt| > threshold_yawrate_spike)",
+          "unit": "count",
+          "output_type": "scalar",
+          "description": "Anzahl abrupter Gierratenaenderungen. Proxy fuer Slide/Stabilitaetsverlust-Events.",
+          "requires": ["YawRate"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "threshold_config_key": "threshold_yawrate_spike",
+          "llm_hint": "Hoehere Werte korrelieren mit grip_usage Spikes und zeigen Limit-Ueberschreitung."
+        },
+        {
+          "id": "abs_active_ratio",
+          "label": "ABS Active Ratio",
+          "formula": "sum(abs_active) / sample_count",
+          "unit": "ratio [0..1]",
+          "output_type": "scalar",
+          "description": "Anteil der Bremsphasen mit ABS-Eingriff. Nur verfuegbar wenn ABSactive im Datensatz.",
+          "requires": ["ABSactive"],
+          "requires_optional": true,
+          "speed_sensitive": false,
+          "llm_hint": "Hoher Wert = Fahrer bremst konsistent ueber Reifenlimit in Entry-Phase."
+        }
+      ]
+    },
+
+    {
+      "group_id": "trail_braking",
+      "thesis_ref": 3,
+      "thesis_title": "Trail Braking ist kontrollierter Übergang von Long zu Lat",
+      "book_source": ["Almeida", "Gitgud"],
+      "window": "entry",
+      "window_definition": "LapDistPct von brake_start bis min_speed",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "corr_long_lat",
+          "label": "Long-Lat Transition Correlation",
+          "formula": "pearson_corr(long_accel, lat_accel) in entry window",
+          "unit": "[-1..1]",
+          "output_type": "scalar",
+          "description": "Negative Korrelation = wenn LongAccel abnimmt (weniger Bremsung), steigt LatAccel (Querbeschleunigung). Zeigt sauberes Trail Braking.",
+          "requires": ["LongAccel", "LatAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Werte nahe -1 = perfektes Trail Braking. Werte nahe 0 = kein koordinierter Uebergang."
+        },
+        {
+          "id": "brake_release_slope",
+          "label": "Brake Release Rate",
+          "formula": "slope(brake, lapdist_pct) in brake_release window",
+          "unit": "1/lapdist_pct",
+          "output_type": "scalar",
+          "description": "Steigung der Bremsdruck-Abnahme. Flache Kurve = progressives Dosieren (Trail), steile Kurve = abruptes Loslassen.",
+          "requires": ["Brake"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Moderater negativer Slope = Trail Braking. Zu steiler Slope = abrupter Bremsabbau."
+        },
+        {
+          "id": "lataccel_ramp_slope",
+          "label": "Lateral Acceleration Build Rate",
+          "formula": "slope(lat_accel, lapdist_pct) in entry window",
+          "unit": "m/s² per lapdist_pct",
+          "output_type": "scalar",
+          "description": "Wie schnell baut sich die Querbeschleunigung auf. In Kombination mit brake_release_slope Indikator fuer koordinierten Uebergang.",
+          "requires": ["LatAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Sollte komplementaer zu brake_release_slope sein: wenn Bremse loslässt, steigt LatAccel."
+        },
+        {
+          "id": "yawrate_stability_std_entry",
+          "label": "YawRate Stability in Entry Phase",
+          "formula": "std(yawrate) in entry window",
+          "unit": "rad/s",
+          "output_type": "scalar",
+          "description": "Niedriger Wert = Fahrzeug bleibt stabil waehrend des Bremsabbaus. Hoher Wert = Fahrzeug rotiert unkontrolliert.",
+          "requires": ["YawRate"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Niedrige Werte bei negativem corr_long_lat = sauberes, kontrolliertes Trail Braking."
+        }
+      ]
+    },
+
+    {
+      "group_id": "downshift_stability",
+      "thesis_ref": 4,
+      "thesis_title": "Downshift unter Querlast destabilisiert",
+      "book_source": ["Gitgud"],
+      "window": "entry",
+      "window_definition": "LapDistPct von turn_in bis min_speed; event-basiert ±0.3s um GearChange",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "gear_change_count_entry",
+          "label": "Gear Change Count in Entry Phase",
+          "formula": "count(gear_change events in entry window)",
+          "unit": "count",
+          "output_type": "scalar",
+          "description": "Anzahl Schaltvorgaenge waehrend der Entry-Phase.",
+          "requires": ["Gear"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Null = kein Runterschalten unter Last. Hoehere Werte = potenzielle Instabilitaetsquelle."
+        },
+        {
+          "id": "lataccel_at_gear_change_p95",
+          "label": "Lateral Load at Gear Change (P95)",
+          "formula": "percentile(lat_accel sampled at gear_change events, 95)",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Querlast zum Zeitpunkt des Schaltens. Hoch = Schalten unter grosser Querlast.",
+          "requires": ["Gear", "LatAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Hohe Werte in Kombination mit hohem yawrate_var_post_shift = destabilisierende Schaltvorgaenge."
+        },
+        {
+          "id": "yawrate_var_post_shift",
+          "label": "YawRate Variance Post Gear Change",
+          "formula": "var(yawrate in +0.3s window after each gear_change)",
+          "unit": "(rad/s)²",
+          "output_type": "scalar",
+          "description": "Varianz der Gierrate in den 300ms nach einem Schaltvorgang. Proxy fuer durch Schalten ausgeloeste Instabilitaet.",
+          "requires": ["Gear", "YawRate"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Hoch = Schaltvorgang hat Fahrzeugstabilitaet beeinflusst."
+        },
+        {
+          "id": "rpm_delta_on_shift",
+          "label": "RPM Delta on Downshift",
+          "formula": "max(|rpm_after - rpm_before|) across gear_change events in entry window",
+          "unit": "RPM",
+          "output_type": "scalar",
+          "description": "Maximale RPM-Differenz beim Runterschalten. Grosser Sprung ohne Zwischengasstoss = Motorbremse als Instabilitaetsquelle.",
+          "requires": ["Gear", "RPM"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Grosser RPM-Sprung ohne Blipping kann Hinterachse uebelasten."
+        }
+      ]
+    },
+
+    {
+      "group_id": "light_hands",
+      "thesis_ref": 5,
+      "thesis_title": "Light Hands = geringere Korrektur-Latenz",
+      "book_source": ["Almeida"],
+      "window": "oversteer_event",
+      "window_definition": "Event-basiert: Fenster um erkannte Oversteer-Events (YawRate > threshold)",
+      "confidence": "medium",
+      "confidence_note": "SteeringWheelTorque nicht bei allen iRacing Fahrzeugen verfuegbar. Features fallen auf null wenn Kanal fehlt.",
+      "features": [
+        {
+          "id": "torque_response_latency_ms",
+          "label": "Steering Torque Response Latency",
+          "formula": "median(delta_t: oversteer_start -> first torque_reaction) in ms",
+          "unit": "ms",
+          "output_type": "scalar",
+          "description": "Zeit zwischen Beginn eines Oversteer-Events und erster messbarer Torque-Reaktion. Proxy fuer 'Light Hands' (niedrig = schnelle Rueckmeldung).",
+          "requires": ["YawRate", "SteeringWheelTorque"],
+          "requires_optional": true,
+          "speed_sensitive": false,
+          "llm_hint": "Niedriger Wert = Fahrer spuert Oversteer schnell ueber das Lenkrad und reagiert frueh."
+        },
+        {
+          "id": "angle_correction_latency_ms",
+          "label": "Steering Angle Correction Latency",
+          "formula": "median(delta_t: oversteer_start -> first angle_correction) in ms",
+          "unit": "ms",
+          "output_type": "scalar",
+          "description": "Zeit zwischen Oversteer-Beginn und erster messbarer Lenkkorrektion. Vergleich mit torque_response_latency_ms zeigt ob Fahrer auf Torque oder visuell reagiert.",
+          "requires": ["YawRate", "SteeringWheelAngle"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Wenn angle_correction_latency >> torque_response_latency = Fahrer reagiert spaeter als Lenkrad-Feedback verfuegbar."
+        },
+        {
+          "id": "torque_peak_during_correction",
+          "label": "Peak Torque During Oversteer Correction",
+          "formula": "max(|steer_torque|) during correction window",
+          "unit": "Nm",
+          "output_type": "scalar",
+          "description": "Maximales Lenkmoment waehrend Korrekturroutine. Hoch = 'Heavy Hands', niedrig = sanfte Korrektion.",
+          "requires": ["SteeringWheelTorque"],
+          "requires_optional": true,
+          "speed_sensitive": false,
+          "llm_hint": "Niedriger Wert = Fahrer haelt das Lenkrad locker und laesst das Fahrzeug sich selbst korrigieren."
+        }
+      ]
+    },
+
+    {
+      "group_id": "vertical_dynamics",
+      "thesis_ref": [6, 7],
+      "thesis_title": "Kuppen reduzieren / Kompressionen erhoehen Bremsleistung und Grip",
+      "book_source": ["Gitgud"],
+      "window": "brake_zone_and_apex",
+      "window_definition": "brake_start bis min_speed; annotiert mit VertAccel-Profil aus CornerMap",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "vertaccel_min",
+          "label": "Minimum Vertical Acceleration",
+          "formula": "min(vert_accel) in corner window",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Tiefster VertAccel-Wert. Negativ = Entlastung/Kuppe. Je negativer, desto staerker der Grip-Verlust.",
+          "requires": ["VertAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Stark negative Werte in Bremszonen = Fahrer muss Bremsdruck reduzieren um Blockieren zu vermeiden."
+        },
+        {
+          "id": "vertaccel_max",
+          "label": "Maximum Vertical Acceleration",
+          "formula": "max(vert_accel) in corner window",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Hoechster VertAccel-Wert. Positiv = Kompression. Hoeher = mehr Grip durch erhoehte Radlast.",
+          "requires": ["VertAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Hohe Werte in Kurvenmitte = Fahrer koennte mehr Querbeschleunigung nutzen."
+        },
+        {
+          "id": "crest_present",
+          "label": "Crest Present in Corner",
+          "formula": "any(vert_accel < threshold_crest) in corner window",
+          "unit": "bool",
+          "output_type": "scalar",
+          "description": "Gibt an ob eine Kuppe im Bremsbereich oder Entry vorhanden ist.",
+          "requires": ["VertAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "threshold_config_key": "threshold_crest",
+          "llm_hint": "True = Bremszone ist durch Kuppe kompromittiert. Fahrer muss fruehzeitig bremsen."
+        },
+        {
+          "id": "compression_present",
+          "label": "Compression Present in Corner",
+          "formula": "any(vert_accel > threshold_compression) in corner window",
+          "unit": "bool",
+          "output_type": "scalar",
+          "description": "Gibt an ob eine Kompression in Kurvenmitte oder Exit vorhanden ist.",
+          "requires": ["VertAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "threshold_config_key": "threshold_compression",
+          "llm_hint": "True = Fahrer hat Grip-Bonus in der Kurve durch Kompression."
+        },
+        {
+          "id": "decel_efficiency_vs_vertload",
+          "label": "Braking Efficiency at Vertical Unloading",
+          "formula": "long_accel_per_brake_unit when vert_accel < 0 vs when vert_accel >= 0",
+          "unit": "m/s² per brake_unit (ratio)",
+          "output_type": "scalar",
+          "description": "Verhaeltnis: Verzoegerung pro Bremsdruck-Einheit bei Entlastung vs. normaler Last. Kleiner Wert = Fahrer bremst gleich stark trotz Gripverlust bei Kuppe.",
+          "requires": ["VertAccel", "LongAccel", "Brake"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Wert nahe 1.0 = Fahrer passt Bremsdruck an Vertikallast an. Wert < 1.0 = Fahrer bremst zu stark an Kuppe."
+        }
+      ]
+    },
+
+    {
+      "group_id": "thermal_brake_management",
+      "thesis_ref": 8,
+      "thesis_title": "Überbremsen erhitzt Vorderreifen → Untersteuern",
+      "book_source": ["Gitgud"],
+      "window": "entry_to_midcorner",
+      "window_definition": "brake_peak bis min_speed + 20% Kurvenlaenge",
+      "confidence": "low",
+      "confidence_note": "iRacing TireTemp reagiert traege und ist fahrzeugabhaengig. Feature ist als low_confidence markiert. LLM soll diesen Bereich mit Vorsicht interpretieren.",
+      "features": [
+        {
+          "id": "front_tiretemp_delta_post_brake",
+          "label": "Front Tire Temp Delta After Brake Peak",
+          "formula": "mean([LFTireTempM, RFTireTempM]) at (brake_peak + N_samples) minus value at brake_start",
+          "unit": "°C",
+          "output_type": "scalar",
+          "description": "Temperaturanstieg der Vorderreifen nach dem Bremspeak. Proxy fuer thermische Belastung durch Ueberbremsen.",
+          "requires": ["LFTireTempM", "RFTireTempM", "Brake"],
+          "requires_optional": true,
+          "speed_sensitive": false,
+          "low_confidence": true,
+          "llm_hint": "Hoher Anstieg deutet auf Ueberbremsen hin, kann Untersteuern in Kurvenmitte erklaeren."
+        },
+        {
+          "id": "midcorner_lataccel_vs_temp",
+          "label": "Mid-Corner Lateral Accel relative to Front Tire Temp",
+          "formula": "corr(lat_accel_midcorner, front_tiretemp_delta_post_brake) across laps",
+          "unit": "[-1..1]",
+          "output_type": "scalar",
+          "description": "Korrelation zwischen Vorderreifen-Temperaturanstieg und erreichter Querbeschleunigung in Kurvenmitte. Wird erst ab mehreren Runden sinnvoll.",
+          "requires": ["LatAccel", "LFTireTempM", "RFTireTempM"],
+          "requires_optional": true,
+          "speed_sensitive": false,
+          "low_confidence": true,
+          "multi_lap_required": true,
+          "llm_hint": "Negative Korrelation = Ueberhitzen der Front reduziert Kurvenmittengrip messbar."
+        }
+      ]
+    },
+
+    {
+      "group_id": "limit_consistency",
+      "thesis_ref": 9,
+      "thesis_title": "Limit ist reproduzierbar, nicht Peak-getrieben",
+      "book_source": ["Almeida", "Gitgud"],
+      "window": "full_corner",
+      "window_definition": "brake_start bis throttle_full",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "grip_usage_consistency_std",
+          "label": "Grip Usage Consistency (StdDev over full corner)",
+          "formula": "std(grip_usage) in full_corner window",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Standardabweichung des Gesamtgrips ueber die gesamte Kurve. Niedrig = konstante Kraftausnutzung ohne Peaks.",
+          "requires": ["LatAccel", "LongAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Niedrige Werte = Fahrer arbeitet konstant am Limit. Hohe Werte = Peak-getriebener Stil mit Instabilitaetsrisiko."
+        },
+        {
+          "id": "grip_usage_mean",
+          "label": "Mean Grip Usage",
+          "formula": "mean(grip_usage) in full_corner window",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Durchschnittliche Gripausnutzung ueber die gesamte Kurve.",
+          "requires": ["LatAccel", "LongAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "In Kombination mit grip_usage_consistency_std zeigt dies ob der Fahrer konstant oder sporadisch am Limit ist."
+        }
+      ]
+    },
+
+    {
+      "group_id": "exit_timing",
+      "thesis_ref": 10,
+      "thesis_title": "Rotation vor Throttle",
+      "book_source": ["Almeida"],
+      "window": "apex_to_exit",
+      "window_definition": "min_speed bis throttle_full",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "throttle_onset_vs_yawrate_peak",
+          "label": "Throttle Onset relative to YawRate Peak",
+          "formula": "lapdist_pct(throttle_on) - lapdist_pct(yawrate_peak_in_corner)",
+          "unit": "lapdist_pct delta",
+          "output_type": "scalar",
+          "description": "Positiv = Throttle nach YawRate-Peak (korrekt: Rotation abgeschlossen). Negativ = Throttle vor Rotationsabschluss (Risiko: Untersteuern / Dreher).",
+          "requires": ["Throttle", "YawRate"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Positiver Wert = Fahrer wartet auf Rotation vor Gas. Negativer Wert = Gas zu frueh, Rotation noch nicht abgeschlossen."
+        },
+        {
+          "id": "yawrate_at_throttle_on",
+          "label": "YawRate at Throttle Application",
+          "formula": "yawrate value at throttle_on event",
+          "unit": "rad/s",
+          "output_type": "scalar",
+          "description": "Absolute Gierrate zum Zeitpunkt des ersten Gas-Events. Niedrig = Fahrzeug ist bereits stabil ausgerichtet.",
+          "requires": ["Throttle", "YawRate"],
+          "requires_optional": false,
+          "speed_sensitive": true,
+          "llm_hint": "Niedriger Wert = Fahrzeug war ruhig als Gas gegeben wurde. Hoher Wert = Rotation noch aktiv beim Gas geben."
+        },
+        {
+          "id": "throttle_progression_slope",
+          "label": "Throttle Application Rate",
+          "formula": "slope(throttle, lapdist_pct) from throttle_on to throttle_full",
+          "unit": "1/lapdist_pct",
+          "output_type": "scalar",
+          "description": "Wie schnell wird Gas gegeben nach throttle_on. Flach = progressiv. Steil = abrupt.",
+          "requires": ["Throttle"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Progressiver Gasanstieg nach abgeschlossener Rotation = optimale Exit-Technik."
+        }
+      ]
+    },
+
+    {
+      "group_id": "compound_strategy",
+      "thesis_ref": 11,
+      "thesis_title": "Compound Corner verlangt Priorisierung",
+      "book_source": ["Gitgud"],
+      "window": "phase1_and_phase2",
+      "window_definition": "Nur fuer CornerType=compound. Phase 1 = erster Apex-Bereich, Phase 2 = zweiter Apex bis Exit.",
+      "confidence": "medium",
+      "confidence_note": "Abhaengig von stabiler CornerMap mit korrektem CornerType=compound. Wenn CornerType nicht compound, werden diese Features als na gesetzt.",
+      "features": [
+        {
+          "id": "phase1_grip_usage_mean",
+          "label": "Phase 1 Mean Grip Usage",
+          "formula": "mean(grip_usage) in phase1 window",
+          "unit": "m/s²",
+          "output_type": "scalar",
+          "description": "Durchschnittliche Gripausnutzung in Phase 1 (erster Kurventeil). Bewusst niedrigere Werte hier sind korrekte Strategie.",
+          "requires": ["LatAccel", "LongAccel"],
+          "requires_optional": false,
+          "requires_corner_type": "compound",
+          "speed_sensitive": false,
+          "llm_hint": "Niedrigere Phase-1-Werte vs Phase-2-Exit-Speed = korrekte Compound-Priorisierung."
+        },
+        {
+          "id": "phase2_exit_speed",
+          "label": "Phase 2 Exit Speed",
+          "formula": "speed at lapdist_pct(throttle_full) in phase2",
+          "unit": "m/s",
+          "output_type": "scalar",
+          "description": "Exit-Geschwindigkeit aus dem zweiten Kurventeil. Hauptmetrik fuer Compound-Kurven-Performance.",
+          "requires": ["Speed", "Throttle"],
+          "requires_optional": false,
+          "requires_corner_type": "compound",
+          "speed_sensitive": false,
+          "llm_hint": "Hoher Exit-Speed bei moderatem phase1_grip_usage_mean = optimale Compound-Strategie."
+        },
+        {
+          "id": "curvature_peaks_count",
+          "label": "Number of Curvature Peaks",
+          "formula": "from CornerMap: curvature_peaks_count",
+          "unit": "count",
+          "output_type": "scalar",
+          "description": "Anzahl Kruemmungspeaks aus der CornerMap. Bei compound Corners typisch >= 2.",
+          "requires": [],
+          "requires_optional": false,
+          "requires_corner_map": true,
+          "speed_sensitive": false,
+          "llm_hint": "Kontext-Feature fuer LLM: wie komplex ist die Kurvengeometrie."
+        }
+      ]
+    },
+
+    {
+      "group_id": "dynamic_balance",
+      "thesis_ref": 12,
+      "thesis_title": "Fahrzeugbalance ist 4D-System",
+      "book_source": ["Almeida"],
+      "window": "full_corner",
+      "window_definition": "brake_start bis throttle_full; gleitendes Fenster 0.5s",
+      "confidence": "high",
+      "features": [
+        {
+          "id": "balance_4d_variance",
+          "label": "4D Dynamic Balance Variance",
+          "formula": "mean_variance_over_rolling_0.5s_window([long_accel, lat_accel, yawrate, vert_accel])",
+          "unit": "mixed (normalized)",
+          "output_type": "scalar",
+          "description": "Mittlere kombinierte Varianz aller vier Dynamikachsen in einem 0.5s gleitenden Fenster. Niedriger Wert = ruhiges, balanciertes Fahrzeug.",
+          "requires": ["LongAccel", "LatAccel", "YawRate", "VertAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "normalization_note": "Alle vier Achsen muessen vor Varianz-Berechnung auf [0,1] normiert werden (z.B. z-score oder min-max per Kanal per Lap). Sonst dominiert YawRate durch andere Einheit.",
+          "llm_hint": "Niedrigster Wert ueber das gesamte Fenster = Uebergang zwischen Fahrphasen verlauft sanft und kontrolliert."
+        },
+        {
+          "id": "balance_4d_variance_peak_lapdist",
+          "label": "LapDistPct of Worst Balance Window",
+          "formula": "lapdist_pct at max(rolling_0.5s_4d_variance)",
+          "unit": "lapdist_pct",
+          "output_type": "scalar",
+          "description": "Position in der Kurve wo die Fahrzeugbalance am staerksten gestört war.",
+          "requires": ["LongAccel", "LatAccel", "YawRate", "VertAccel"],
+          "requires_optional": false,
+          "speed_sensitive": false,
+          "llm_hint": "Gibt dem LLM den genauen Punkt des groessten Balance-Defizits. In Kombination mit Events lokalisierbar."
+        }
+      ]
+    }
+  ],
+
+  "snapshots": [
+    {
+      "id": "brake_entry_window",
+      "label": "Brake Entry Snapshot",
+      "window": "brake_start to turn_in + X samples",
+      "sample_count": 21,
+      "channels": ["Brake", "LongAccel"],
+      "description": "Kurzes Zeitfenster der Bremsphase. Zeigt Bremscharakter (haemmernd vs. progressiv).",
+      "llm_hint": "LLM bekommt dieses Fenster als Array um Bremscharakter qualitativ zu beschreiben."
+    },
+    {
+      "id": "yawrate_entry_window",
+      "label": "YawRate Entry Snapshot",
+      "window": "turn_in to min_speed",
+      "sample_count": 21,
+      "channels": ["YawRate", "SteeringWheelAngle"],
+      "description": "Gierrate und Lenkwinkel waehrend der Entry-Phase. Zeigt ob Rotation durch Lenken oder Last aufgebaut wird.",
+      "llm_hint": "Array-Kontext fuer These 1 und 3."
+    },
+    {
+      "id": "gripusage_window",
+      "label": "Grip Usage Full Corner Snapshot",
+      "window": "brake_start to throttle_full",
+      "sample_count": 21,
+      "channels": ["grip_usage"],
+      "description": "Verlauf des Gesamtgripverbrauchs durch die gesamte Kurve.",
+      "requires_derived": ["grip_usage"],
+      "llm_hint": "Gibt dem LLM den Verlauf der Kraftausnutzung — sieht der Fahrer ein 'Mountain'-Profil oder ein 'Plateau'?"
+    }
+  ],
+
+  "corner_context_fields": [
+    {
+      "id": "corner_id",
+      "description": "Eindeutige Corner-ID aus CornerMap."
+    },
+    {
+      "id": "corner_type",
+      "description": "Typ aus CornerMap: hairpin / medium / sweeper / chicane / compound / unknown."
+    },
+    {
+      "id": "corner_radius_est",
+      "description": "Geschaetzter Kurvenradius aus CornerMap (m)."
+    },
+    {
+      "id": "crest_present_map",
+      "description": "Bool: CornerMap zeigt Kuppe in diesem Corner (aus Baseline-Elevation)."
+    },
+    {
+      "id": "compression_present_map",
+      "description": "Bool: CornerMap zeigt Kompression in diesem Corner."
+    },
+    {
+      "id": "lap_validity_flag",
+      "description": "Sprint-1-Flag: incomplete / offtrack / valid. Kein Blocker, aber LLM-Kontext."
+    },
+    {
+      "id": "engine_version",
+      "description": "Analysis engine version zum Zeitpunkt der Berechnung."
+    },
+    {
+      "id": "schema_hash",
+      "description": "SHA256 hash dieses Feature-Schema-Files."
+    },
+    {
+      "id": "contract_hash",
+      "description": "SHA256 hash des Analysis Contract Files."
+    },
+    {
+      "id": "corner_map_version",
+      "description": "Version der verwendeten CornerMap."
+    }
+  ],
+
+  "event_config_defaults": {
+    "_note": "Alle Schwellenwerte muessen in event_config_v1.json versioniert sein. Aenderungen invalidieren den Cache.",
+    "threshold_yawrate_spike": 0.5,
+    "threshold_crest": -2.0,
+    "threshold_compression": 3.0,
+    "threshold_oversteer_yawrate": 0.3,
+    "brake_start_threshold": 0.05,
+    "throttle_on_threshold": 0.05,
+    "throttle_full_threshold": 0.95
+  },
+
+  "open_decisions": [
+    {
+      "id": "OD-1",
+      "question": "analysis_lapdist_step Default",
+      "options": ["0.0005", "0.001"],
+      "recommendation": "0.0005 — Gradient-Features benoetigen hohe Aufloesung.",
+      "status": "pending"
+    },
+    {
+      "id": "OD-2",
+      "question": "Baseline Lap fuer CornerMap",
+      "options": ["erste vollstaendige Lap", "beste valide Lap"],
+      "recommendation": "Beste valide Lap — stabilere Geometrie.",
+      "status": "pending"
+    },
+    {
+      "id": "OD-3",
+      "question": "Snapshot window sample count",
+      "options": ["21", "51"],
+      "recommendation": "21 — LLM-Token-Budget schonen. 51 erst in Sprint 3 wenn LLM-Context groesser.",
+      "status": "pending"
+    },
+    {
+      "id": "OD-4",
+      "question": "4D Balance Normalisierung",
+      "options": ["z-score per Kanal per Lap", "min-max per Kanal per Track"],
+      "recommendation": "z-score per Kanal per Lap — robuster gegen Streckenvarianz.",
+      "status": "pending"
+    }
+  ]
+}
