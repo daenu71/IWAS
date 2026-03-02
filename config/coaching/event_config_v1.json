@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "threshold_brake_start": 0.05,
+  "threshold_brake_off": 0.05,
+  "threshold_steering_turn_in": 0.05,
+  "threshold_throttle_on": 0.05,
+  "threshold_throttle_full": 0.95,
+  "threshold_yawrate_spike": 0.5,
+  "threshold_oversteer_yawrate": 0.3,
+  "threshold_understeer_yawrate": 0.3,
+  "threshold_crest": -2.0,
+  "threshold_compression": 3.0,
+  "min_oversteer_samples": 3,
+  "min_understeer_samples": 3,
+  "min_crest_samples": 3,
+  "min_compression_samples": 3
+}
