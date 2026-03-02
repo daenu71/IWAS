@@ -437,11 +437,33 @@ class Controller:
                     close()
                     err = str(result.get("error") or "")
                     if err == "ui_json_write_failed":
-                        self.ui.set_status("Video: Could not write UI JSON")
+                        status_msg = "Video: Could not write UI JSON"
+                        detail = f"Konnte ui_last_run.json nicht schreiben.\n\nFehler: {err}"
                     elif err == "main_py_not_found":
-                        self.ui.set_status("Video: main.py not found")
+                        status_msg = "Video: main.py not found"
+                        detail = "main.py wurde nicht gefunden. Bitte Installationspfad prüfen.\n\nFehler: main_py_not_found"
+                    elif err == "video_not_found":
+                        status_msg = "Video: Eingabe-Video nicht gefunden"
+                        detail = "Eines der Eingabe-Videos (slow/fast) existiert nicht oder wurde nicht ausgewählt.\n\nFehler: video_not_found"
+                    elif err == "invalid_out_path":
+                        status_msg = "Video: Kein Ausgabepfad angegeben"
+                        detail = "Der Ausgabepfad für das Video ist leer oder ungültig.\n\nFehler: invalid_out_path"
+                    elif err == "render_process_failed":
+                        rc = result.get("returncode", "?")
+                        msg = str(result.get("message") or "")
+                        status_msg = "Video: Render failed"
+                        detail = f"Der Render-Prozess endete mit Fehlercode {rc}."
+                        if msg:
+                            detail += f"\n\nLetzte Ausgabe:\n{msg}"
                     else:
-                        self.ui.set_status("Video: Render failed")
+                        status_msg = "Video: Render failed"
+                        detail = f"Unbekannter Fehler beim Rendern.\n\nFehler: {err or 'unbekannt'}"
+                    self.ui.set_status(status_msg)
+                    if self.ui.show_error is not None:
+                        try:
+                            self.ui.show_error(detail)
+                        except Exception:
+                            pass
 
                 if str(result.get("status") or "") == "cancelled":
                     self._schedule(0, finish_cancel)

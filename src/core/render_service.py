@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import math
@@ -14,6 +15,8 @@ from typing import Any, Callable
 from core import persistence
 from core.log import build_log_file_path
 from core.models import AppModel, RenderPayload
+
+_LOG = logging.getLogger(__name__)
 
 
 TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
@@ -78,10 +81,19 @@ def _build_render_cmd(project_root: Path, run_json_path: Path) -> list[str] | No
     if bool(getattr(_sys, "frozen", False)):
         return [str(_sys.executable), "--ui-json", str(run_json_path)]
 
-    main_py = project_root / "src" / "main.py"
-    if not main_py.exists():
-        return None
-    return [str(_sys.executable), "-u", str(main_py), "--ui-json", str(run_json_path)]
+    candidates = [
+        project_root / "src" / "main.py",
+        project_root / "main.py",
+    ]
+    for main_py in candidates:
+        if main_py.exists():
+            return [str(_sys.executable), "-u", str(main_py), "--ui-json", str(run_json_path)]
+    _LOG.error(
+        "main_py_not_found: project_root=%s checked=%s",
+        project_root,
+        [str(p) for p in candidates],
+    )
+    return None
 
 
 class _HudPreparingMonitor:
@@ -476,6 +488,17 @@ def start_render(
     else:
         _emit_progress(on_progress, 0.0, PREP_TEXT)
 
+    # Schritt 3: Payload-Vorbedingungen prüfen
+    if not slow_p or not slow_p.exists():
+        _LOG.error("video_not_found: slow_p=%s", slow_p)
+        return {"status": "error", "error": "video_not_found"}
+    if not fast_p or not fast_p.exists():
+        _LOG.error("video_not_found: fast_p=%s", fast_p)
+        return {"status": "error", "error": "video_not_found"}
+    if not out_path or not str(out_path).strip():
+        _LOG.error("invalid_out_path: out_path=%s", out_path)
+        return {"status": "error", "error": "invalid_out_path"}
+
     run_json_path = project_root / "config" / "ui_last_run.json"
     try:
         run_json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -506,11 +529,13 @@ def start_render(
             json.dumps(payload, indent=2),
             encoding="utf-8",
         )
-    except Exception:
+    except Exception as exc:
+        _LOG.error("ui_json_write_failed: path=%s exc=%s", run_json_path, exc)
         return {"status": "error", "error": "ui_json_write_failed"}
 
     cmd = _build_render_cmd(project_root, run_json_path)
     if cmd is None:
+        # _build_render_cmd already logged the checked paths
         return {"status": "error", "error": "main_py_not_found"}
 
     env = os.environ.copy()
@@ -742,6 +767,11 @@ def start_render(
                             break
                 except Exception:
                     pass
+            _LOG.error(
+                "render_process_failed: rc=%d last_output=%s",
+                rc,
+                "\n".join(tail_lines[-10:]) if tail_lines else "<no output>",
+            )
             return {
                 "status": "error",
                 "error": "render_process_failed",
@@ -753,7 +783,8 @@ def start_render(
         final_end = time.time()
         _emit_progress(on_progress, PROGRESS_FINAL_END, DONE_TEXT)
         return {"status": "ok", "cut_zero_segments_fallback": bool(cut_fallback_zero_segments)}
-    except Exception:
+    except Exception as exc:
+        _LOG.error("render_failed: %s", exc, exc_info=True)
         return {"status": "error", "error": "render_failed"}
     finally:
         try:
