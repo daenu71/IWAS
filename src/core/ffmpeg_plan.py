@@ -168,6 +168,7 @@ def run_ffmpeg(
     log_file: Path | None = None,
     live_stdout: bool = False,
     stdin_write_fn: Any | None = None,
+    proc_ref: dict | None = None,
 ) -> int:
     """
     Runs ffmpeg while:
@@ -219,6 +220,9 @@ def run_ffmpeg(
     except Exception as e:
         _append(f"[python] failed to start ffmpeg: {e}")
         return 1
+
+    if proc_ref is not None:
+        proc_ref["proc"] = p
 
     def _writer() -> None:
         nonlocal writer_error
