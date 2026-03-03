@@ -7026,8 +7026,10 @@ def render_split_screen_sync(
                     report_every = 5
                     report_state = {"last": 0}
                     _proc_ref: dict = {"proc": None}
+                    _write_state: dict = {"idx": 0}
 
                     def _stdin_writer(stdin_pipe: Any) -> None:
+                        _write_state["idx"] = 0
                         def _write_frame_rgba(frame_bytes: bytes) -> None:
                             if len(frame_bytes) != expected_bytes:
                                 raise RuntimeError(
@@ -7039,10 +7041,18 @@ def render_split_screen_sync(
                                     f"ffmpeg process terminated early (rc={_proc_ref['proc'].returncode}) "
                                     "while streaming HUD frames."
                                 )
+                            frame_idx = _write_state["idx"]
+                            if frame_idx == 0:
+                                print(f"[HUD-PIPE] Erster Frame: len={len(frame_bytes)}, expected_bytes={expected_bytes}", flush=True)
                             try:
                                 stdin_pipe.write(frame_bytes)
                             except BrokenPipeError as e:
                                 raise RuntimeError("ffmpeg stdin pipe closed while streaming HUD frames.") from e
+                            _write_state["idx"] += 1
+                            if frame_idx < 3 or frame_idx % 500 == 0:
+                                _p = _proc_ref["proc"]
+                                ffmpeg_rc = _p.poll() if _p is not None else None
+                                print(f"[HUD-PIPE] Frame {frame_idx}: geschrieben={len(frame_bytes)}, ffmpeg_rc={ffmpeg_rc}", flush=True)
 
                         def _on_frame_written(written: int, total: int) -> None:
                             if written == total or written == 1 or (written - int(report_state["last"])) >= report_every:
@@ -7055,6 +7065,7 @@ def render_split_screen_sync(
                             frame_written_cb=_on_frame_written,
                             force_full_redraw=True,
                         )
+                        print(f"[HUD-PIPE] Gesamt geschriebene Frames: {_write_state['idx']}", flush=True)
                         try:
                             stdin_pipe.flush()
                         except Exception:
@@ -7071,6 +7082,9 @@ def render_split_screen_sync(
                 else:
                     rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
 
+                if job.out_path.exists():
+                    _cut_size_mb = job.out_path.stat().st_size / 1024 / 1024
+                    print(f"[OUTPUT] Dateigrösse: {_cut_size_mb:.1f} MB, Pfad: {job.out_path}", flush=True)
                 if rc != 0 or (not job.out_path.exists()):
                     return int(rc), False
 
@@ -7202,8 +7216,10 @@ def render_split_screen_sync(
             report_every = 5
             report_state = {"last": 0}
             _proc_ref: dict = {"proc": None}
+            _write_state: dict = {"idx": 0}
 
             def _stdin_writer(stdin_pipe: Any) -> None:
+                _write_state["idx"] = 0
                 def _write_frame_rgba(frame_bytes: bytes) -> None:
                     if len(frame_bytes) != expected_bytes:
                         raise RuntimeError(
@@ -7215,10 +7231,18 @@ def render_split_screen_sync(
                             f"ffmpeg process terminated early (rc={_proc_ref['proc'].returncode}) "
                             "while streaming HUD frames."
                         )
+                    frame_idx = _write_state["idx"]
+                    if frame_idx == 0:
+                        print(f"[HUD-PIPE] Erster Frame: len={len(frame_bytes)}, expected_bytes={expected_bytes}", flush=True)
                     try:
                         stdin_pipe.write(frame_bytes)
                     except BrokenPipeError as e:
                         raise RuntimeError("ffmpeg stdin pipe closed while streaming HUD frames.") from e
+                    _write_state["idx"] += 1
+                    if frame_idx < 3 or frame_idx % 500 == 0:
+                        _p = _proc_ref["proc"]
+                        ffmpeg_rc = _p.poll() if _p is not None else None
+                        print(f"[HUD-PIPE] Frame {frame_idx}: geschrieben={len(frame_bytes)}, ffmpeg_rc={ffmpeg_rc}", flush=True)
 
                 def _on_frame_written(written: int, total: int) -> None:
                     if written == total or written == 1 or (written - int(report_state["last"])) >= report_every:
@@ -7230,6 +7254,7 @@ def render_split_screen_sync(
                     frame_writer=_write_frame_rgba,
                     frame_written_cb=_on_frame_written,
                 )
+                print(f"[HUD-PIPE] Gesamt geschriebene Frames: {_write_state['idx']}", flush=True)
                 try:
                     stdin_pipe.flush()
                 except Exception:
@@ -7245,6 +7270,16 @@ def render_split_screen_sync(
             )
         else:
             rc = run_ffmpeg(plan, tail_n=20, log_file=log_file, live_stdout=live)
+        if outp.exists():
+            _size_mb = outp.stat().st_size / 1024 / 1024
+            print(f"[OUTPUT] Dateigrösse: {_size_mb:.1f} MB, Pfad: {outp}", flush=True)
+            if hud_stream_ctx is not None:
+                try:
+                    _dur_s = max(1e-6, float(cut_i1 - cut_i0) / float(fps_int))
+                    _bps = (_size_mb * 8 * 1024) / _dur_s
+                    print(f"[RENDER-SUMMARY] frames_written={_write_state['idx']}, out_size_mb={_size_mb:.1f}, duration_s={_dur_s:.1f}, bitrate_kbps={_bps:.0f}", flush=True)
+                except Exception:
+                    pass
         return rc, (rc == 0 and outp.exists())
 
     selected_vcodec, last_rc = run_encode_with_fallback(
