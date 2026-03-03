@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, font as tkfont, messagebox
 import logging
 import math
+import sys
 import queue
 import re
 from pathlib import Path
@@ -871,6 +872,18 @@ def _debug_swallowed_enabled() -> bool:
     return s in ("1", "true", "yes", "on")
 
 
+def _apply_debug_env_vars(settings: dict) -> None:
+    """Apply IRVC_ debug env vars to os.environ based on debug settings."""
+    if bool(settings.get("debug_enabled", False)):
+        os.environ["IRVC_HUD_DEBUG"] = "1"
+    else:
+        os.environ.pop("IRVC_HUD_DEBUG", None)
+    if bool(settings.get("irvc_debug_max_s_enabled", False)):
+        os.environ["IRVC_DEBUG_MAX_S"] = str(int(settings.get("irvc_debug_max_s", 15)))
+    else:
+        os.environ.pop("IRVC_DEBUG_MAX_S", None)
+
+
 def _safe(fn, *args, default=None, label: str | None = None, **kwargs):
     try:
         return fn(*args, **kwargs)
@@ -1600,6 +1613,95 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
                 pass
 
 
+class DebugSettingsPanel(ttk.LabelFrame):
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master, text="Debug", padding=12)
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=0)
+        self.columnconfigure(2, weight=1)
+        self._load_state()
+        self._build_ui()
+
+    def _load_state(self) -> None:
+        sel = persistence.load_debug_settings()
+        self._debug_enabled_var = tk.BooleanVar(value=bool(sel.get("debug_enabled", False)))
+        self._irvc_debug_max_s_enabled_var = tk.BooleanVar(value=bool(sel.get("irvc_debug_max_s_enabled", False)))
+        self._irvc_debug_max_s_var = tk.StringVar(value=str(int(sel.get("irvc_debug_max_s", 15))))
+        self._error_var = tk.StringVar(value="")
+        self._last_valid_max_s = int(sel.get("irvc_debug_max_s", 15))
+
+    def _build_ui(self) -> None:
+        vcmd = (self.register(lambda p: str(p) == "" or str(p).isdigit()), "%P")
+
+        row = 0
+        chk_debug = ttk.Checkbutton(
+            self,
+            text="Enable debug logging (activates IRVC_HUD_DEBUG=1 for render subprocess)",
+            variable=self._debug_enabled_var,
+            command=self._commit,
+        )
+        chk_debug.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        row += 1
+        chk_max_s = ttk.Checkbutton(
+            self,
+            text="Limit render duration (IRVC_DEBUG_MAX_S)",
+            variable=self._irvc_debug_max_s_enabled_var,
+            command=self._commit,
+        )
+        chk_max_s.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        self._chk_max_s = chk_max_s
+
+        row += 1
+        ttk.Label(self, text="Max seconds").grid(row=row, column=0, sticky="w", pady=2)
+        spn_max_s = ttk.Spinbox(
+            self,
+            from_=1,
+            to=3600,
+            increment=1,
+            width=8,
+            textvariable=self._irvc_debug_max_s_var,
+            validate="key",
+            validatecommand=vcmd,
+            command=self._commit,
+        )
+        spn_max_s.grid(row=row, column=1, sticky="w", padx=(10, 0), pady=2)
+        ttk.Label(self, text="Range: 1..3600").grid(row=row, column=2, sticky="w", padx=(10, 0), pady=2)
+        spn_max_s.bind("<Return>", lambda _e: self._commit())
+        spn_max_s.bind("<FocusOut>", lambda _e: self._commit())
+        self._spn_max_s = spn_max_s
+
+        row += 1
+        lbl_error = ttk.Label(self, textvariable=self._error_var, foreground="#b00020")
+        lbl_error.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+    def _commit(self) -> None:
+        try:
+            raw = str(self._irvc_debug_max_s_var.get()).strip()
+            if not raw or not raw.isdigit():
+                self._error_var.set("Max seconds: please enter an integer in range 1..3600.")
+                return
+            val = int(raw)
+            if val < 1 or val > 3600:
+                self._error_var.set("Max seconds: allowed range is 1..3600.")
+                return
+        except Exception:
+            self._error_var.set("Invalid value for max seconds.")
+            return
+        self._error_var.set("")
+        self._last_valid_max_s = val
+        payload = {
+            "debug_enabled": bool(self._debug_enabled_var.get()),
+            "irvc_debug_max_s_enabled": bool(self._irvc_debug_max_s_enabled_var.get()),
+            "irvc_debug_max_s": val,
+        }
+        try:
+            saved = persistence.save_debug_settings(payload)
+            _apply_debug_env_vars(saved)
+        except Exception:
+            self._error_var.set("Could not save debug settings.")
+
+
 class SettingsView(ttk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master)
@@ -1620,6 +1722,9 @@ class SettingsView(ttk.Frame):
 
         coaching_panel = CoachingRecordingSettingsPanel(frm)
         coaching_panel.grid(row=2, column=0, sticky="new")
+
+        debug_panel = DebugSettingsPanel(frm)
+        debug_panel.grid(row=3, column=0, sticky="new", pady=(12, 0))
 
     def _on_check_for_updates(self) -> None:
         try:
@@ -5408,6 +5513,32 @@ def build_video_analysis_view(root: tk.Tk, host: ttk.Frame) -> None:
 
 
 def main() -> None:
+    # --- Logging & debug env-var setup (must happen before anything else) ---
+    _startup_project_root = find_project_root(Path(__file__))
+    _logs_dir = _startup_project_root / "_logs"
+    try:
+        _logs_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    _debug_render_log = str(_logs_dir / "debug_render.log")
+    try:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+            handlers=[
+                logging.StreamHandler(sys.stderr),
+                logging.FileHandler(_debug_render_log, encoding="utf-8"),
+            ],
+        )
+    except Exception:
+        logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+    try:
+        _debug_settings = persistence.load_debug_settings()
+        _apply_debug_env_vars(_debug_settings)
+    except Exception:
+        pass
+    # -------------------------------------------------------------------------
+
     owned_recorder_service = _ensure_irsdk_recorder_service_hooks_bootstrapped()
     _enable_windows_dpi_awareness_best_effort()
     _set_windows_app_user_model_id_best_effort("iWAS")

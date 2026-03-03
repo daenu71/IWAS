@@ -44,6 +44,16 @@ output_format_file = config_dir / "output_format.json"
 hud_layout_file = config_dir / "hud_layout.json"
 png_view_file = config_dir / "png_view.json"
 
+_DEBUG_SECTION = "debug"
+_DEBUG_INT_RANGES: dict[str, tuple[int, int]] = {
+    "irvc_debug_max_s": (1, 3600),
+}
+_DEBUG_DEFAULTS: dict[str, object] = {
+    "debug_enabled": False,
+    "irvc_debug_max_s_enabled": False,
+    "irvc_debug_max_s": 15,
+}
+
 _COACHING_RECORDING_SECTION = "coaching_recording"
 _COACHING_RECORDING_INT_RANGES: dict[str, tuple[int, int]] = {
     "irsdk_sample_hz": (0, 1000),
@@ -592,3 +602,67 @@ def load_video_cut_settings(*, video_mode: str, log_file: Path | None = None) ->
 
     _log_video_cut_once(values, log_file=log_file)
     return values
+
+
+def load_debug_settings() -> dict[str, object]:
+    """Load debug settings."""
+    return {
+        "debug_enabled": bool(_cfg_bool(_DEBUG_SECTION, "debug_enabled", False)),
+        "irvc_debug_max_s_enabled": bool(_cfg_bool(_DEBUG_SECTION, "irvc_debug_max_s_enabled", False)),
+        "irvc_debug_max_s": _coerce_int_in_range(
+            cfg_get(_DEBUG_SECTION, "irvc_debug_max_s", "15"),
+            15,
+            min_value=_DEBUG_INT_RANGES["irvc_debug_max_s"][0],
+            max_value=_DEBUG_INT_RANGES["irvc_debug_max_s"][1],
+        ),
+    }
+
+
+def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
+    """Save debug settings."""
+    current = load_debug_settings()
+    merged: dict[str, object] = dict(current)
+    incoming = values if isinstance(values, dict) else {}
+
+    if "debug_enabled" in incoming:
+        merged["debug_enabled"] = _coerce_bool(incoming.get("debug_enabled"), bool(current["debug_enabled"]))
+    if "irvc_debug_max_s_enabled" in incoming:
+        merged["irvc_debug_max_s_enabled"] = _coerce_bool(
+            incoming.get("irvc_debug_max_s_enabled"), bool(current["irvc_debug_max_s_enabled"])
+        )
+    if "irvc_debug_max_s" in incoming:
+        lo, hi = _DEBUG_INT_RANGES["irvc_debug_max_s"]
+        merged["irvc_debug_max_s"] = _coerce_int_in_range(
+            incoming.get("irvc_debug_max_s"), int(current["irvc_debug_max_s"]), min_value=lo, max_value=hi
+        )
+
+    user_cp = configparser.ConfigParser()
+    try:
+        if user_ini.exists():
+            user_cp.read(user_ini, encoding="utf-8")
+    except Exception:
+        pass
+    if not user_cp.has_section(_DEBUG_SECTION):
+        user_cp.add_section(_DEBUG_SECTION)
+
+    for key, value in merged.items():
+        text = "true" if (isinstance(value, bool) and value) else ("false" if isinstance(value, bool) else str(value))
+        try:
+            user_cp.set(_DEBUG_SECTION, str(key), text)
+        except Exception:
+            pass
+        try:
+            if not cfg.has_section(_DEBUG_SECTION):
+                cfg.add_section(_DEBUG_SECTION)
+            cfg.set(_DEBUG_SECTION, str(key), text)
+        except Exception:
+            pass
+
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with user_ini.open("w", encoding="utf-8") as fh:
+            user_cp.write(fh)
+    except Exception:
+        pass
+
+    return merged
