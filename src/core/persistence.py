@@ -37,7 +37,7 @@ try:
     if user_ini.exists():
         ini_layers.append(user_ini)
     if ini_layers:
-        cfg.read([str(p) for p in ini_layers], encoding="utf-8")
+        cfg.read([str(p) for p in ini_layers], encoding="utf-8-sig")
 except Exception:
     pass
 output_format_file = config_dir / "output_format.json"
@@ -648,7 +648,7 @@ def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
 
     # Write back to defaults.ini line-by-line to preserve all comments
     try:
-        raw = defaults_ini.read_text(encoding="utf-8")
+        raw = defaults_ini.read_text(encoding="utf-8-sig")
         lines = raw.splitlines(keepends=True)
         in_debug = False
         new_lines: list[str] = []
@@ -666,7 +666,19 @@ def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
                     new_lines.append(f"{key} = {text}\n")
                     continue
             new_lines.append(line)
-        defaults_ini.write_text("".join(new_lines), encoding="utf-8")
+        defaults_ini.write_text("".join(new_lines), encoding="utf-8-sig")
+    except Exception:
+        pass
+
+    # Remove [debug] from user.ini so it cannot override what was saved to defaults.ini
+    try:
+        if user_ini.exists():
+            user_cp = configparser.ConfigParser()
+            user_cp.read(user_ini, encoding="utf-8")
+            if user_cp.has_section(_DEBUG_SECTION):
+                user_cp.remove_section(_DEBUG_SECTION)
+                with user_ini.open("w", encoding="utf-8") as fh:
+                    user_cp.write(fh)
     except Exception:
         pass
 
