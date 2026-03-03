@@ -207,6 +207,7 @@ def run_ffmpeg(
     tail: list[str] = []
     writer_error: Exception | None = None
     writer_thread: threading.Thread | None = None
+    print(f"[FFMPEG-CMD] {' '.join(plan.cmd)}", flush=True)
     try:
         p = subprocess.Popen(
             plan.cmd,
