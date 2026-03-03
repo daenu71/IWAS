@@ -626,6 +626,8 @@ def start_render(
                         tail_lines.append(sline)
                         if len(tail_lines) > 50:
                             del tail_lines[:-50]
+                        if any(tag in sline for tag in ("[HUD-PIPE]", "[FFMPEG-CMD]", "[OUTPUT]", "[RENDER-SUMMARY]")):
+                            _LOG.info("render-subprocess: %s", sline)
                 except Exception:
                     pass
                 if ("Cut found 0 segments â†’ Full fallback" in line) or ("Cut found 0 segments Ã¢â€ â€™ Full fallback" in line):

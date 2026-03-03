@@ -5565,6 +5565,8 @@ def main() -> None:
         )
     except Exception:
         logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+    # Silence verbose background service loggers (recorder poll runs every second)
+    logging.getLogger("core.irsdk.recorder_service").setLevel(logging.WARNING)
     try:
         _debug_settings = persistence.load_debug_settings()
         _apply_debug_env_vars(_debug_settings)
