@@ -619,7 +619,7 @@ def load_debug_settings() -> dict[str, object]:
 
 
 def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
-    """Save debug settings."""
+    """Save debug settings directly into defaults.ini (line-level, preserving comments)."""
     current = load_debug_settings()
     merged: dict[str, object] = dict(current)
     incoming = values if isinstance(values, dict) else {}
@@ -636,32 +636,37 @@ def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
             incoming.get("irvc_debug_max_s"), int(current["irvc_debug_max_s"]), min_value=lo, max_value=hi
         )
 
-    user_cp = configparser.ConfigParser()
+    # Update in-memory cfg so the new values are visible immediately
     try:
-        if user_ini.exists():
-            user_cp.read(user_ini, encoding="utf-8")
+        if not cfg.has_section(_DEBUG_SECTION):
+            cfg.add_section(_DEBUG_SECTION)
+        for key, value in merged.items():
+            text = "true" if (isinstance(value, bool) and value) else ("false" if isinstance(value, bool) else str(value))
+            cfg.set(_DEBUG_SECTION, str(key), text)
     except Exception:
         pass
-    if not user_cp.has_section(_DEBUG_SECTION):
-        user_cp.add_section(_DEBUG_SECTION)
 
-    for key, value in merged.items():
-        text = "true" if (isinstance(value, bool) and value) else ("false" if isinstance(value, bool) else str(value))
-        try:
-            user_cp.set(_DEBUG_SECTION, str(key), text)
-        except Exception:
-            pass
-        try:
-            if not cfg.has_section(_DEBUG_SECTION):
-                cfg.add_section(_DEBUG_SECTION)
-            cfg.set(_DEBUG_SECTION, str(key), text)
-        except Exception:
-            pass
-
+    # Write back to defaults.ini line-by-line to preserve all comments
     try:
-        config_dir.mkdir(parents=True, exist_ok=True)
-        with user_ini.open("w", encoding="utf-8") as fh:
-            user_cp.write(fh)
+        raw = defaults_ini.read_text(encoding="utf-8")
+        lines = raw.splitlines(keepends=True)
+        in_debug = False
+        new_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("["):
+                in_debug = stripped.lower() == f"[{_DEBUG_SECTION}]"
+                new_lines.append(line)
+                continue
+            if in_debug and "=" in line and not stripped.startswith(";") and not stripped.startswith("#"):
+                key = line.split("=", 1)[0].strip().lower()
+                if key in merged:
+                    value = merged[key]
+                    text = "true" if (isinstance(value, bool) and value) else ("false" if isinstance(value, bool) else str(value))
+                    new_lines.append(f"{key} = {text}\n")
+                    continue
+            new_lines.append(line)
+        defaults_ini.write_text("".join(new_lines), encoding="utf-8")
     except Exception:
         pass
 
