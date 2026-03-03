@@ -6321,6 +6321,9 @@ def render_split_screen(
     specs_by_vcodec = {enc.vcodec: enc for enc in encode_candidates}
 
     def _run_one_encoder(vcodec: str) -> tuple[int, bool]:
+        if outp.exists() and outp.stat().st_size > 10_000_000:
+            print(f"[ENCODE] Ausgabedatei bereits vorhanden ({outp.stat().st_size // 1024 // 1024} MB) — kein Folge-Encoder.")
+            return 0, True
         enc = specs_by_vcodec[vcodec]
         # Debug: nur die ersten N Sekunden rendern
         try:
@@ -7184,6 +7187,9 @@ def render_split_screen_sync(
         raise RuntimeError(f"ffmpeg failed (rc={last_rc})")
 
     def _run_one_encoder(vcodec: str) -> tuple[int, bool]:
+        if outp.exists() and outp.stat().st_size > 10_000_000:
+            print(f"[ENCODE] Ausgabedatei bereits vorhanden ({outp.stat().st_size // 1024 // 1024} MB) — kein Folge-Encoder.")
+            return 0, True
         enc = specs_by_vcodec[vcodec]
         # Debug: nur die ersten N Sekunden rendern (spart Zeit)
         try:
