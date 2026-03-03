@@ -102,6 +102,10 @@ def build_encode_args(encoder: str, options: dict) -> list[str]:
             "26",
             "-tag:v",
             "hvc1",
+            "-maxrate",
+            "50M",
+            "-bufsize",
+            "100M",
         ]
 
     return ["-preset", "veryfast", "-crf", "18"]
@@ -193,6 +197,9 @@ def run_encode_with_fallback(
         last_rc = int(rc)
         if ok:
             log_fn(f"[encode] OK vcodec={encoder}")
+            return encoder, last_rc
+        if last_rc == 0:
+            log_fn(f"[ENCODE] Erfolg mit {encoder} (rc=0) — stoppe Fallback-Schleife.")
             return encoder, last_rc
         log_fn(f"[encode] FAIL vcodec={encoder} rc={last_rc}")
     return "", last_rc
