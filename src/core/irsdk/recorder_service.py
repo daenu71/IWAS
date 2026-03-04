@@ -73,6 +73,7 @@ class RecorderService:
         self._active_run_last_sample_ts: float | None = None
         self._active_run_write_error_logged = False
         self._session_identity_fields: dict[str, Any] = {}
+        self._last_raw_session_uid: int | None = None
         self._session_finalized_marked = False
         self._debug_session_info_attempts = 0
         self._debug_session_info_probe_writes = 0
@@ -160,6 +161,7 @@ class RecorderService:
             self._active_run_last_sample_ts = None
             self._active_run_write_error_logged = False
             self._session_identity_fields = {}
+            self._last_raw_session_uid = None
             self._session_finalized_marked = False
             self._debug_session_info_attempts = 0
             self._debug_session_info_probe_writes = 0
@@ -242,22 +244,27 @@ class RecorderService:
                     self._sleep_interruptible(0.05)
                     continue
 
-                # Session-Change-Detection: compare SessionUniqueID in the incoming
-                # sample against the cached identity.  Only trigger when *both* the
-                # old and the new ID are non-empty/non-zero (guard against the very
-                # first sample after a fresh connect where old_sid is still unset).
+                # Session-Change-Detection: compare the raw telemetry SessionUniqueID
+                # (a small iRacing restart-counter, typically 1 or 2) against the last
+                # observed raw value — NOT against _session_identity_fields which holds
+                # SubSessionID (a large number from the YAML).  Comparing those two
+                # would always show a mismatch and trigger an infinite session-change loop.
                 raw_for_sid = sample.get("raw") if isinstance(sample, dict) else None
                 if isinstance(raw_for_sid, dict):
                     new_sid = raw_for_sid.get("SessionUniqueID")
-                    with self._lock:
-                        old_sid = self._session_identity_fields.get("SessionUniqueID")
-                    if new_sid not in (None, "", 0) and old_sid not in (None, "", 0):
+                    if new_sid not in (None, "", 0):
+                        old_raw_sid = self._last_raw_session_uid
+                        if old_raw_sid is not None:
+                            try:
+                                sid_changed = int(new_sid) != int(old_raw_sid)
+                            except (TypeError, ValueError):
+                                sid_changed = str(new_sid) != str(old_raw_sid)
+                            if sid_changed:
+                                self._on_session_change(new_sid)
                         try:
-                            sid_changed = int(new_sid) != int(old_sid)
+                            self._last_raw_session_uid = int(new_sid)
                         except (TypeError, ValueError):
-                            sid_changed = str(new_sid) != str(old_sid)
-                        if sid_changed:
-                            self._on_session_change(new_sid)
+                            pass
 
                 self._inject_broadcast_fields(sample)
                 self._process_run_detector(sample)
@@ -1571,6 +1578,10 @@ class RecorderService:
         self._mark_session_finalized_if_possible()
 
         # 3. Reset all per-session state under the lock.
+        try:
+            self._last_raw_session_uid = int(new_id)
+        except (TypeError, ValueError):
+            self._last_raw_session_uid = None
         with self._lock:
             self._session_dir = None
             self._session_meta_written = False
