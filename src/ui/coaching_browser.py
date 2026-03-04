@@ -482,7 +482,9 @@ def _has_analysis_data(node: CoachingTreeNode) -> bool | str:
             lap_no = int(lap_no_raw)
         except Exception:
             return False
-        analysis_path = Path(session_path) / f"run_{run_id:04d}_lap_{lap_no:04d}_analysis.json"
+        analysis_path = (
+            Path(session_path) / "laps" / f"lap_{lap_no:04d}" / "analysis" / "analysis_status.json"
+        )
         return analysis_path.exists()
     if node.kind == "run":
         analyzable = [
