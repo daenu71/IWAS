@@ -7,7 +7,8 @@
       "Bash(.venv/Scripts/pip install:*)",
       "Bash(.venv/Scripts/pytest:*)",
       "Bash(where pytest:*)",
-      "Bash(where python:*)"
+      "Bash(where python:*)",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }

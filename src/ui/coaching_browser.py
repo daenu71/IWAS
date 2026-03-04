@@ -6,6 +6,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, NodeSummary
@@ -13,11 +14,14 @@ from core.coaching.indexer import CoachingIndex, CoachingTreeNode, NodeSummary
 
 RefreshCallback = Callable[[], CoachingIndex | None]
 NodeCallback = Callable[[CoachingTreeNode], None]
+AnalyzeLapCallback = Callable[[CoachingTreeNode], None]
+AnalyzeRunCallback = Callable[[CoachingTreeNode, list[CoachingTreeNode]], None]
 
 _PURPLE = "#BF7FFF"
 
 COACHING_TREE_COLUMN_WIDTHS: dict[str, int] = {
     "#0": 280,
+    "analyze": 80,
     "kind": 80,
     "time": 130,
     "lap": 110,
@@ -44,6 +48,8 @@ class CoachingBrowser(ttk.Frame):
         on_open_folder: NodeCallback | None = None,
         on_delete_node: NodeCallback | None = None,
         on_select_node: NodeCallback | None = None,
+        on_analyze_lap: AnalyzeLapCallback | None = None,
+        on_analyze_run: AnalyzeRunCallback | None = None,
     ) -> None:
         """Implement init logic."""
         super().__init__(master)
@@ -54,12 +60,15 @@ class CoachingBrowser(ttk.Frame):
         self._on_open_folder = on_open_folder
         self._on_delete_node = on_delete_node
         self._on_select_node = on_select_node
+        self._on_analyze_lap = on_analyze_lap
+        self._on_analyze_run = on_analyze_run
 
         self._index: CoachingIndex | None = None
         self._expanded_ids: set[str] = set()
         self._message_var = tk.StringVar(value="")
         self._stats_var = tk.StringVar(value="No sessions loaded.")
         self._best_overlays: list[tk.Label] = []
+        self._analyze_buttons: list[tk.Button] = []
         self._best_text: dict[str, str] = {}  # iid → purple time text
         self._overlay_after_id: str | None = None
         self._overlay_font: tkfont.Font | None = None
@@ -79,12 +88,13 @@ class CoachingBrowser(ttk.Frame):
 
         self.tree = ttk.Treeview(
             tree_wrap,
-            columns=("kind", "time", "lap", "last"),
+            columns=("analyze", "kind", "time", "lap", "last"),
             show="tree headings",
             selectmode="browse",
         )
         self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.heading("#0", text="Name", anchor="w")
+        self.tree.heading("analyze", text="", anchor="center")
         self.tree.heading("kind", text="Type", anchor="w")
         self.tree.heading("time", text="Time", anchor="w")
         self.tree.heading("lap", text="Laps", anchor="w")
@@ -95,6 +105,13 @@ class CoachingBrowser(ttk.Frame):
             minwidth=COACHING_TREE_COLUMN_WIDTHS["#0"],
             stretch=False,
             anchor="w",
+        )
+        self.tree.column(
+            "analyze",
+            width=COACHING_TREE_COLUMN_WIDTHS["analyze"],
+            minwidth=COACHING_TREE_COLUMN_WIDTHS["analyze"],
+            stretch=False,
+            anchor="center",
         )
         self.tree.column(
             "kind",
@@ -210,6 +227,7 @@ class CoachingBrowser(ttk.Frame):
     def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
         """Implement insert node logic."""
         values = (
+            "",  # analyze — button placed as overlay
             node.kind,
             _format_time_col(node),
             _format_lap_col(node),
@@ -316,46 +334,123 @@ class CoachingBrowser(ttk.Frame):
         self._overlay_after_id = self.after(delay_ms, self._refresh_overlays)
 
     def _clear_overlays(self) -> None:
-        """Destroy all existing overlay labels."""
+        """Destroy all existing overlay labels and buttons."""
         for lbl in self._best_overlays:
             lbl.destroy()
         self._best_overlays.clear()
+        for btn in self._analyze_buttons:
+            btn.destroy()
+        self._analyze_buttons.clear()
+
+    def _all_tree_iids(self) -> list[str]:
+        """Return all item IDs currently in the tree (all levels)."""
+        result: list[str] = []
+
+        def walk(parent: str) -> None:
+            for iid in self.tree.get_children(parent):
+                result.append(iid)
+                walk(iid)
+
+        walk("")
+        return result
 
     def _refresh_overlays(self) -> None:
-        """Recreate purple overlay labels over the best-time text in the Time column."""
+        """Recreate purple overlay labels and analyze button overlays."""
         self._overlay_after_id = None
         self._clear_overlays()
-        if not self._best_text:
+
+        # Purple best-time overlays
+        if self._best_text:
+            font = self._overlay_font
+            row_bg = self._overlay_row_bg
+            for iid, purple_text in self._best_text.items():
+                if not self.tree.exists(iid):
+                    continue
+                bbox = self.tree.bbox(iid, "time")
+                if not bbox:
+                    continue
+                x, y, w, h = bbox
+                cell_text = self.tree.set(iid, "time")
+                purple_idx = cell_text.find(purple_text)
+                prefix = cell_text[:purple_idx] if purple_idx >= 0 else ""
+                lbl_x = x + 4 + font.measure(prefix)
+                lbl = tk.Label(
+                    self.tree,
+                    text=purple_text,
+                    fg=_PURPLE,
+                    bg=row_bg,
+                    font=font,
+                    anchor="w",
+                    borderwidth=0,
+                    padx=0,
+                    pady=0,
+                )
+                lbl.place(x=lbl_x, y=y + 1, width=font.measure(purple_text) + 2, height=h - 2)
+                self._best_overlays.append(lbl)
+
+        # Analyze button overlays
+        index = self._index
+        if index is None:
             return
-        font = self._overlay_font
-        row_bg = self._overlay_row_bg
-        sel_bg = self._overlay_sel_bg
-        selected = set(self.tree.selection())
-        for iid, purple_text in self._best_text.items():
-            if not self.tree.exists(iid):
+        for iid in self._all_tree_iids():
+            node = index.nodes_by_id.get(iid)
+            if node is None or node.kind not in ("lap", "run"):
                 continue
-            bbox = self.tree.bbox(iid, "time")
+            if node.kind == "lap":
+                lap_sum = _node_lap_summary(node)
+                if _lap_is_incomplete(node.summary, lap_summary=lap_sum):
+                    continue
+            else:
+                analyzable = [
+                    c for c in node.children
+                    if c.kind == "lap"
+                    and not _lap_is_incomplete(c.summary, lap_summary=_node_lap_summary(c))
+                ]
+                if not analyzable:
+                    continue
+            bbox = self.tree.bbox(iid, "analyze")
             if not bbox:
                 continue
             x, y, w, h = bbox
-            cell_text = self.tree.set(iid, "time")
-            purple_idx = cell_text.find(purple_text)
-            prefix = cell_text[:purple_idx] if purple_idx >= 0 else ""
-            lbl_x = x + 4 + font.measure(prefix)
-            lbl_bg = row_bg
-            lbl = tk.Label(
+            status = _has_analysis_data(node)
+            if status is True:
+                btn_bg = "#2d7a2d"
+            elif status == "partial":
+                btn_bg = "#7a6a00"
+            else:
+                btn_bg = "#555555"
+            btn = tk.Button(
                 self.tree,
-                text=purple_text,
-                fg=_PURPLE,
-                bg=lbl_bg,
-                font=font,
-                anchor="w",
-                borderwidth=0,
-                padx=0,
+                text="Analyze",
+                bg=btn_bg,
+                fg="white",
+                activebackground=btn_bg,
+                activeforeground="white",
+                borderwidth=1,
+                relief="flat",
+                padx=2,
                 pady=0,
+                cursor="hand2",
+                command=lambda n=node: self._handle_analyze(n),
             )
-            lbl.place(x=lbl_x, y=y + 1, width=font.measure(purple_text) + 2, height=h - 2)
-            self._best_overlays.append(lbl)
+            btn.place(x=x + 2, y=y + 1, width=w - 4, height=h - 2)
+            self._analyze_buttons.append(btn)
+
+    def _handle_analyze(self, node: CoachingTreeNode) -> None:
+        """Handle analyze button click for a lap or run node."""
+        if node.kind == "lap":
+            if callable(self._on_analyze_lap):
+                self._on_analyze_lap(node)
+        elif node.kind == "run":
+            missing = [
+                c for c in node.children
+                if c.kind == "lap"
+                and not _lap_is_incomplete(c.summary, lap_summary=_node_lap_summary(c))
+                and not _has_analysis_data(c)
+            ]
+            if callable(self._on_analyze_run):
+                self._on_analyze_run(node, missing)
+        self._schedule_overlay_refresh(50)
 
     def _update_action_buttons(self) -> None:
         """Update action buttons."""
@@ -372,6 +467,38 @@ class CoachingBrowser(ttk.Frame):
             self._btn_delete.state(["!disabled"])
         else:
             self._btn_delete.state(["disabled"])
+
+
+def _has_analysis_data(node: CoachingTreeNode) -> bool | str:
+    """Return True if analyzed, False if not, 'partial' if only some laps analyzed (run only)."""
+    if node.kind == "lap":
+        session_path = node.session_path
+        run_id = node.run_id
+        meta = node.meta if isinstance(node.meta, dict) else {}
+        lap_no_raw = meta.get("lap_no")
+        if session_path is None or run_id is None or lap_no_raw is None:
+            return False
+        try:
+            lap_no = int(lap_no_raw)
+        except Exception:
+            return False
+        analysis_path = Path(session_path) / f"run_{run_id:04d}_lap_{lap_no:04d}_analysis.json"
+        return analysis_path.exists()
+    if node.kind == "run":
+        analyzable = [
+            c for c in node.children
+            if c.kind == "lap"
+            and not _lap_is_incomplete(c.summary, lap_summary=_node_lap_summary(c))
+        ]
+        if not analyzable:
+            return False
+        analyzed_count = sum(1 for c in analyzable if _has_analysis_data(c) is True)
+        if analyzed_count == 0:
+            return False
+        if analyzed_count == len(analyzable):
+            return True
+        return "partial"
+    return False
 
 
 def _best_time_for_node(node: CoachingTreeNode) -> float | None:

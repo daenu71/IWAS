@@ -36,6 +36,7 @@ from core.cfg import APP_NAME, APP_VERSION
 from core.diagnostics import detect_onedrive_risky_paths, export_diagnostics_bundle
 from core import persistence, filesvc, profile_service, render_service
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, scan_storage
+from core.coaching.lap_analyzer import analyze_lap as _coaching_analyze_lap
 from core.coaching.storage import (
     ACTIVE_SESSION_LOCK_FILENAME,
     SESSION_FINALIZED_FILENAME,
@@ -1790,6 +1791,8 @@ class CoachingView(ttk.Frame):
             on_refresh=self._refresh_coaching_index,
             on_open_folder=self._open_coaching_node_folder,
             on_delete_node=self._delete_coaching_node,
+            on_analyze_lap=self._handle_analyze_lap,
+            on_analyze_run=self._handle_analyze_run,
         )
         self._browser_widget.grid(row=1, column=0, sticky="nsew")
         if _debug_swallowed_enabled():
@@ -1911,6 +1914,51 @@ class CoachingView(ttk.Frame):
             return
 
         self._refresh_coaching_index()
+
+    def _handle_analyze_lap(self, node: CoachingTreeNode) -> None:
+        session_path = node.session_path
+        run_id = node.run_id
+        lap_no_raw = node.meta.get("lap_no") if isinstance(node.meta, dict) else None
+        if session_path is None or run_id is None or lap_no_raw is None:
+            self._browser_widget.set_message("Analyze: missing node metadata.")
+            return
+        try:
+            ok = _coaching_analyze_lap(Path(session_path), int(run_id), int(lap_no_raw))
+        except Exception as exc:
+            self._browser_widget.set_message(f"Analyze failed: {exc}")
+            return
+        if ok:
+            self._browser_widget.set_message(f"Analyzed: Run {int(run_id):04d} Lap {int(lap_no_raw):04d}")
+        else:
+            self._browser_widget.set_message(f"Analyze error: Run {int(run_id):04d} Lap {int(lap_no_raw):04d}")
+        self._browser_widget._schedule_overlay_refresh(50)
+
+    def _handle_analyze_run(self, node: CoachingTreeNode, missing_laps: list[CoachingTreeNode]) -> None:
+        session_path = node.session_path
+        run_id = node.run_id
+        if session_path is None or run_id is None:
+            self._browser_widget.set_message("Analyze: missing node metadata.")
+            return
+        ok_count = 0
+        fail_count = 0
+        for lap in missing_laps:
+            lap_no_raw = lap.meta.get("lap_no") if isinstance(lap.meta, dict) else None
+            if lap_no_raw is None:
+                fail_count += 1
+                continue
+            try:
+                ok = _coaching_analyze_lap(Path(session_path), int(run_id), int(lap_no_raw))
+            except Exception:
+                ok = False
+            if ok:
+                ok_count += 1
+            else:
+                fail_count += 1
+        msg = f"Run {int(run_id):04d}: {ok_count} lap(s) analyzed"
+        if fail_count:
+            msg += f", {fail_count} failed"
+        self._browser_widget.set_message(msg)
+        self._browser_widget._schedule_overlay_refresh(50)
 
     def _is_session_delete_locked(self, session_path: Path) -> bool:
         lock_path = session_path / ACTIVE_SESSION_LOCK_FILENAME
