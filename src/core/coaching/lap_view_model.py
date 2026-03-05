@@ -497,7 +497,7 @@ def _load_corner_events(corner_events_path: Path) -> dict[int, list[Event]]:
         for item in event_list:
             if not isinstance(item, dict):
                 continue
-            ev = _parse_event(item.get("event_type", ""), item)
+            ev = _parse_event(item.get("name", ""), item)
             if ev is not None:
                 events.append(ev)
         result[cid] = events
