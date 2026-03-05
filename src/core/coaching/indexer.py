@@ -131,8 +131,12 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
 
     sessions: list[_SessionScan] = []
     live_keys: set[str] = set()
+    _NON_SESSION_DIRS = {"corner_maps", "_logs", "logs", "tmp", "temp"}
     try:
-        candidates = [p for p in root.iterdir() if p.is_dir()]
+        candidates = [
+            p for p in root.iterdir()
+            if p.is_dir() and p.name.lower() not in _NON_SESSION_DIRS
+        ]
     except Exception:
         candidates = []
     for session_dir in candidates:
