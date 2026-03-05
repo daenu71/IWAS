@@ -1583,7 +1583,9 @@ def _lap_duration_seconds(segment: dict[str, Any]) -> float | None:
 
 def _best_effort_last_driven_ts(session_dir: Path, parsed_folder_ts: float | None) -> float | None:
     """Implement best effort last driven ts logic."""
-    return _max_optional(parsed_folder_ts, _path_mtime_ts(session_dir))
+    # Do NOT use session_dir.mtime — it updates whenever analysis creates subdirectories
+    # (e.g. laps/lap_NNNN/), which would make the "last driven" date jump to today.
+    return parsed_folder_ts
 
 
 def _path_mtime_ts(path: Path | None) -> float | None:
