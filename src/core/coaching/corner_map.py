@@ -355,8 +355,10 @@ def _iter_valid_laps(
 ) -> Iterator[tuple[Path, float]]:
     """Yield ``(resampled_parquet, duration_s)`` for each valid lap in *session_dir*."""
     for run_dir in sorted(session_dir.iterdir()):
-        if not run_dir.is_dir() or not _RUN_DIR_RE.match(run_dir.name):
+        m_run = _RUN_DIR_RE.match(run_dir.name)
+        if not run_dir.is_dir() or not m_run:
             continue
+        run_id = int(m_run.group(1))
 
         laps_root = run_dir / "laps"
         if laps_root.is_dir():
@@ -379,7 +381,20 @@ def _iter_valid_laps(
             if not _is_lap_valid(lap_dir, debug_mode=debug_mode):
                 continue
 
-            duration = _lap_duration_s(lap_dir, resampled)
+            m_lap = _LAP_DIR_RE.match(lap_dir.name)
+            lap_id = int(m_lap.group(1)) if m_lap else None
+
+            duration = _lap_duration_s(
+                lap_dir, resampled,
+                run_dir=run_dir, run_id=run_id, lap_id=lap_id,
+            )
+            if not math.isfinite(duration):
+                if debug_mode:
+                    print(
+                        f"[corner_map DEBUG]   Skipping lap {lap_dir.name}: "
+                        f"duration unknown (no valid time source)"
+                    )
+                continue
             yield resampled, duration
 
 
@@ -420,8 +435,44 @@ def _is_lap_valid(lap_dir: Path, debug_mode: bool = False) -> bool:
     return True
 
 
-def _lap_duration_s(lap_dir: Path, resampled_path: Path) -> float:
-    """Return lap duration in seconds; ``inf`` when it cannot be determined."""
+def _lap_duration_s(
+    lap_dir: Path,
+    resampled_path: Path,
+    *,
+    run_dir: Path | None = None,
+    run_id: int | None = None,
+    lap_id: int | None = None,
+) -> float:
+    """Return lap duration in seconds; ``inf`` when it cannot be determined.
+
+    Priority:
+    1. ``duration_s`` from ``run_{id:04d}_meta.json`` → lap entry with matching lap_id.
+    2. ``duration_s`` / ``lap_time_s`` / ``lap_time`` from ``lap_meta.json`` / ``meta.json``.
+    3. Fallback: ``max(SessionTime) - min(SessionTime)`` from the resampled parquet.
+    """
+    # --- Priority 1: run_{id:04d}_meta.json ---
+    if run_dir is not None and run_id is not None and lap_id is not None:
+        run_meta_path = run_dir / f"run_{run_id:04d}_meta.json"
+        if run_meta_path.exists():
+            try:
+                run_meta: dict[str, Any] = json.loads(
+                    run_meta_path.read_text(encoding="utf-8")
+                )
+                for lap_entry in run_meta.get("laps") or []:
+                    if int(lap_entry.get("lap_id", -1)) == lap_id:
+                        raw = lap_entry.get("duration_s")
+                        if raw is not None:
+                            try:
+                                d = float(raw)
+                                if d > 0:
+                                    return d
+                            except Exception:
+                                pass
+                        break
+            except Exception:
+                pass
+
+    # --- Priority 2: lap_meta.json / meta.json ---
     for meta_name in ("lap_meta.json", "meta.json"):
         meta_path = lap_dir / meta_name
         if meta_path.exists():
@@ -441,7 +492,7 @@ def _lap_duration_s(lap_dir: Path, resampled_path: Path) -> float:
             except Exception:
                 pass
 
-    # Fallback: derive from SessionTime channel in the resampled parquet
+    # --- Priority 3: SessionTime channel in the resampled parquet ---
     try:
         table = pq.read_table(str(resampled_path), columns=["SessionTime"])
         times = [
