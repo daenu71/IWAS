@@ -438,6 +438,10 @@ class CoachingBrowser(ttk.Frame):
 
     def _handle_analyze(self, node: CoachingTreeNode) -> None:
         """Handle analyze button click for a lap or run node."""
+        if self.tree.exists(node.id):
+            self.tree.selection_set(node.id)
+            self.tree.focus(node.id)
+            self.tree.see(node.id)
         if node.kind == "lap":
             if callable(self._on_analyze_lap):
                 self._on_analyze_lap(node)
