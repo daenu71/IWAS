@@ -539,6 +539,196 @@ Der Cache Manager orchestriert die gesamte Analyse-Pipeline für eine Lap. Er pr
 
 ---
 
+# Implementierte Änderungen (nach Story-Phase)
+
+---
+
+## Change 1 — Analyze-Button im Coaching Browser (Lap + Run)
+
+**Commit:** `26fdfb7`
+**Datum:** 2026-03-04
+
+### Was wurde geändert
+
+Eine neue Spalte `analyze` (80 px) wurde links von der `kind`-Spalte im CoachingBrowser-Treeview eingeführt. Für Lap-Nodes (nicht `incomplete`) und Run-Nodes (mind. eine analysierbare Lap) erscheint ein farbiger Overlay-Button:
+
+| Farbe | Bedeutung |
+|-------|-----------|
+| Grau | Noch nicht analysiert |
+| Grün | Vollständig analysiert |
+| Gelb | Teilweise analysiert (nur Run-Nodes) |
+
+Klick löst den Callback `on_analyze_lap` resp. `on_analyze_run` aus.
+
+### Geänderte Dateien
+
+| Datei | Änderung |
+|-------|----------|
+| `src/core/coaching/lap_analyzer.py` | **Neu (Stub)** — `analyze_lap(session_dir, run_id, lap_no)` schreibt `run_XXXX_lap_XXXX_analysis.json` |
+| `src/ui/coaching_browser.py` | Spalte `analyze` + Column-Config; Callbacks `on_analyze_lap`/`on_analyze_run`; `_analyze_buttons`-Tracking; `_clear_overlays` erweitert; `_refresh_overlays` mit Button-Overlays; `_handle_analyze`; `_has_analysis_data`; `_all_tree_iids` |
+| `src/ui/app.py` | Import `_coaching_analyze_lap`; Callbacks an `CoachingBrowser` verdrahtet; `_handle_analyze_lap` und `_handle_analyze_run` implementiert |
+
+---
+
+## Change 2 — lap_analyzer.py: Stub ersetzt durch echte Pipeline
+
+**Commit:** `43b42aa`
+**Datum:** 2026-03-04
+
+### Root Cause (alter Stub)
+
+`lap_analyzer.py` schrieb nur eine Dummy-JSON-Datei (`run_XXXX_lap_XXXX_analysis.json`), ohne die eigentliche Sprint-2-Pipeline zu starten.
+
+### Fix
+
+`lap_analyzer.py` implementiert `analyze_lap()` vollständig:
+
+1. Erstellt `session_dir/laps/lap_YYYY/` (Verzeichnis das `AnalysisCache` erwartet)
+2. Liest die flache Sprint-1-Meta `run_XXXX_lap_YYYY_meta.json` und übersetzt Keys:
+   - `lap_start_sample` → `start_idx`
+   - `lap_end_sample` → `end_idx`
+   - `lap_complete` (invertiert) → `incomplete`
+   - `offtrack_surface` → `offtrack`
+3. Schreibt `lap_meta.json` in `laps/lap_YYYY/`
+4. Ruft `AnalysisCache().compute(lap_dir)` auf — die vollständige Sprint-2-Pipeline
+
+### Ergebnis (Misano, McLaren, Lap 2)
+
+- `status: partial` (Reifentemperatur-Kanäle fehlen in Rohdaten, kein Crash)
+- 9 Kurven erkannt, 47 Features berechnet
+- Alle 4 Haupt-Artefakte erzeugt + 27 Snapshot-JSONs (3 × 9 Kurven)
+
+### Geänderte Dateien
+
+| Datei | Änderung |
+|-------|----------|
+| `src/core/coaching/lap_analyzer.py` | Stub durch vollständige Pipeline-Implementierung ersetzt |
+
+---
+
+## Change 3 — Fix: Analyze-Buttons wurden nach Change 2 nicht mehr Grün
+
+**Commit:** `79c97a9`
+**Datum:** 2026-03-04
+
+### Root Cause
+
+`_has_analysis_data` in `coaching_browser.py` prüfte den alten Stub-Pfad:
+```
+session_dir / run_0001_lap_0002_analysis.json
+```
+
+Nach Change 2 schreibt die echte Pipeline das Status-File aber unter:
+```
+session_dir / laps / lap_0002 / analysis / analysis_status.json
+```
+
+Der Button blieb deshalb grau, auch wenn die Analyse erfolgreich war.
+
+### Fix
+
+`_has_analysis_data` wurde auf den echten Pipeline-Pfad umgestellt (`laps/lap_YYYY/analysis/analysis_status.json`).
+
+### Geänderte Dateien
+
+| Datei | Änderung |
+|-------|----------|
+| `src/ui/coaching_browser.py` | `_has_analysis_data` prüft jetzt `laps/lap_YYYY/analysis/analysis_status.json` |
+
+---
+
+---
+
+# Bug-Analyse: corner_maps → `unknown_track__unknown_config`
+
+**Datum der Analyse:** 2026-03-05
+
+## Symptom
+
+Bei jedem Analyse-Lauf wird der Corner-Map nicht unter dem korrekten Track-Key gespeichert, sondern unter `corner_maps/unknown_track__unknown_config/corner_map_v1.json`.
+
+## Ursache: `_infer_session_dir` geht eine Ebene zu weit hoch
+
+Die Pfadauflösung in `analysis_cache.py` ist für eine **dreistufige** Verzeichnishierarchie ausgelegt:
+
+```
+coaching/
+  <session_folder>/        ← session_dir (erwartet)
+    run_XXXX/              ← run_dir
+      laps/
+        lap_YYYY/          ← lap_dir
+```
+
+Die tatsächliche Sprint-1-Struktur (erstellt von `lap_analyzer.py`) ist **zweistufig** (kein `run_XXXX/`-Level):
+
+```
+coaching/
+  <session_folder>/        ← run_dir UND session_dir zugleich
+    laps/
+      lap_YYYY/            ← lap_dir
+```
+
+### Schritt-für-Schritt-Trace
+
+| Methode | Erwartetes Ergebnis | Tatsächliches Ergebnis |
+|---------|--------------------|-----------------------|
+| `_infer_run_dir(lap_dir)` | `session_folder/` | `session_folder/` ✓ |
+| `_infer_session_dir(lap_dir)` | `session_folder/` | `coaching/` ✗ |
+
+**Warum `_infer_session_dir` falsch liegt:**
+
+```python
+def _infer_session_dir(self, lap_dir: Path) -> Path:
+    run_dir = self._infer_run_dir(lap_dir)   # = session_folder/
+    if run_dir.parent != run_dir:             # coaching/ != session_folder/ → True
+        return run_dir.parent                 # gibt coaching/ zurück  ← BUG
+    return run_dir
+```
+
+`run_dir` ist hier bereits `session_folder/` — aber `_infer_session_dir` geht noch eine Ebene höher zu `coaching/`.
+
+### Konsequenz
+
+```python
+def _infer_track_key(self, lap_dir: Path) -> str:
+    session_dir = self._infer_session_dir(lap_dir)   # = coaching/
+    meta = _read_json_dict(session_dir / "session_meta.json")
+    # coaching/session_meta.json existiert nicht → meta = {}
+
+    parts = session_dir.name.split("__")  # "coaching".split("__") = ["coaching"]
+    # len(parts) < 6 → kein Fallback aus Ordnername möglich
+
+    track_name = "unknown_track"    # Fallback
+    config_name = "unknown_config"  # Fallback
+    return "unknown_track__unknown_config"
+```
+
+`session_meta.json` liegt in `session_folder/` und enthält `TrackDisplayName` + `TrackConfigName` korrekt — aber diese Datei wird nie gelesen, weil der Pfad um eine Ebene zu hoch zeigt.
+
+## Korrekte Track-/Config-Keys (aus `session_meta.json`)
+
+```json
+"TrackDisplayName": "Misano World Circuit Marco Simoncelli",
+"TrackConfigName":  "Grand Prix"
+```
+
+Erwarteter Track-Key nach `sanitize_name()`:
+```
+Misano_World_Circuit_Marco_Simoncelli__Grand_Prix
+```
+
+## Fix (erforderlich, noch nicht implementiert)
+
+`_infer_session_dir` muss die flache Struktur erkennen. Einfachste Prüfung:
+
+> Wenn `run_dir / "session_meta.json"` existiert, ist `run_dir` selbst bereits das Session-Verzeichnis — nicht dessen Parent.
+
+Die entsprechende Änderung liegt in `src/core/coaching/analysis_cache.py`, Methode `_infer_session_dir` (Zeile 464).
+
+---
+
+---
+
 ## Sprint 2 — Definition of Done
 
 Sprint 2 ist **abgeschlossen** wenn:
