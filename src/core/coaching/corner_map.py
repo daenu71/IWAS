@@ -714,8 +714,8 @@ def _filter_fullgas_segments(
             seg_steer = np.abs(steering_arr[s:e])
             finite_steer = seg_steer[np.isfinite(seg_steer)]
             if len(finite_steer) > 0:
-                mean_steer = float(np.nanmean(finite_steer))
-                passes_c = mean_steer > min_steering_deg
+                mean_steer_deg = float(np.nanmean(finite_steer)) * 57.2958
+                passes_c = mean_steer_deg > min_steering_deg
 
         if debug_mode:
             curv_slice = seg["signed_curv_slice"]
@@ -732,7 +732,7 @@ def _filter_fullgas_segments(
                 float(np.nanmax(brake_arr[s:e])) if brake_arr is not None else float("nan")
             )
             mean_stw = (
-                float(np.nanmean(np.abs(steering_arr[s:e])))
+                float(np.nanmean(np.abs(steering_arr[s:e]))) * 57.2958
                 if steering_arr is not None
                 else float("nan")
             )
