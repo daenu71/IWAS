@@ -315,6 +315,8 @@ def render_corner_zoom(
 
     # -- Event markers ------------------------------------------------------
     drawn_types: set = set()
+    event_map: dict = {}  # tag -> tooltip text
+
     for ev in (events or []):
         style = _EVENT_STYLE.get(ev.event_type)
         if style is None:
@@ -339,12 +341,12 @@ def render_corner_zoom(
         if ev.value is not None:
             tip += f"\n{ev.value}"
 
-        canvas.tag_bind(tag, "<Enter>",
-                        lambda _e, t=tip, x=ex, y=ey: _zoom_show_tooltip(canvas, t, x, y))
-        canvas.tag_bind(tag, "<Leave>",
-                        lambda _e: _zoom_hide_tooltip(canvas))
-
+        event_map[tag] = tip
         drawn_types.add(ev.event_type)
+
+    # Single motion handler instead of per-item tag_bind (avoids tooltip-loop freeze)
+    canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
+    canvas.bind("<Leave>", lambda _e: _zoom_hide_tooltip(canvas))
 
     # -- Legend -------------------------------------------------------------
     _zoom_draw_legend(canvas, drawn_types, width, height)
@@ -372,19 +374,36 @@ def _zoom_project_event(
     return float(seg_canvas[seg_local, 0]), float(seg_canvas[seg_local, 1])
 
 
+def _zoom_on_motion(canvas: tk.Canvas, event, event_map: dict) -> None:
+    """Canvas <Motion> handler: show tooltip when hovering over an event marker."""
+    items = canvas.find_overlapping(event.x - 4, event.y - 4, event.x + 4, event.y + 4)
+    for item in items:
+        for tag in canvas.gettags(item):
+            if tag in event_map:
+                _zoom_show_tooltip(canvas, event_map[tag], event.x, event.y)
+                return
+    _zoom_hide_tooltip(canvas)
+
+
 def _zoom_show_tooltip(canvas: tk.Canvas, text: str, x: float, y: float) -> None:
-    """Draw a small tooltip box on *canvas* near (x, y)."""
+    """Draw a small tooltip box on *canvas* near the current mouse position."""
     canvas.delete("zoom_tooltip")
     w = canvas.winfo_width()
-    tx = min(x + 10, w - 4)
-    ty = y - 4
+    tx = x + 12
+    ty = y - 20
+    # Clamp so tooltip stays inside canvas
     tid = canvas.create_text(
-        tx, ty, text=text, anchor="ne",
+        tx, ty, text=text, anchor="nw",
         fill="#FFFFFF", font=_ZOOM_TOOLTIP_FONT,
         tags=("zoom_tooltip",),
     )
     bbox = canvas.bbox(tid)
     if bbox:
+        # Shift left if it overflows the right edge
+        if bbox[2] + 2 > w:
+            dx = bbox[2] + 2 - w
+            canvas.move(tid, -dx, 0)
+            bbox = canvas.bbox(tid)
         canvas.create_rectangle(
             bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2,
             fill="#333333", outline="#666666",

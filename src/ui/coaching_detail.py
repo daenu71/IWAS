@@ -283,7 +283,14 @@ class CoachingDetailView(ttk.Frame):
         if w < 2 or h < 2:
             self._zoom_canvas.after(50, self._rerender_corner_zoom)
             return
-        events = self._vm.events.get(self._selected_corner_id, [])
+        CORNER_EVENT_MARGIN = 0.04
+        lo = corner.start_lapdist_pct - CORNER_EVENT_MARGIN
+        hi = corner.end_lapdist_pct + CORNER_EVENT_MARGIN
+        events: list = []
+        for group in self._vm.events.values():
+            for ev in group:
+                if lo <= ev.lapdist_pct <= hi:
+                    events.append(ev)
         render_corner_zoom(
             canvas=self._zoom_canvas,
             xy=self._vm.track_xy,
