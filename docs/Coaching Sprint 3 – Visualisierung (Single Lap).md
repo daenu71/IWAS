@@ -14,12 +14,13 @@ Rechte Seite der Coaching-View wird in ein dediziertes Widget ausgelagert. Klar 
 
 ### Neues Modul: `src/core/coaching/lap_view_model.py`
 
-Lädt und aggregiert alle Analyseartefakte für eine Lap zu einem `LapViewModel` Objekt. Das ist der einzige Datenzugriffspunkt für die gesamte Visualisierungs-UI. Sprint 4/5/6 erweiterern dieses Modell, ohne die UI anfassen zu müssen.
+Lädt und aggregiert alle Analyseartefakte für eine Lap zu einem `LapViewModel` Objekt. Das ist der einzige Datenzugriffspunkt für die gesamte Visualisierungs-UI. Sprint 4/5/6 erweitern dieses Modell, ohne die UI anfassen zu müssen.
 
 ```
 LapViewModel
   ├── meta: LapMeta
   ├── track_xy: list[tuple[float, float]]   # generiert aus VelocityX/Y
+  ├── track_road_geometry: TrackRoadGeometry | None  # aus IBT-Header, optional
   ├── corners: list[CornerData]
   ├── events: dict[corner_id, list[Event]]
   ├── features: dict[corner_id, dict]
@@ -31,6 +32,25 @@ LapViewModel
 
 Alle Maps (Trackmap + Corner-Zoom) werden auf `tk.Canvas` gerendert. Kein Matplotlib in der Haupt-UI (zu schwer, zu langsam). Matplotlib nur für Telemetrie-Traces als eingebettete Figure.
 
+### IBT-Straßengeometrie (optional)
+
+iRacing speichert in IBT-Dateien Geometriedaten inkl. Streckenmittellinie und Randpunkte. Diese sind nicht über den IRSDK Live-Channel zugänglich, sondern werden per IBT-Postprocessing einmalig extrahiert und als `track_road_geometry.json` im Storage abgelegt.
+
+**Datenstruktur:**
+```json
+{
+  "track_key": "Sebring__Full Course",
+  "source": "ibt_header",
+  "center_line": [[x, y], ...],
+  "left_edge": [[x, y], ...],
+  "right_edge": [[x, y], ...]
+}
+```
+
+- Extraktion erfolgt einmalig beim ersten IBT-Import für diesen Track/Config.
+- Fehlt die Datei → kein Crash, kein Straßenband → nur Fahrlinie.
+- TrackMap und Corner-Zoom nutzen sie wenn vorhanden.
+
 ---
 
 ## Stories
@@ -38,8 +58,6 @@ Alle Maps (Trackmap + Corner-Zoom) werden auf `tk.Canvas` gerendert. Kein Matplo
 ---
 
 ### Story 3.0 – LapViewModel: Datenzugriffs-Layer
-
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
 
 **Ziel:** Zentrale Klasse `LapViewModel` die alle Analyseartefakte einer Lap lädt. Einzige Schnittstelle zwischen Analyse-Backend und Visualisierungs-UI.
 
@@ -53,6 +71,7 @@ Alle Maps (Trackmap + Corner-Zoom) werden auf `tk.Canvas` gerendert. Kein Matplo
 - `corner_map_v1.json`
 - `session_meta.json`
 - `run_XXXX_meta.json`
+- `track_road_geometry.json` (optional, für Straßenband)
 
 **Interface**
 ```python
@@ -60,12 +79,13 @@ class LapViewModel:
     @staticmethod
     def load(session_dir, run_id, lap_no) -> "LapViewModel"
     
-    meta: LapMeta                    # track, car, lap_no, lap_time, validity
-    track_xy: np.ndarray             # (N, 2) normiert auf [0,1]
-    lap_dist_pct: np.ndarray         # korrespondierend zu track_xy
-    corners: list[CornerInfo]        # CornerID, start/end_lapdist, type
-    events: dict[int, list[Event]]   # corner_id → Events
-    features: dict[int, dict]        # corner_id → Feature-Dict
+    meta: LapMeta                              # track, car, lap_no, lap_time, validity
+    track_xy: np.ndarray                       # (N, 2) normiert auf [0,1]
+    lap_dist_pct: np.ndarray                   # korrespondierend zu track_xy
+    track_road_geometry: TrackRoadGeometry | None  # Straßenband aus IBT, None wenn nicht verfügbar
+    corners: list[CornerInfo]                  # CornerID, start/end_lapdist, type
+    events: dict[int, list[Event]]             # corner_id → Events
+    features: dict[int, dict]                  # corner_id → Feature-Dict
     
     def get_resampled_channel(self, channel: str) -> np.ndarray  # lazy load
     def is_loaded(self) -> bool
@@ -78,30 +98,26 @@ class LapViewModel:
 
 **Akzeptanzkriterien**
 - `LapViewModel.load()` mit echten Analyseartefakten liefert valides Objekt
-- Kein Crash bei fehlenden optionalen Feldern (null-safe)
+- Kein Crash bei fehlenden optionalen Feldern (null-safe), inkl. fehlendem `track_road_geometry.json`
 - `python -m py_compile src/core/coaching/lap_view_model.py` fehlerfrei
 
 **Unit Test**
 - `tests/test_lap_view_model.py`
 - Test 1: Load mit vollständigem Artefakt-Set → alle Felder befüllt
 - Test 2: Load mit fehlendem `lap_events.json` → kein Crash, `events` leer
-- Test 3: `get_resampled_channel()` gibt korrekte np.ndarray zurück
+- Test 3: Load ohne `track_road_geometry.json` → `track_road_geometry` ist `None`, kein Crash
+- Test 4: `get_resampled_channel()` gibt korrekte np.ndarray zurück
 
 **Deliverables**
 - **Titel:** LapViewModel – Datenzugriffs-Layer für Visualisierungs-UI
-- **Zusammenfassung:** Neue Klasse `LapViewModel` konsolidiert alle Analyseartefakte einer Lap. Einzige Datenquelle für alle Sprint-3-UI-Komponenten.
+- **Zusammenfassung:** Neue Klasse `LapViewModel` konsolidiert alle Analyseartefakte einer Lap. Einzige Datenquelle für alle Sprint-3-UI-Komponenten. `track_road_geometry` als optionales Feld ergänzt.
 - **Geänderte Dateien:** `src/core/coaching/lap_view_model.py` (neu), `tests/test_lap_view_model.py` (neu)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
 ### Story 3.1 – TrackMap Canvas: XY-Rekonstruktion und Rendering
 
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
-
-**Quelle:** Beachte C:\iWAS\docs\Coaching Sprint 3 – Visualisierung (Single Lap).md
-
-**Ziel:** Aus `VelocityX`/`VelocityY` (oder falls vorhanden direkten XY-Kanälen) wird eine 2D-Streckenlinie rekonstruiert und auf einem `tk.Canvas` gerendert.
+**Ziel:** Aus `VelocityX`/`VelocityY` (oder falls vorhanden direkten XY-Kanälen) wird eine 2D-Streckenlinie rekonstruiert und auf einem `tk.Canvas` gerendert. Wenn `track_road_geometry` verfügbar ist, wird zusätzlich das Straßenband angezeigt.
 
 **Neue Dateien**
 - `src/core/coaching/track_geometry.py`
@@ -112,43 +128,46 @@ class LapViewModel:
 2. Integration: X[i] = sum(VelocityX * dt), Y[i] = sum(VelocityY * dt)
 3. Normierung: beide Achsen auf [0, 1], Aspect Ratio erhalten
 4. Wrap-around robust: LapDistPct 0→1 ergibt geschlossene Kurve
+5. Optional: TrackRoadGeometry auf gleiche Normierung transformieren
 ```
 
 **Interface**
 ```python
 def reconstruct_xy(resampled_df: DataFrame) -> np.ndarray  # (N, 2) normiert
-def render_trackmap(canvas: tk.Canvas, xy: np.ndarray, 
+
+def render_trackmap(canvas: tk.Canvas,
+                    xy: np.ndarray,
                     corners: list[CornerInfo],
                     selected_corner_id: int | None,
                     width: int, height: int,
+                    road_geometry: TrackRoadGeometry | None = None,
                     lap_color: str = "#E53935") -> None
 ```
 
 **Render-Details**
-- Streckenlinie: grau (#555)
-- Fahrlinie (Lap): Primärfarbe (konfigurierbar, Sprint 4 mehrere Farben)
+- Straßenband (wenn `road_geometry` vorhanden): linke/rechte Kante als dunkle Linie (#444), Fläche dazwischen als sehr dunkles Polygon (#2A2A2A)
+- Fahrlinie (Lap): Primärfarbe (#E53935), über Straßenband gezeichnet
 - Corner-Segmente: leicht farbig hinterlegt (Polygon, halbtransparent)
 - Gewählter Corner: highlight (heller Rahmen)
 - Corner-Label (ID): kleiner Text am Apex-Punkt
 - Click-Mapping: `canvas.tag_bind` pro Corner-Polygon
+- Fehlt `road_geometry` → nur Fahrlinie wie bisher, kein Unterschied im Verhalten
 
 **Akzeptanzkriterien**
 - Streckenlinie wird korrekt geschlossen (Start = End)
 - Klick auf Corner-Segment löst `on_corner_selected(corner_id)` Callback aus
 - Resize des Canvas → Neuzeichnung ohne Flicker
+- Straßenband rendert korrekt wenn vorhanden; fehlt es → kein Crash
 - `python -m py_compile src/core/coaching/track_geometry.py` fehlerfrei
 
 **Deliverables**
-- **Titel:** TrackMap Canvas – XY-Rekonstruktion und interaktives Corner-Rendering
-- **Zusammenfassung:** `track_geometry.py` mit XY-Integration und `render_trackmap()`. Klickbare Corner-Segmente via Canvas-Tags.
+- **Titel:** TrackMap Canvas – XY-Rekonstruktion, Straßenband und interaktives Corner-Rendering
+- **Zusammenfassung:** `track_geometry.py` mit XY-Integration und `render_trackmap()`. Optionales Straßenband aus `TrackRoadGeometry`. Klickbare Corner-Segmente via Canvas-Tags.
 - **Geänderte Dateien:** `src/core/coaching/track_geometry.py` (neu)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
-### Story 3.2 – CoachingDetailView: Layout-Rahmen
-
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
+### Story 3.2 – CoachingDetailView: Layout-Rahmen ✅ (umgesetzt)
 
 **Ziel:** Rechte Seite der Coaching-View wird durch `CoachingDetailView` ersetzt. Definiert das stabile Layout-Gerüst das Sprint 4–6 füllen.
 
@@ -160,8 +179,10 @@ def render_trackmap(canvas: tk.Canvas, xy: np.ndarray,
 ┌─────────────────────────────────────────────┐
 │ [Header: Track / Car / Lap / Zeit]          │
 ├──────────────────────┬──────────────────────┤
-│ TrackMap Canvas      │ Corner-Zoom Canvas   │
-│ (klickbar)           │ (bei Auswahl)        │
+│ TrackMap Canvas      │ Datenbereich         │
+│ (klickbar)           │ (Corner-Zoom         │
+│                      │  überlagert TrackMap │
+│                      │  bei Corner-Klick)   │
 ├──────────────────────┴──────────────────────┤
 │ Telemetrie-Trace (matplotlib, collapsible)  │
 ├─────────────────────────────────────────────┤
@@ -182,26 +203,25 @@ class CoachingDetailView(ttk.Frame):
 **Akzeptanzkriterien**
 - `load_lap(None)` → leerer Zustand, kein Crash
 - `load_lap(vm)` → Header befüllt, TrackMap gerendert
-- Klick auf Corner → Corner-Zoom und Scorecard aktualisieren sich
+- Klick auf Corner → Corner-Zoom überlagert TrackMap, Scorecard aktualisiert sich
 - `python -m py_compile src/ui/coaching_detail.py` fehlerfrei
 
 **Deliverables**
 - **Titel:** CoachingDetailView – Layout-Gerüst für Lap-Visualisierung
 - **Zusammenfassung:** Neues Widget `CoachingDetailView` als stabiler Layout-Container. Verdrahtet mit `CoachingView` in `app.py` via `load_lap()` Callback.
 - **Geänderte Dateien:** `src/ui/coaching_detail.py` (neu), `src/ui/app.py` (CoachingDetailView eingehängt)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
 ### Story 3.3 – Corner-Zoom Canvas mit Event-Markern
 
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
+**Ziel:** Klick auf Corner in der TrackMap öffnet einen vergrößerten Ausschnitt des Corner-Bereichs direkt über dem TrackMap-Canvas. Der Corner-Zoom belegt denselben Raum wie die TrackMap und zeigt oben einen „← Zurück"-Button der zur TrackMap zurückführt. Rechts vom Canvas-Bereich steht Platz für Daten (Scorecard, Trace) – dieser Bereich wird durch den Corner-Zoom nicht berührt.
 
-**Ziel:** Klick auf Corner in der TrackMap öffnet vergrößerten Ausschnitt des Corner-Bereichs mit eingezeichneten Events.
+Wenn `track_road_geometry` verfügbar ist, wird auch im Corner-Zoom das Straßenband gezeigt, sodass die Fahrlinie realistisch auf der Strecke positioniert erscheint.
 
 **Erweiterung in**
 - `src/core/coaching/track_geometry.py` (neue Funktion)
-- `src/ui/coaching_detail.py` (Corner-Zoom-Bereich)
+- `src/ui/coaching_detail.py` (Corner-Zoom-Overlay-Logik)
 
 **Neue Funktion**
 ```python
@@ -209,8 +229,20 @@ def render_corner_zoom(canvas: tk.Canvas,
                        xy: np.ndarray,
                        corner: CornerInfo,
                        events: list[Event],
-                       width: int, height: int) -> None
+                       width: int, height: int,
+                       road_geometry: TrackRoadGeometry | None = None) -> None
 ```
+
+**Overlay-Verhalten**
+- Klick auf Corner in TrackMap → Corner-Zoom-Frame erscheint über dem TrackMap-Canvas (gleiche Größe, gleiche Position, `place`-basiertes Overlay)
+- Oben im Corner-Zoom: kompakter „← Zurück"-Button → blendet Overlay aus, TrackMap ist wieder sichtbar
+- Größe und Position des Canvas-Bereichs bleiben unverändert; der rechte Datenbereich wird nicht tangiert
+- Resize des Fensters → Overlay passt sich mit an
+
+**Straßenband im Corner-Zoom**
+- Wenn `road_geometry` vorhanden: Straßenrand und -fläche analog zur TrackMap rendern (gleiche Farben)
+- Fahrlinie des Corners wird über dem Straßenband gezeichnet
+- Fehlt `road_geometry` → nur Fahrlinie, kein Crash
 
 **Event-Visualisierung**
 
@@ -231,21 +263,69 @@ def render_corner_zoom(canvas: tk.Canvas,
 - Legende rechts unten im Canvas (kompakt)
 
 **Akzeptanzkriterien**
+- Corner-Zoom erscheint als Overlay über der TrackMap (gleiche Größe/Position)
+- „← Zurück"-Button blendet Overlay aus und stellt TrackMap wieder her
+- Rechter Datenbereich (Scorecard etc.) bleibt durch den Overlay unangetastet
 - Korrekte Projektion der Events auf XY-Linie via `lapdist_pct`
+- Straßenband im Zoom wenn `road_geometry` vorhanden; fehlt es → kein Crash
 - Tooltip erscheint bei Hover ohne Flicker
 - Bei `events = []` → nur Fahrlinie, kein Crash
 
 **Deliverables**
-- **Titel:** Corner-Zoom Canvas – Event-Projektion und Visualisierung
-- **Zusammenfassung:** `render_corner_zoom()` projiziert Events per LapDistPct auf die Fahrlinie. Icon-basierte Darstellung mit Hover-Tooltip.
-- **Geänderte Dateien:** `src/core/coaching/track_geometry.py` (erweitert), `src/ui/coaching_detail.py` (Corner-Zoom-Bereich aktiviert)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
+- **Titel:** Corner-Zoom Canvas – Overlay mit Straßenband, Event-Projektion und Zurück-Navigation
+- **Zusammenfassung:** `render_corner_zoom()` projiziert Events per LapDistPct auf die Fahrlinie. Overlay-Mechanismus ersetzt TrackMap in-place. Straßenband aus `TrackRoadGeometry` wenn verfügbar. „← Zurück"-Button stellt TrackMap wieder her.
+- **Geänderte Dateien:** `src/core/coaching/track_geometry.py` (erweitert), `src/ui/coaching_detail.py` (Overlay-Logik ergänzt)
+
+---
+
+### Story 3.3a – IBT-Extraktor: TrackRoadGeometry aus IBT-Dateien
+
+**Ziel:** Einmaliges Extrahieren der Streckengeometrie (Mittellinie, linke/rechte Kante) aus einer IBT-Datei und Ablage als `track_road_geometry.json` im Storage. Dieser Schritt ist optional und blockiert keine andere Story.
+
+**Neue Dateien**
+- `src/core/coaching/ibt_track_extractor.py`
+
+**Input**
+- Eine beliebige IBT-Datei für den Track/Config (Pfad vom User angegeben oder automatisch aus bekannten iRacing-Pfaden)
+
+**Output**
+- `<storage_root>/track_geometries/<track_key>/track_road_geometry.json`
+
+**Algorithmus**
+```
+1. IBT-Header lesen: TrackLength, track surface path data
+2. Mittellinie extrahieren (IBT stellt Centerline-Punkte bereit)
+3. Linke/rechte Kante aus Spurbreiten-Metadaten ableiten (falls vorhanden)
+   Fallback: feste Versatzbreite (z.B. ±5 m) entlang Normalvektor
+4. Alle Punkte in lokales XY (Meter) transformieren (equirectangular, gleiche Projektion wie track_geometry.py)
+5. Normierung analog track_xy (auf [0,1], Aspect Ratio erhalten)
+6. Als JSON schreiben
+```
+
+**Track-Key Format**
+`TrackDisplayName__TrackConfigName` (aus `session_meta.json`, identisch zu CornerMap)
+
+**Akzeptanzkriterien**
+- Extraktion läuft durch ohne Crash für valide IBT-Datei
+- Ausgabe-JSON enthält `center_line`, `left_edge`, `right_edge` als Listen von [x, y]-Paaren
+- Fehlt ein Feld im IBT-Header → Fallback (Normalvektor-Offset) greift, kein Crash
+- `python -m py_compile src/core/coaching/ibt_track_extractor.py` fehlerfrei
+- Normierung ist identisch zur Normierung in `track_geometry.py` (gleicher Origin, gleiche Skalierung)
+
+**Unit Test**
+- `tests/test_ibt_track_extractor.py`
+- Test 1: Synthetic IBT-ähnlicher Input → JSON-Output valide
+- Test 2: Fehlende Spurbreite → Fallback-Offset greift, kein Crash
+- Test 3: Normierung konsistent mit `reconstruct_xy()` auf gleichen Koordinaten
+
+**Deliverables**
+- **Titel:** IBT-Extraktor – TrackRoadGeometry aus IBT-Header
+- **Zusammenfassung:** `ibt_track_extractor.py` extrahiert Streckengeometrie einmalig aus IBT-Datei. Output als JSON im Storage. Normierung identisch zur Fahrlinie in `track_geometry.py`.
+- **Geänderte Dateien:** `src/core/coaching/ibt_track_extractor.py` (neu), `tests/test_ibt_track_extractor.py` (neu)
 
 ---
 
 ### Story 3.4 – Telemetrie-Trace (Single Lap, pro Corner)
-
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
 
 **Ziel:** Unterhalb der Maps wird für den gewählten Corner ein Telemetrie-Trace gerendert. X-Achse = LapDistPct, mehrere Kanäle überlagert.
 
@@ -283,15 +363,12 @@ Brake, Throttle, Speed, YawRate, SteeringWheelAngle
 - **Titel:** CornerTraceView – Telemetrie-Trace mit Event-Markern pro Corner
 - **Zusammenfassung:** Matplotlib-basierter Telemetrie-Trace für den gewählten Corner. Event-Marker synchron mit `lap_events.json`. Channel-Selektor per Checkbox.
 - **Geänderte Dateien:** `src/ui/coaching_trace.py` (neu), `src/ui/coaching_detail.py` (CornerTraceView eingehängt)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
 ### Story 3.5 – Corner Scorecard (Feature-Tabelle)
 
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
-
-**Ziel:** Für den gewählten Corner werden die berechneten Features aus `corner_features.parquet` als kompakte Tabelle angezeigt.
+**Ziel:** Für den gewählten Corner werden die berechneten Features aus `corner_features.parquet` als kompakte Tabelle angezeigt. Die Scorecard bleibt sichtbar, wenn der Corner-Zoom aktiv ist (sie befindet sich im rechten Datenbereich, nicht im Overlay).
 
 **Neue Dateien**
 - `src/ui/coaching_scorecard.py`
@@ -324,20 +401,18 @@ class CornerScorecard(ttk.Frame):
 - Alle Feature-Gruppen korrekt gruppiert
 - Null-Features sauber dargestellt, kein Crash
 - Dritte Spalte vorhanden aber leer (Sprint-4-Platzhalter)
+- Scorecard bleibt sichtbar wenn Corner-Zoom-Overlay aktiv ist
 
 **Deliverables**
 - **Titel:** CornerScorecard – Feature-Tabelle mit Schema-Gruppen
-- **Zusammenfassung:** `CornerScorecard` zeigt alle Features des gewählten Corners, gruppiert nach `feature_schema_v1.json`. Dritte Spalte als Platzhalter für Sprint 4/6.
+- **Zusammenfassung:** `CornerScorecard` zeigt alle Features des gewählten Corners, gruppiert nach `feature_schema_v1.json`. Dritte Spalte als Platzhalter für Sprint 4/6. Bleibt im rechten Datenbereich unabhängig vom Corner-Zoom-Overlay.
 - **Geänderte Dateien:** `src/ui/coaching_scorecard.py` (neu), `src/ui/coaching_detail.py` (Scorecard eingehängt)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
 ### Story 3.6 – Feature-Heatmap auf TrackMap
 
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
-
-**Ziel:** TrackMap-Corners werden farbkodiert basierend auf einem wählbaren Feature-Wert.
+**Ziel:** TrackMap-Corners werden farbkodiert basierend auf einem wählbaren Feature-Wert. Heatmap gilt nur für die TrackMap-Ansicht; im Corner-Zoom-Overlay hat sie keinen Effekt.
 
 **Erweiterung in**
 - `src/core/coaching/track_geometry.py`
@@ -345,9 +420,11 @@ class CornerScorecard(ttk.Frame):
 
 **Interface**
 ```python
-def render_trackmap_heatmap(canvas: tk.Canvas, xy: np.ndarray,
+def render_trackmap_heatmap(canvas: tk.Canvas,
+                             xy: np.ndarray,
                              corners: list[CornerInfo],
                              feature_values: dict[int, float],
+                             road_geometry: TrackRoadGeometry | None = None,
                              colormap: str = "RdYlGn_r") -> None
 ```
 
@@ -356,23 +433,22 @@ def render_trackmap_heatmap(canvas: tk.Canvas, xy: np.ndarray,
 - Feature-Liste aus `feature_schema_v1.json` (nur required Features)
 - Colormap: grün (gut) → gelb → rot (schlecht), Normierung min-max über sichtbare Corners
 - Legende: Farbbalken unterhalb der Map, min/max-Wert
+- Heatmap-Dropdown bleibt sichtbar wenn Corner-Zoom aktiv ist, wird aber erst nach Rückkehr zur TrackMap wieder wirksam
 
 **Akzeptanzkriterien**
 - Feature-Dropdown befüllt sich aus Schema
 - Corners werden korrekt eingefärbt
 - „Aus" stellt Standarddarstellung wieder her
+- Straßenband (wenn vorhanden) wird auch im Heatmap-Modus gerendert
 
 **Deliverables**
 - **Titel:** TrackMap Heatmap – Corner-Einfärbung nach Feature-Wert
-- **Zusammenfassung:** Feature-Heatmap auf der TrackMap. Dropdown-Selektor, Colormap, Legende.
+- **Zusammenfassung:** Feature-Heatmap auf der TrackMap. Dropdown-Selektor, Colormap, Legende. `road_geometry`-Parameter an `render_trackmap_heatmap()` ergänzt.
 - **Geänderte Dateien:** `src/core/coaching/track_geometry.py` (erweitert), `src/ui/coaching_detail.py` (Dropdown + Heatmap-Toggle)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
 ### Story 3.7 – Analyse-Trigger: Klick auf Lap öffnet Detail-View
-
-**Quelle:** Beachte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md`
 
 **Ziel:** Klick auf „Analyze"-Button im CoachingBrowser lädt `LapViewModel` und übergibt ihn an `CoachingDetailView`.
 
@@ -385,8 +461,9 @@ User klickt Analyze (Lap-Node)
 → app.py: _handle_analyze_lap()
 → LapViewModel.load(session_dir, run_id, lap_no)
 → coaching_detail_view.load_lap(vm)
-→ TrackMap rendert
+→ TrackMap rendert (inkl. Straßenband wenn track_road_geometry vorhanden)
 → Erster Corner automatisch selektiert
+→ Corner-Zoom-Overlay initial nicht sichtbar
 ```
 
 **Akzeptanzkriterien**
@@ -394,19 +471,25 @@ User klickt Analyze (Lap-Node)
 - Analyse-Status `not_computed` → Button startet Analyse, dann DetailView
 - Analyse-Status `blocked` → Fehlermeldung im Detail-Header, kein Crash
 - UI friert nicht ein (LapViewModel-Load im Thread, dann UI-Update im Main-Thread)
+- Corner-Zoom-Overlay ist nach `load_lap()` initial ausgeblendet
 
 **Deliverables**
 - **Titel:** Analyse-Trigger – Lap-Klick öffnet CoachingDetailView
-- **Zusammenfassung:** Verdrahtung CoachingBrowser → LapViewModel → CoachingDetailView. Threading für Load, erster Corner auto-selektiert.
+- **Zusammenfassung:** Verdrahtung CoachingBrowser → LapViewModel → CoachingDetailView. Threading für Load, erster Corner auto-selektiert, Corner-Zoom-Overlay initial ausgeblendet.
 - **Geänderte Dateien:** `src/ui/app.py` (erweitert)
-- **Dokumentation:** Halte `docs/Coaching Sprint 3 – Visualisierung (Single Lap).md` aktuell, sofern es Abweichungen gibt.
 
 ---
 
 ## Sprint 3 – Definition of Done
 
 - [ ] `LapViewModel.load()` funktioniert mit echten Artefakten
+- [ ] `LapViewModel` lädt `track_road_geometry.json` wenn vorhanden, kein Crash wenn fehlend
 - [ ] TrackMap wird korrekt gerendert und ist klickbar
+- [ ] TrackMap zeigt Straßenband wenn `track_road_geometry` verfügbar
+- [ ] Corner-Zoom erscheint als Overlay über TrackMap (gleiche Größe/Position)
+- [ ] Corner-Zoom zeigt Straßenband wenn `track_road_geometry` verfügbar
+- [ ] „← Zurück"-Button im Corner-Zoom stellt TrackMap wieder her
+- [ ] Rechter Datenbereich (Scorecard, Trace) bleibt durch Corner-Zoom-Overlay unangetastet
 - [ ] Corner-Zoom zeigt Events mit Icons
 - [ ] Telemetrie-Trace rendert für gewählten Corner
 - [ ] Feature-Scorecard zeigt gruppierte Features
@@ -420,6 +503,6 @@ User klickt Analyze (Lap-Node)
 
 | Sprint | Erweiterungspunkt |
 |---|---|
-| **4** | `LapViewModel.load_batch()`, `CornerTraceView` überlagert mehrere VMs, Scorecard Δ-Spalte |
+| **4** | `LapViewModel.load_batch()`, `CornerTraceView` überlagert mehrere VMs, Scorecard Δ-Spalte, mehrere Fahrlinien in Corner-Zoom |
 | **5** | `LapSourceRef` mit `driver_id`, Export/Import via ZIP, Fremd-Session in gleichen View-Widgets |
 | **6** | `LapViewModel` → LLM-Prompt-Builder, Scorecard dritte Spalte = LLM-Bewertung |

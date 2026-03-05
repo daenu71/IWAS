@@ -30,7 +30,7 @@ from tkinter import ttk
 from typing import Optional
 
 from core.coaching.lap_view_model import LapViewModel
-from core.coaching.track_geometry import render_trackmap
+from core.coaching.track_geometry import render_corner_zoom, render_trackmap
 
 
 class CoachingDetailView(ttk.Frame):
@@ -77,7 +77,7 @@ class CoachingDetailView(ttk.Frame):
         """Highlight *corner_id* on the TrackMap and update dependent widgets."""
         self._selected_corner_id = corner_id
         self._redraw_trackmap()
-        self._clear_corner_zoom()  # Sprint 3.3 will render the zoom here
+        self._show_corner_zoom_overlay()
         if self._vm is not None:
             features = self._vm.features.get(corner_id, {})
             self._update_scorecard(features)
@@ -141,7 +141,24 @@ class CoachingDetailView(ttk.Frame):
         self._trackmap_canvas.grid(row=0, column=0, sticky="nsew")
         self._trackmap_canvas.bind("<Configure>", self._on_trackmap_resize)
 
-        # Corner-Zoom Canvas (placeholder – Story 3.3 will populate)
+        # Corner-Zoom Overlay – placed over trackmap_lf on demand (Story 3.3).
+        # Uses place geometry manager (compatible with the canvas above using grid).
+        self._zoom_overlay = tk.Frame(trackmap_lf, bg="#1e1e1e")
+        self._zoom_overlay_visible = False
+
+        self._zoom_back_btn = ttk.Button(
+            self._zoom_overlay, text="← Zurück",
+            command=self._hide_corner_zoom_overlay,
+        )
+        self._zoom_back_btn.pack(side="top", anchor="nw", padx=4, pady=(4, 2))
+
+        self._zoom_canvas = tk.Canvas(
+            self._zoom_overlay, bg="#1e1e1e", highlightthickness=0,
+        )
+        self._zoom_canvas.pack(fill="both", expand=True)
+        self._zoom_canvas.bind("<Configure>", self._on_zoom_canvas_resize)
+
+        # Corner-Zoom Canvas (right panel – data area for future Sprints)
         cornerzoom_lf = ttk.LabelFrame(frame, text="Corner Zoom")
         cornerzoom_lf.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         cornerzoom_lf.columnconfigure(0, weight=1)
@@ -234,11 +251,55 @@ class CoachingDetailView(ttk.Frame):
             self._redraw_trackmap()
 
     # ------------------------------------------------------------------
-    # Corner-Zoom helpers
+    # Corner-Zoom overlay helpers
     # ------------------------------------------------------------------
 
+    def _show_corner_zoom_overlay(self) -> None:
+        """Place the overlay frame over the TrackMap canvas and render."""
+        self._zoom_overlay.place(relx=0, rely=0, relwidth=1.0, relheight=1.0)
+        self._zoom_overlay.lift()
+        self._zoom_overlay_visible = True
+        self._rerender_corner_zoom()
+
+    def _hide_corner_zoom_overlay(self) -> None:
+        """Remove the overlay, restoring the TrackMap."""
+        self._zoom_overlay.place_forget()
+        self._zoom_overlay_visible = False
+
+    def _rerender_corner_zoom(self) -> None:
+        """Re-render the corner zoom canvas (called on show or resize)."""
+        if not self._zoom_overlay_visible:
+            return
+        if self._vm is None or self._selected_corner_id is None:
+            return
+        corner = next(
+            (c for c in self._vm.corners if c.corner_id == self._selected_corner_id),
+            None,
+        )
+        if corner is None:
+            return
+        w = self._zoom_canvas.winfo_width()
+        h = self._zoom_canvas.winfo_height()
+        if w < 2 or h < 2:
+            self._zoom_canvas.after(50, self._rerender_corner_zoom)
+            return
+        events = self._vm.events.get(self._selected_corner_id, [])
+        render_corner_zoom(
+            canvas=self._zoom_canvas,
+            xy=self._vm.track_xy,
+            corner=corner,
+            events=events,
+            width=w,
+            height=h,
+            lap_dist_pct=self._vm.lap_dist_pct,
+        )
+
+    def _on_zoom_canvas_resize(self, _event=None) -> None:
+        self._rerender_corner_zoom()
+
     def _clear_corner_zoom(self) -> None:
-        """Clear the corner zoom canvas and show placeholder text."""
+        """Hide overlay and reset the right-panel placeholder canvas."""
+        self._hide_corner_zoom_overlay()
         self._cornerzoom_canvas.delete("all")
         self._cornerzoom_canvas.create_text(
             4, 4,
@@ -249,7 +310,6 @@ class CoachingDetailView(ttk.Frame):
         )
 
     def _on_cornerzoom_resize(self, _event=None) -> None:
-        # Sprint 3.3 will re-render the zoom here; for now refresh placeholder
         if self._selected_corner_id is None:
             self._clear_corner_zoom()
 
