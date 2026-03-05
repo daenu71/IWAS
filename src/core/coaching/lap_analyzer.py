@@ -8,6 +8,31 @@ from pathlib import Path
 from .analysis_cache import AnalysisCache
 
 
+def _find_flat_lap_meta_path(session_dir: Path, run_id: int, lap_no: int) -> Path:
+    """Return the flat lap-meta file whose lap_num matches the given iRacing lap_no.
+
+    The meta files are named by a 1-based sequential write counter that does NOT
+    equal the iRacing lap_no (which starts at 0).  We resolve the correct file
+    via run_XXXX_meta.json → lap_segments / lap_meta_files mapping.
+    Falls back to the direct name-based path when no match is found.
+    """
+    direct = session_dir / f"run_{run_id:04d}_lap_{lap_no:04d}_meta.json"
+    run_meta_path = session_dir / f"run_{run_id:04d}_meta.json"
+    if run_meta_path.exists():
+        try:
+            run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+            meta_files: list = run_meta.get("lap_meta_files", [])
+            segments: list = run_meta.get("lap_segments", [])
+            for idx, seg in enumerate(segments):
+                if isinstance(seg, dict) and seg.get("lap_no") == lap_no and idx < len(meta_files):
+                    candidate = session_dir / str(meta_files[idx])
+                    if candidate.exists():
+                        return candidate
+        except Exception:
+            pass
+    return direct
+
+
 def analyze_lap(session_dir: Path, run_id: int, lap_no: int) -> bool:
     """Run full Sprint-2 analysis pipeline for one lap.
 
@@ -22,8 +47,9 @@ def analyze_lap(session_dir: Path, run_id: int, lap_no: int) -> bool:
     lap_dir = session_dir / "laps" / f"lap_{lap_no:04d}"
     lap_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read the flat Sprint-1 lap meta and translate key names
-    flat_meta_path = session_dir / f"run_{run_id:04d}_lap_{lap_no:04d}_meta.json"
+    # Read the flat Sprint-1 lap meta and translate key names.
+    # The meta files use a 1-based sequential counter, not the iRacing lap_no.
+    flat_meta_path = _find_flat_lap_meta_path(session_dir, run_id, lap_no)
     adapted_meta: dict = {}
     if flat_meta_path.exists():
         try:

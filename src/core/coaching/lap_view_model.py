@@ -203,15 +203,26 @@ def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
 
 def _read_lap_meta(session_dir: Path, run_id: int, lap_no: int) -> dict[str, Any]:
     """Try multiple meta file candidates; return first non-empty dict."""
+    # Primary lookup: resolve the correct flat meta file via run_meta.json.
+    # The flat files are named by a 1-based sequential counter, not iRacing lap_no,
+    # so we must look up the right file by matching lap_no in lap_segments.
+    run_meta = _read_json(session_dir / f"run_{run_id:04d}_meta.json")
+    meta_files: list = run_meta.get("lap_meta_files", [])
+    segments: list = run_meta.get("lap_segments", [])
+    for idx, seg in enumerate(segments):
+        if isinstance(seg, dict) and seg.get("lap_no") == lap_no and idx < len(meta_files):
+            data = _read_json(session_dir / str(meta_files[idx]))
+            if data:
+                return data
+            break
+
     candidates = [
-        # Flat Sprint-1 per-lap meta
+        # Flat Sprint-1 per-lap meta (direct name — may be off-by-one vs iRacing lap_no)
         session_dir / f"run_{run_id:04d}_lap_{lap_no:04d}_meta.json",
         # Nested run-level lap meta
         session_dir / f"run_{run_id:04d}" / "laps" / f"lap_{lap_no:04d}" / "lap_meta.json",
         session_dir / "laps" / f"lap_{lap_no:04d}" / "lap_meta.json",
         session_dir / "laps" / f"lap_{lap_no:04d}" / "meta.json",
-        # Run-level meta
-        session_dir / f"run_{run_id:04d}_meta.json",
     ]
     for path in candidates:
         data = _read_json(path)
