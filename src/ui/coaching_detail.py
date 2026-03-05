@@ -215,6 +215,8 @@ class CoachingDetailView(ttk.Frame):
         w = self._trackmap_canvas.winfo_width()
         h = self._trackmap_canvas.winfo_height()
         if w < 2 or h < 2:
+            # Canvas not yet laid out — retry after Tk has processed geometry
+            self._trackmap_canvas.after(50, self._redraw_trackmap)
             return
         render_trackmap(
             canvas=self._trackmap_canvas,
@@ -228,7 +230,8 @@ class CoachingDetailView(ttk.Frame):
         )
 
     def _on_trackmap_resize(self, _event=None) -> None:
-        self._redraw_trackmap()
+        if self._vm is not None:
+            self._redraw_trackmap()
 
     # ------------------------------------------------------------------
     # Corner-Zoom helpers

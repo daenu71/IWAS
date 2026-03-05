@@ -50,9 +50,11 @@ def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
 
     Priority:
       1. Direct ``X`` / ``Y`` columns if both present and non-trivial.
-      2. Integration of ``VelocityX`` / ``VelocityY`` × ``dt`` from
-         ``SessionTime``.  If ``SessionTime`` is absent a 100 Hz grid is
-         assumed.
+      2. Dead-reckoning via ``Speed`` × ``cos/sin(Yaw)`` × ``dt``.
+         iRacing ``VelocityX`` is the car's forward velocity (vehicle frame),
+         not a world-frame East component, so Yaw is required to reconstruct
+         world-frame positions.
+      3. Raw ``VelocityX`` / ``VelocityY`` integration as last resort.
 
     Returns an (N, 2) float64 array normalised to [0, 1] with the aspect
     ratio preserved.  On failure returns an (0, 2) empty array.
@@ -67,6 +69,8 @@ def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
     cols = set(resampled_df.columns)
     n = len(resampled_df)
 
+    dt = _build_dt(resampled_df, cols, n)
+
     # --- Prefer direct XY ---
     if "X" in cols and "Y" in cols:
         x = _to_f64(resampled_df["X"].to_numpy())
@@ -74,24 +78,23 @@ def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
         if np.any(np.isfinite(x)) and np.any(np.isfinite(y)):
             return _normalise_xy(x, y)
 
-    # --- Velocity integration ---
+    # --- Dead-reckoning: Speed × cos/sin(Yaw) ---
+    if "Speed" in cols and "Yaw" in cols:
+        sp = _to_f64(resampled_df["Speed"].to_numpy())
+        yaw = _to_f64(resampled_df["Yaw"].to_numpy())
+        sp = np.where(np.isfinite(sp), sp, 0.0)
+        yaw = np.where(np.isfinite(yaw), yaw, 0.0)
+        x = np.cumsum(sp * np.cos(yaw) * dt)
+        y = np.cumsum(sp * np.sin(yaw) * dt)
+        if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
+            return _normalise_xy(x, y)
+
+    # --- Fallback: raw VelocityX / VelocityY ---
     if "VelocityX" not in cols or "VelocityY" not in cols:
         return np.empty((0, 2), dtype=np.float64)
 
     vx = _to_f64(resampled_df["VelocityX"].to_numpy())
     vy = _to_f64(resampled_df["VelocityY"].to_numpy())
-
-    if "SessionTime" in cols:
-        st = _to_f64(resampled_df["SessionTime"].to_numpy())
-        if st.size >= 2:
-            median_dt = float(np.nanmedian(np.diff(st)))
-            dt = np.diff(st, prepend=st[0])
-            dt = np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
-        else:
-            dt = np.full(n, 0.01, dtype=np.float64)
-    else:
-        dt = np.full(n, 0.01, dtype=np.float64)
-
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
     y = np.cumsum(np.where(np.isfinite(vy), vy, 0.0) * dt)
     return _normalise_xy(x, y)
@@ -200,6 +203,17 @@ def render_trackmap(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_dt(resampled_df, cols: set, n: int) -> np.ndarray:
+    """Build a dt array from SessionTime, or assume 100 Hz grid."""
+    if "SessionTime" in cols:
+        st = _to_f64(resampled_df["SessionTime"].to_numpy())
+        if st.size >= 2:
+            median_dt = float(np.nanmedian(np.diff(st)))
+            dt = np.diff(st, prepend=st[0])
+            return np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
+    return np.full(n, 0.01, dtype=np.float64)
 
 
 def _to_f64(arr: np.ndarray) -> np.ndarray:

@@ -184,6 +184,12 @@ def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
         or lap_meta.get("LapLastLapTime")
         or lap_meta.get("laptime")
     )
+    # Fallback: derive from session timestamps present in Sprint-1 meta
+    if lap_time is None:
+        start_ts = _float_or(lap_meta.get("lap_start_ts"))
+        end_ts = _float_or(lap_meta.get("lap_end_ts"))
+        if start_ts is not None and end_ts is not None and end_ts > start_ts:
+            lap_time = end_ts - start_ts
     valid = not (
         lap_meta.get("incomplete", False)
         or lap_meta.get("lap_incomplete", False)
@@ -224,14 +230,17 @@ def _load_resampled_geometry(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (lap_dist_pct, track_xy) from lap_resampled.parquet.
 
-    track_xy is (N, 2) normalised to [0, 1] via VelocityX/Y integration.
-    Falls back to zeros if channels are absent.
+    track_xy is (N, 2) normalised to [0, 1].  XY reconstruction priority:
+      1. Direct X/Y world-frame columns.
+      2. Dead-reckoning via Speed × cos/sin(Yaw) × dt.
+         (iRacing VelocityX is forward velocity in vehicle frame.)
+      3. Raw VelocityX/VelocityY integration as last resort.
     """
     if not parquet_path.exists():
         return np.empty(0, dtype=np.float64), np.empty((0, 2), dtype=np.float64)
 
     try:
-        wanted = ["LapDistPct", "SessionTime", "VelocityX", "VelocityY", "X", "Y"]
+        wanted = ["LapDistPct", "SessionTime", "Speed", "Yaw", "VelocityX", "VelocityY", "X", "Y"]
         schema_names = pq.ParquetFile(str(parquet_path)).schema_arrow.names
         present = [c for c in wanted if c in schema_names]
         table = pq.read_table(str(parquet_path), columns=present)
@@ -249,26 +258,45 @@ def _load_resampled_geometry(
 
 
 def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
-    """Reconstruct normalised (N, 2) XY from velocity integration or XY columns."""
-    # Prefer direct XY if available
+    """Reconstruct normalised (N, 2) XY.
+
+    Priority:
+      1. Direct X/Y world-frame columns.
+      2. Dead-reckoning: Speed × cos/sin(Yaw) × dt.
+         (iRacing VelocityX is the car's forward velocity in vehicle frame,
+         not a world-frame East component.)
+      3. Raw VelocityX/VelocityY integration as last resort.
+    """
+    # Build dt from SessionTime
+    st = _get_float_array(data, "SessionTime", n)
+    if st is not None and st.size >= 2:
+        dt = np.diff(st, prepend=st[0])
+        dt = np.where(np.isfinite(dt) & (dt > 0), dt, np.nanmedian(np.diff(st)))
+    else:
+        dt = np.full(n, 0.01, dtype=np.float64)
+
+    # 1 – Prefer direct XY
     x_raw = _get_float_array(data, "X", n)
     y_raw = _get_float_array(data, "Y", n)
     if x_raw is not None and y_raw is not None:
         return _normalise_xy(x_raw, y_raw)
 
-    # Integrate VelocityX/Y with dt from SessionTime
+    # 2 – Dead-reckoning: Speed × cos/sin(Yaw)
+    sp = _get_float_array(data, "Speed", n)
+    yaw = _get_float_array(data, "Yaw", n)
+    if sp is not None and yaw is not None:
+        sp_safe = np.where(np.isfinite(sp), sp, 0.0)
+        yaw_safe = np.where(np.isfinite(yaw), yaw, 0.0)
+        x = np.cumsum(sp_safe * np.cos(yaw_safe) * dt)
+        y = np.cumsum(sp_safe * np.sin(yaw_safe) * dt)
+        if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
+            return _normalise_xy(x, y)
+
+    # 3 – Fallback: raw VelocityX/VelocityY
     vx = _get_float_array(data, "VelocityX", n)
     vy = _get_float_array(data, "VelocityY", n)
-    st = _get_float_array(data, "SessionTime", n)
     if vx is None or vy is None:
         return np.zeros((n, 2), dtype=np.float64)
-
-    if st is not None and st.size >= 2:
-        dt = np.diff(st, prepend=st[0])
-        dt = np.where(np.isfinite(dt) & (dt > 0), dt, np.nanmedian(np.diff(st)))
-    else:
-        dt = np.full(n, 0.01, dtype=np.float64)  # assume 100 Hz
-
     x = np.cumsum(vx * dt)
     y = np.cumsum(vy * dt)
     return _normalise_xy(x, y)
