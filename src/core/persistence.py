@@ -683,3 +683,28 @@ def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
         pass
 
     return merged
+
+
+# Pfad für window_state.json (analog zu den bestehenden JSON-Dateien)
+window_state_file = config_dir / "window_state.json"
+
+
+def load_window_state() -> dict:
+    """Lädt gespeicherten Fensterstate (x, y, width, height)."""
+    try:
+        if window_state_file.exists():
+            data = json.loads(window_state_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_window_state(state: dict) -> None:
+    """Speichert Fensterstate (x, y, width, height)."""
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        window_state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception:
+        pass

@@ -5617,6 +5617,68 @@ def main() -> None:
             return f"{APP_NAME} - {label}"
         return APP_NAME
 
+    def _restore_window_geometry() -> None:
+        """
+        Stellt gespeicherte Fenstergrösse und -position wieder her.
+        Clamp-Logik stellt sicher, dass das Fenster vollständig auf einem
+        sichtbaren Bildschirm liegt. Unterstützt Multi-Monitor via Tkinter.
+        """
+        try:
+            state = persistence.load_window_state()
+            if not state:
+                return
+
+            w = int(state.get("width", 0))
+            h = int(state.get("height", 0))
+            x = int(state.get("x", 0))
+            y = int(state.get("y", 0))
+
+            if w < 200 or h < 150:
+                return  # Ungültige gespeicherte Werte – ignorieren
+
+            screen_x_min = 0
+            screen_y_min = 0
+            screen_x_max = root.winfo_screenwidth()
+            screen_y_max = root.winfo_screenheight()
+
+            try:
+                import ctypes
+                SM_XVIRTUALSCREEN  = 76
+                SM_YVIRTUALSCREEN  = 77
+                SM_CXVIRTUALSCREEN = 78
+                SM_CYVIRTUALSCREEN = 79
+                user32 = ctypes.windll.user32
+                screen_x_min = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+                screen_y_min = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+                screen_x_max = screen_x_min + user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+                screen_y_max = screen_y_min + user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+            except Exception:
+                pass  # Fallback auf primären Monitor – bereits gesetzt
+
+            MIN_VISIBLE = 100
+
+            win_right  = x + w
+            win_bottom = y + h
+
+            x_ok = (win_right  > screen_x_min + MIN_VISIBLE) and (x < screen_x_max - MIN_VISIBLE)
+            y_ok = (win_bottom > screen_y_min + MIN_VISIBLE) and (y < screen_y_max - MIN_VISIBLE)
+
+            if not x_ok or not y_ok:
+                primary_w = root.winfo_screenwidth()
+                primary_h = root.winfo_screenheight()
+                x = max(0, (primary_w - w) // 2)
+                y = max(0, (primary_h - h) // 2)
+
+            virt_w = screen_x_max - screen_x_min
+            virt_h = screen_y_max - screen_y_min
+            w = min(w, max(320, virt_w))
+            h = min(h, max(240, virt_h))
+
+            root.geometry(f"{w}x{h}+{x}+{y}")
+
+        except Exception:
+            pass  # Im Fehlerfall: Standard-Geometrie von Tkinter verwenden
+
     root.title(_window_title_for_view())
     root.geometry("1200x800")
     root.resizable(True, True)
@@ -5763,6 +5825,29 @@ def main() -> None:
         padx = (8, 0) if index > 0 else 0
         btn.grid(row=0, column=index, sticky="w", padx=padx)
         buttons[label] = btn
+
+    _restore_window_geometry()
+
+    def _on_app_close() -> None:
+        """Speichert Fenstergeometrie beim Schliessen."""
+        try:
+            import re as _re
+            state = root.state()
+            if state not in ("iconic", "withdrawn"):
+                geo = root.geometry()  # Format: "WxH+X+Y"
+                m = _re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geo)
+                if m:
+                    persistence.save_window_state({
+                        "width": int(m.group(1)),
+                        "height": int(m.group(2)),
+                        "x": int(m.group(3)),
+                        "y": int(m.group(4)),
+                    })
+        except Exception:
+            pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_app_close)
 
     show_view(DEFAULT_VIEW_LABEL)
     try:
