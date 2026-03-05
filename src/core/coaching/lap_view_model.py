@@ -7,7 +7,7 @@ Artefakt-Pfade (flat Sprint-1 Struktur):
     <session_dir>/laps/lap_XXXX/analysis/lap_resampled.parquet
     <session_dir>/laps/lap_XXXX/analysis/lap_events.json
     <session_dir>/laps/lap_XXXX/analysis/corner_features.parquet
-    <session_dir>/corner_maps/<track_key>/corner_map_v1.json
+    <coaching_root>/corner_maps/<track_key>/corner_map_v1.json
     <session_dir>/session_meta.json
     <session_dir>/run_XXXX_lap_YYYY_meta.json
 """
@@ -335,9 +335,15 @@ def _load_corners(session_dir: Path) -> list[CornerInfo]:
         or _str_or(session_meta.get("TrackConfig"))
         or "unknown_config"
     )
-    track_key = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
+    car_class = _str_or(session_meta.get("CarClassShortName")) or "unknown_class"
+    track_key = (
+        f"{sanitize_name(track_name)}"
+        f"__{sanitize_name(config_name)}"
+        f"__{sanitize_name(car_class)}"
+    )
 
-    corner_map = load_corner_map(storage_root=session_dir, track_key=track_key)
+    coaching_root = session_dir.parent
+    corner_map = load_corner_map(storage_root=coaching_root, track_key=track_key)
     if corner_map is None:
         return []
 
