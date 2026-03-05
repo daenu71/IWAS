@@ -236,6 +236,8 @@ def render_corner_zoom(
     height: int,
     road_geometry=None,                  # TrackRoadGeometry | None (future)
     lap_dist_pct: Optional[np.ndarray] = None,
+    lo: Optional[float] = None,
+    hi: Optional[float] = None,
 ) -> None:
     """Render a zoomed view of *corner* onto *canvas*.
 
@@ -257,13 +259,26 @@ def render_corner_zoom(
     lap_dist_pct:
         (N,) array paired with *xy*.  Required for accurate event
         projection; falls back to proportional mapping when ``None``.
+    lo, hi:
+        Padded LapDistPct bounds for segment slicing.  When provided the
+        canvas segment spans ``[lo, hi]`` instead of the bare corner
+        bounds; events outside ``[lo, hi]`` are skipped.  Falls back to
+        ``corner.start_lapdist_pct`` / ``end_lapdist_pct`` when ``None``.
     """
     canvas.delete("all")
     if xy is None or len(xy) < 2:
         return
 
+    # Resolve effective bounds
+    lo_eff = lo if lo is not None else corner.start_lapdist_pct
+    hi_eff = hi if hi is not None else corner.end_lapdist_pct
+
     n = len(xy)
-    indices = _corner_indices(corner, lap_dist_pct, n)
+    if lap_dist_pct is not None and len(lap_dist_pct) == n:
+        mask = (lap_dist_pct >= lo_eff) & (lap_dist_pct <= hi_eff)
+        indices = np.where(mask)[0]
+    else:
+        indices = _corner_indices(corner, lap_dist_pct, n)
     if len(indices) < 2:
         indices = np.arange(n)
 
@@ -325,9 +340,13 @@ def render_corner_zoom(
             continue
         symbol, color = style
 
+        # Skip events outside the padded window
+        if not (lo_eff <= ev.lapdist_pct <= hi_eff):
+            continue
+
         try:
             ex, ey = _zoom_project_event(
-                ev.lapdist_pct, seg_ldp, seg_canvas, corner,
+                ev.lapdist_pct, seg_ldp, seg_canvas,
             )
         except Exception:
             continue
@@ -363,15 +382,20 @@ def _zoom_project_event(
     lapdist_pct: float,
     seg_ldp: Optional[np.ndarray],
     seg_canvas: np.ndarray,
-    corner,
 ) -> tuple:
-    """Return (canvas_x, canvas_y) for an event at *lapdist_pct*."""
+    """Return (canvas_x, canvas_y) for an event at *lapdist_pct*.
+
+    Uses nearest-neighbour lookup on *seg_ldp* when available; falls back to
+    proportional mapping over the segment's own LapDistPct span.
+    """
     n_seg = len(seg_canvas)
     if seg_ldp is not None and len(seg_ldp) == n_seg:
         seg_local = int(np.argmin(np.abs(seg_ldp - lapdist_pct)))
     else:
-        span = corner.end_lapdist_pct - corner.start_lapdist_pct
-        pct = (lapdist_pct - corner.start_lapdist_pct) / max(span, 1e-6)
+        # Proportional fallback within the segment's own span
+        span = float(seg_ldp[-1] - seg_ldp[0]) if seg_ldp is not None and len(seg_ldp) >= 2 else 1.0
+        lo_seg = float(seg_ldp[0]) if seg_ldp is not None and len(seg_ldp) >= 1 else 0.0
+        pct = (lapdist_pct - lo_seg) / max(span, 1e-6)
         seg_local = int(np.clip(pct * n_seg, 0, n_seg - 1))
     return float(seg_canvas[seg_local, 0]), float(seg_canvas[seg_local, 1])
 

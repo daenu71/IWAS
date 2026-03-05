@@ -401,6 +401,8 @@ class CoachingDetailView(ttk.Frame):
             width=w,
             height=h,
             lap_dist_pct=self._vm.lap_dist_pct,
+            lo=lo,
+            hi=hi,
         )
 
     def _on_zoom_canvas_resize(self, _event=None) -> None:

@@ -566,12 +566,12 @@ def apply_corner_padding(
     The original ``start/end_lapdist_pct`` fields are never modified so that
     geometry rendering and feature extraction remain unaffected.
 
-    When *track_length_m* is ``None`` or zero the padding falls back to 0
-    (padded fields equal the original bounds).
+    When *track_length_m* is ``None`` or zero the padding falls back to
+    fractional defaults (entry=0.015, exit=0.008), matching ``event_engine``.
     """
     if not track_length_m or track_length_m <= 0:
-        entry_pct = 0.0
-        exit_pct = 0.0
+        entry_pct = 0.015
+        exit_pct = 0.008
     else:
         entry_pct = entry_m / track_length_m
         exit_pct = exit_m / track_length_m
