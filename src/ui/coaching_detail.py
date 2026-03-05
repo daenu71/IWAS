@@ -128,7 +128,6 @@ class CoachingDetailView(ttk.Frame):
     def _build_maps(self) -> ttk.Frame:
         frame = ttk.Frame(self)
         frame.columnconfigure(0, weight=1)
-        frame.columnconfigure(1, weight=1)
         frame.rowconfigure(0, weight=1)
 
         # TrackMap Canvas
@@ -157,16 +156,6 @@ class CoachingDetailView(ttk.Frame):
         )
         self._zoom_canvas.pack(fill="both", expand=True)
         self._zoom_canvas.bind("<Configure>", self._on_zoom_canvas_resize)
-
-        # Corner-Zoom Canvas (right panel – data area for future Sprints)
-        cornerzoom_lf = ttk.LabelFrame(frame, text="Corner Zoom")
-        cornerzoom_lf.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-        cornerzoom_lf.columnconfigure(0, weight=1)
-        cornerzoom_lf.rowconfigure(0, weight=1)
-
-        self._cornerzoom_canvas = tk.Canvas(cornerzoom_lf, bg="#1e1e1e", highlightthickness=0)
-        self._cornerzoom_canvas.grid(row=0, column=0, sticky="nsew")
-        self._cornerzoom_canvas.bind("<Configure>", self._on_cornerzoom_resize)
 
         return frame
 
@@ -305,20 +294,8 @@ class CoachingDetailView(ttk.Frame):
         self._rerender_corner_zoom()
 
     def _clear_corner_zoom(self) -> None:
-        """Hide overlay and reset the right-panel placeholder canvas."""
+        """Hide overlay."""
         self._hide_corner_zoom_overlay()
-        self._cornerzoom_canvas.delete("all")
-        self._cornerzoom_canvas.create_text(
-            4, 4,
-            anchor="nw",
-            text="Select a corner on the Track Map",
-            fill="#555555",
-            font=("", 9),
-        )
-
-    def _on_cornerzoom_resize(self, _event=None) -> None:
-        if self._selected_corner_id is None:
-            self._clear_corner_zoom()
 
     # ------------------------------------------------------------------
     # Scorecard helpers
