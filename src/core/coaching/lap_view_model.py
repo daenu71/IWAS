@@ -14,11 +14,14 @@ Artefakt-Pfade (flat Sprint-1 Struktur):
 
 from __future__ import annotations
 
+import configparser
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dataclass_replace
 from pathlib import Path
 from typing import Any
+
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -45,12 +48,20 @@ class LapMeta:
 
 @dataclass
 class CornerInfo:
-    """Minimal corner descriptor from corner_map_v1.json."""
+    """Minimal corner descriptor from corner_map_v1.json.
+
+    ``padded_start_lapdist_pct`` / ``padded_end_lapdist_pct`` are set at
+    load time by :func:`apply_corner_padding`.  They extend the original
+    corner bounds for event-grouping purposes; the original bounds are kept
+    for geometry / visual rendering.
+    """
 
     corner_id: int
     start_lapdist_pct: float
     end_lapdist_pct: float
     corner_type: str
+    padded_start_lapdist_pct: float | None = field(default=None)
+    padded_end_lapdist_pct: float | None = field(default=None)
 
 
 @dataclass
@@ -112,10 +123,10 @@ class LapViewModel:
         vm._resampled_path = analysis_dir / "lap_resampled.parquet"
         vm.meta = _load_meta(session_dir, run_id, lap_no)
         vm.lap_dist_pct, vm.track_xy = _load_resampled_geometry(vm._resampled_path)
-        vm.corners = _load_corners(session_dir)
+        vm.track_length_m = _load_track_length_m(session_dir)
+        vm.corners = _load_corners(session_dir, vm.track_length_m)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
         vm.features = _load_features(analysis_dir / "corner_features.parquet")
-        vm.track_length_m = _load_track_length_m(session_dir)
 
         vm._loaded = True
         return vm
@@ -332,8 +343,8 @@ def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _load_corners(session_dir: Path) -> list[CornerInfo]:
-    """Load corners from corner_map_v1.json."""
+def _load_corners(session_dir: Path, track_length_m: float | None) -> list[CornerInfo]:
+    """Load corners from corner_map_v1.json and apply runtime padding."""
     session_meta = _read_json(session_dir / "session_meta.json")
     parts = session_dir.name.split("__")
 
@@ -373,7 +384,9 @@ def _load_corners(session_dir: Path) -> list[CornerInfo]:
             )
         except (KeyError, TypeError, ValueError):
             continue
-    return corners
+
+    entry_m, exit_m = _read_corner_map_padding_m()
+    return apply_corner_padding(corners, entry_m, exit_m, track_length_m)
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +446,24 @@ def _parse_event(event_type: str, data: dict[str, Any]) -> Event | None:
 
 
 def _find_corner_id(lapdist_pct: float, corners: list[CornerInfo]) -> int:
-    """Return the corner_id whose range contains lapdist_pct, else 0."""
+    """Return the corner_id whose range contains lapdist_pct, else 0.
+
+    Uses ``padded_start/end_lapdist_pct`` when available so that events
+    near the corner boundary (e.g. brake_start before entry) are grouped
+    under the correct corner rather than the lap-global bucket (id 0).
+    """
     for corner in corners:
-        if corner.start_lapdist_pct <= lapdist_pct <= corner.end_lapdist_pct:
+        lo = (
+            corner.padded_start_lapdist_pct
+            if corner.padded_start_lapdist_pct is not None
+            else corner.start_lapdist_pct
+        )
+        hi = (
+            corner.padded_end_lapdist_pct
+            if corner.padded_end_lapdist_pct is not None
+            else corner.end_lapdist_pct
+        )
+        if lo <= lapdist_pct <= hi:
             return corner.corner_id
     return 0
 
@@ -466,6 +494,59 @@ def _load_features(features_path: Path) -> dict[int, dict[str, Any]]:
         result[cid] = row
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Internals – corner padding
+# ---------------------------------------------------------------------------
+
+
+def _read_corner_map_padding_m() -> tuple[float, float]:
+    """Return (entry_padding_m, exit_padding_m) from config/defaults.ini."""
+    cp = configparser.ConfigParser()
+    cp.read(_PROJECT_ROOT / "config" / "defaults.ini", encoding="utf-8-sig")
+    try:
+        entry = float(cp.get("coaching_analysis", "corner_map_entry_padding_m", fallback="80"))
+        entry = max(0.0, min(10000.0, entry))
+    except Exception:
+        entry = 80.0
+    try:
+        exit_ = float(cp.get("coaching_analysis", "corner_map_exit_padding_m", fallback="40"))
+        exit_ = max(0.0, min(10000.0, exit_))
+    except Exception:
+        exit_ = 40.0
+    return entry, exit_
+
+
+def apply_corner_padding(
+    corners: list[CornerInfo],
+    entry_m: float,
+    exit_m: float,
+    track_length_m: float | None,
+) -> list[CornerInfo]:
+    """Return *corners* with ``padded_start/end_lapdist_pct`` populated.
+
+    The original ``start/end_lapdist_pct`` fields are never modified so that
+    geometry rendering and feature extraction remain unaffected.
+
+    When *track_length_m* is ``None`` or zero the padding falls back to 0
+    (padded fields equal the original bounds).
+    """
+    if not track_length_m or track_length_m <= 0:
+        entry_pct = 0.0
+        exit_pct = 0.0
+    else:
+        entry_pct = entry_m / track_length_m
+        exit_pct = exit_m / track_length_m
+
+    return [
+        _dataclass_replace(
+            c,
+            padded_start_lapdist_pct=max(0.0, c.start_lapdist_pct - entry_pct),
+            padded_end_lapdist_pct=min(1.0, c.end_lapdist_pct + exit_pct),
+        )
+        for c in corners
+    ]
 
 
 # ---------------------------------------------------------------------------

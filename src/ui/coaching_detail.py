@@ -360,21 +360,28 @@ class CoachingDetailView(ttk.Frame):
             self._zoom_canvas.after(50, self._rerender_corner_zoom)
             return
 
-        # Compute lapdist_pct padding from INI metres + TrackLength
-        padding_m = _read_corner_event_padding_m()
-        track_len = self._vm.track_length_m
-        if track_len and track_len > 0:
-            padding_pct = padding_m / track_len
+        # Prefer padded_start/end_lapdist_pct set by apply_corner_padding().
+        # Fall back to corner_event_padding_m when padded fields are absent.
+        if (
+            corner.padded_start_lapdist_pct is not None
+            and corner.padded_end_lapdist_pct is not None
+        ):
+            lo = corner.padded_start_lapdist_pct
+            hi = corner.padded_end_lapdist_pct
         else:
-            padding_pct = 0.01  # fallback when TrackLength is absent
-
-        lo = corner.start_lapdist_pct - padding_pct
-        hi = corner.end_lapdist_pct + padding_pct
+            padding_m = _read_corner_event_padding_m()
+            track_len = self._vm.track_length_m
+            if track_len and track_len > 0:
+                padding_pct = padding_m / track_len
+            else:
+                padding_pct = 0.01
+            lo = corner.start_lapdist_pct - padding_pct
+            hi = corner.end_lapdist_pct + padding_pct
 
         print(
             f"[CORNER-ZOOM-DEBUG] corner_id={corner.corner_id}"
             f" start={corner.start_lapdist_pct:.4f} end={corner.end_lapdist_pct:.4f}"
-            f" padding_pct={padding_pct:.4f} lo={lo:.4f} hi={hi:.4f}"
+            f" lo={lo:.4f} hi={hi:.4f}"
         )
 
         events: list = []
