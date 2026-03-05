@@ -57,6 +57,7 @@ from core.output_geometry import (
 from ui.preview.layout_preview import LayoutPreviewController, OutputFormat as LayoutPreviewOutputFormat
 from ui.preview.png_preview import PngPreviewController
 from ui.coaching_browser import COACHING_BROWSER_CONTENT_WIDTH_PX, CoachingBrowser
+from ui.coaching_detail import CoachingDetailView
 from ui.controller import Controller, UIContext
 
 if TYPE_CHECKING:
@@ -1768,14 +1769,8 @@ class CoachingView(ttk.Frame):
         self._browser_panel.columnconfigure(0, weight=1)
         self._browser_panel.rowconfigure(1, weight=1)
 
-        self._browser_spacer = tk.Frame(layout, bd=0, highlightthickness=0)
-        self._browser_spacer.grid(row=0, column=1, sticky="nsew")
-        _apply_theme_to_tk_widget(
-            self._browser_spacer,
-            bg=CURRENT_THEME.colors.background,
-            background=CURRENT_THEME.colors.background,
-            highlightbackground=CURRENT_THEME.colors.background,
-        )
+        self._detail_view = CoachingDetailView(layout)
+        self._detail_view.grid(row=0, column=1, sticky="nsew")
 
         conn_bar = ttk.Frame(self._browser_panel)
         conn_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
@@ -1916,6 +1911,8 @@ class CoachingView(ttk.Frame):
         self._refresh_coaching_index()
 
     def _handle_analyze_lap(self, node: CoachingTreeNode) -> None:
+        from core.coaching.lap_view_model import LapViewModel
+
         session_path = node.session_path
         run_id = node.run_id
         lap_no_raw = node.meta.get("lap_no") if isinstance(node.meta, dict) else None
@@ -1929,6 +1926,11 @@ class CoachingView(ttk.Frame):
             return
         if ok:
             self._browser_widget.set_message(f"Analyzed: Run {int(run_id):04d} Lap {int(lap_no_raw):04d}")
+            try:
+                vm = LapViewModel.load(Path(session_path), int(run_id), int(lap_no_raw))
+                self._detail_view.load_lap(vm)
+            except Exception as exc:
+                _LOG.warning("CoachingDetailView load_lap failed: %s", exc)
         else:
             self._browser_widget.set_message(f"Analyze error: Run {int(run_id):04d} Lap {int(lap_no_raw):04d}")
         self._browser_widget._schedule_overlay_refresh(50)
