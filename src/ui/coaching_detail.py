@@ -25,12 +25,27 @@ Interface::
 
 from __future__ import annotations
 
+import configparser
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 from typing import Optional
 
 from core.coaching.lap_view_model import LapViewModel
 from core.coaching.track_geometry import render_corner_zoom, render_trackmap
+
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
+def _read_corner_event_padding_m() -> float:
+    """Read corner_event_padding_m from config/defaults.ini (default 50 m)."""
+    cp = configparser.ConfigParser()
+    cp.read(_PROJECT_ROOT / "config" / "defaults.ini", encoding="utf-8-sig")
+    try:
+        val = float(cp.get("coaching_analysis", "corner_event_padding_m", fallback="50"))
+        return max(0.0, min(10000.0, val))
+    except Exception:
+        return 50.0
 
 
 class CoachingDetailView(ttk.Frame):
@@ -344,14 +359,37 @@ class CoachingDetailView(ttk.Frame):
         if w < 2 or h < 2:
             self._zoom_canvas.after(50, self._rerender_corner_zoom)
             return
-        CORNER_EVENT_MARGIN = 0.04
-        lo = corner.start_lapdist_pct - CORNER_EVENT_MARGIN
-        hi = corner.end_lapdist_pct + CORNER_EVENT_MARGIN
+
+        # Compute lapdist_pct padding from INI metres + TrackLength
+        padding_m = _read_corner_event_padding_m()
+        track_len = self._vm.track_length_m
+        if track_len and track_len > 0:
+            padding_pct = padding_m / track_len
+        else:
+            padding_pct = 0.01  # fallback when TrackLength is absent
+
+        lo = corner.start_lapdist_pct - padding_pct
+        hi = corner.end_lapdist_pct + padding_pct
+
+        print(
+            f"[CORNER-ZOOM-DEBUG] corner_id={corner.corner_id}"
+            f" start={corner.start_lapdist_pct:.4f} end={corner.end_lapdist_pct:.4f}"
+            f" padding_pct={padding_pct:.4f} lo={lo:.4f} hi={hi:.4f}"
+        )
+
         events: list = []
+        total_evs = sum(len(g) for g in self._vm.events.values())
+        print(f"[CORNER-ZOOM-DEBUG] total events in vm: {total_evs}")
         for group in self._vm.events.values():
             for ev in group:
-                if lo <= ev.lapdist_pct <= hi:
+                in_range = lo <= ev.lapdist_pct <= hi
+                print(
+                    f"[CORNER-ZOOM-DEBUG] event {ev.event_type}"
+                    f" lapdist={ev.lapdist_pct:.4f} IN_RANGE={in_range}"
+                )
+                if in_range:
                     events.append(ev)
+
         render_corner_zoom(
             canvas=self._zoom_canvas,
             xy=self._vm.track_xy,

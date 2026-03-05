@@ -84,6 +84,7 @@ class LapViewModel:
         self.corners: list[CornerInfo] = []
         self.events: dict[int, list[Event]] = {}
         self.features: dict[int, dict[str, Any]] = {}
+        self.track_length_m: float | None = None
         self._resampled_path: Path | None = None
         self._loaded: bool = False
 
@@ -114,6 +115,7 @@ class LapViewModel:
         vm.corners = _load_corners(session_dir)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
         vm.features = _load_features(analysis_dir / "corner_features.parquet")
+        vm.track_length_m = _load_track_length_m(session_dir)
 
         vm._loaded = True
         return vm
@@ -464,6 +466,29 @@ def _load_features(features_path: Path) -> dict[int, dict[str, Any]]:
         result[cid] = row
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Internals – track length
+# ---------------------------------------------------------------------------
+
+
+def _load_track_length_m(session_dir: Path) -> float | None:
+    """Return track length in metres from session_meta.json, or None.
+
+    iRacing stores TrackLength as a plain km value (e.g. 5.845) or as a
+    string with unit (e.g. "5.845 km").  Both formats are accepted.
+    Returns None when the key is absent or cannot be parsed.
+    """
+    session_meta = _read_json(session_dir / "session_meta.json")
+    raw = session_meta.get("TrackLength")
+    if raw is None:
+        return None
+    try:
+        val = float(str(raw).split()[0])
+        return val * 1000.0 if val > 0 else None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
