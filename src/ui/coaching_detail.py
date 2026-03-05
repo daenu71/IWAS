@@ -63,6 +63,10 @@ class CoachingDetailView(ttk.Frame):
         self._map_offset: tuple = (0.0, 0.0)
         self._map_drag_start: Optional[tuple] = None
         self._map_drag_offset_start: tuple = (0.0, 0.0)
+        self._corner_zoom: float = 1.0
+        self._corner_offset: tuple = (0.0, 0.0)
+        self._corner_drag_start: Optional[tuple] = None
+        self._corner_drag_offset_start: tuple = (0.0, 0.0)
         self._build_layout()
 
     # ------------------------------------------------------------------
@@ -182,6 +186,13 @@ class CoachingDetailView(ttk.Frame):
         )
         self._zoom_canvas.pack(fill="both", expand=True)
         self._zoom_canvas.bind("<Configure>", self._on_zoom_canvas_resize)
+        self._zoom_canvas.bind("<MouseWheel>", self._on_corner_wheel)
+        self._zoom_canvas.bind("<Button-4>", self._on_corner_wheel)
+        self._zoom_canvas.bind("<Button-5>", self._on_corner_wheel)
+        self._zoom_canvas.bind("<ButtonPress-1>", self._on_corner_drag_start)
+        self._zoom_canvas.bind("<B1-Motion>", self._on_corner_drag_move)
+        self._zoom_canvas.bind("<ButtonRelease-1>", self._on_corner_drag_end)
+        self._zoom_canvas.bind("<Double-Button-1>", self._on_corner_reset)
 
         return frame
 
@@ -327,6 +338,69 @@ class CoachingDetailView(ttk.Frame):
         self._redraw_trackmap()
 
     # ------------------------------------------------------------------
+    # Corner-Zoom interaction handlers
+    # ------------------------------------------------------------------
+
+    def _on_corner_wheel(self, event) -> None:
+        if event.num == 4:
+            delta = 1
+        elif event.num == 5:
+            delta = -1
+        else:
+            delta = event.delta / 120
+
+        old_zoom = self._corner_zoom
+        new_zoom = max(0.5, min(10.0, old_zoom * (1.1 ** delta)))
+        if new_zoom == old_zoom:
+            return
+
+        canvas = self._zoom_canvas
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        pad = 20
+        B_w = w - 2 * pad
+        B_h = h - 2 * pad
+
+        origin_x = pad + self._corner_offset[0] * w + B_w * (1 - old_zoom) / 2
+        origin_y = pad + self._corner_offset[1] * h + B_h * (1 - old_zoom) / 2
+
+        new_origin_x = event.x - (event.x - origin_x) * (new_zoom / old_zoom)
+        new_origin_y = event.y - (event.y - origin_y) * (new_zoom / old_zoom)
+
+        new_offset_x = (new_origin_x - pad - B_w * (1 - new_zoom) / 2) / w
+        new_offset_y = (new_origin_y - pad - B_h * (1 - new_zoom) / 2) / h
+
+        self._corner_zoom = new_zoom
+        self._corner_offset = (new_offset_x, new_offset_y)
+        self._redraw_corner_zoom()
+
+    def _on_corner_drag_start(self, event) -> None:
+        self._corner_drag_start = (event.x, event.y)
+        self._corner_drag_offset_start = self._corner_offset
+
+    def _on_corner_drag_move(self, event) -> None:
+        if self._corner_drag_start is None:
+            return
+        canvas = self._zoom_canvas
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        dx = event.x - self._corner_drag_start[0]
+        dy = event.y - self._corner_drag_start[1]
+        self._corner_offset = (
+            self._corner_drag_offset_start[0] + dx / w,
+            self._corner_drag_offset_start[1] + dy / h,
+        )
+        self._redraw_corner_zoom()
+
+    def _on_corner_drag_end(self, event) -> None:
+        self._corner_drag_start = None
+
+    def _on_corner_reset(self, event) -> None:
+        self._corner_zoom = 1.0
+        self._corner_offset = (0.0, 0.0)
+        self._redraw_corner_zoom()
+
+    # ------------------------------------------------------------------
     # Corner-Zoom overlay helpers
     # ------------------------------------------------------------------
 
@@ -335,14 +409,14 @@ class CoachingDetailView(ttk.Frame):
         self._zoom_overlay.place(relx=0, rely=0, relwidth=1.0, relheight=1.0)
         self._zoom_overlay.lift()
         self._zoom_overlay_visible = True
-        self._rerender_corner_zoom()
+        self._redraw_corner_zoom()
 
     def _hide_corner_zoom_overlay(self) -> None:
         """Remove the overlay, restoring the TrackMap."""
         self._zoom_overlay.place_forget()
         self._zoom_overlay_visible = False
 
-    def _rerender_corner_zoom(self) -> None:
+    def _redraw_corner_zoom(self) -> None:
         """Re-render the corner zoom canvas (called on show or resize)."""
         if not self._zoom_overlay_visible:
             return
@@ -357,7 +431,7 @@ class CoachingDetailView(ttk.Frame):
         w = self._zoom_canvas.winfo_width()
         h = self._zoom_canvas.winfo_height()
         if w < 2 or h < 2:
-            self._zoom_canvas.after(50, self._rerender_corner_zoom)
+            self._zoom_canvas.after(50, self._redraw_corner_zoom)
             return
 
         # Prefer padded_start/end_lapdist_pct set by apply_corner_padding().
@@ -403,10 +477,12 @@ class CoachingDetailView(ttk.Frame):
             lap_dist_pct=self._vm.lap_dist_pct,
             lo=lo,
             hi=hi,
+            zoom=self._corner_zoom,
+            offset=self._corner_offset,
         )
 
     def _on_zoom_canvas_resize(self, _event=None) -> None:
-        self._rerender_corner_zoom()
+        self._redraw_corner_zoom()
 
     def _clear_corner_zoom(self) -> None:
         """Hide overlay."""

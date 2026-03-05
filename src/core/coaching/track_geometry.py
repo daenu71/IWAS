@@ -238,6 +238,8 @@ def render_corner_zoom(
     lap_dist_pct: Optional[np.ndarray] = None,
     lo: Optional[float] = None,
     hi: Optional[float] = None,
+    zoom: float = 1.0,
+    offset: tuple = (0.0, 0.0),
 ) -> None:
     """Render a zoomed view of *corner* onto *canvas*.
 
@@ -302,16 +304,8 @@ def render_corner_zoom(
         (seg_xy[:, 1] - y_min) / seg_scale,
     ])
 
-    # Canvas mapping with padding (Y flipped)
-    pad_x = width * _ZOOM_PADDING
-    pad_y = height * _ZOOM_PADDING
-    draw_w = width - 2.0 * pad_x
-    draw_h = height - 2.0 * pad_y
-
-    seg_canvas = np.column_stack([
-        seg_norm[:, 0] * draw_w + pad_x,
-        (1.0 - seg_norm[:, 1]) * draw_h + pad_y,
-    ])
+    # Canvas mapping with zoom/offset (Y flipped, shared transform with TrackMap)
+    seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset)
 
     # -- Road band (future: road_geometry support) --------------------------
     # road_geometry rendering intentionally omitted until type is defined.
