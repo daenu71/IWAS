@@ -52,6 +52,20 @@ _CREST_THRESHOLD: float = 8.5
 CORNER_MAP_FILENAME = "corner_map_v1.json"
 
 # ---------------------------------------------------------------------------
+# Physics-filter defaults (full-throttle corner rejection)
+# ---------------------------------------------------------------------------
+
+# Condition A – braking or lift-off
+_CORNER_MIN_BRAKE: float = 0.05
+_CORNER_MAX_THROTTLE_LIFT: float = 0.97
+
+# Condition B – speed delta (m/s)
+_CORNER_MIN_SPEED_DELTA_MS: float = 5.0
+
+# Condition C – mean absolute steering angle (degrees)
+_CORNER_MIN_STEERING_DEG: float = 15.0
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -65,6 +79,11 @@ def build_corner_map(
     smooth_window: int = _SMOOTH_WINDOW,
     min_corner_width: float = _MIN_CORNER_WIDTH,
     min_gap: float = _MIN_GAP,
+    corner_min_brake: float = _CORNER_MIN_BRAKE,
+    corner_max_throttle_lift: float = _CORNER_MAX_THROTTLE_LIFT,
+    corner_min_speed_delta_ms: float = _CORNER_MIN_SPEED_DELTA_MS,
+    corner_min_steering_deg: float = _CORNER_MIN_STEERING_DEG,
+    debug_mode: bool = False,
 ) -> dict[str, Any]:
     """Build the corner map from a resampled lap parquet and save to disk.
 
@@ -125,6 +144,20 @@ def build_corner_map(
         threshold=curvature_threshold,
         min_width=min_corner_width,
         min_gap=min_gap,
+    )
+
+    # --- Physics filter: reject full-throttle arcs ---
+    segments = _filter_fullgas_segments(
+        segments,
+        brake_arr=_get_float_array(data, "Brake", n),
+        throttle_arr=_get_float_array(data, "Throttle", n),
+        speed_arr=_get_float_array(data, "Speed", n),
+        steering_arr=_get_float_array(data, "SteeringWheelAngle", n),
+        min_brake=corner_min_brake,
+        max_throttle_lift=corner_max_throttle_lift,
+        min_speed_delta=corner_min_speed_delta_ms,
+        min_steering_deg=corner_min_steering_deg,
+        debug_mode=debug_mode,
     )
 
     # --- VertAccel for crest/compression detection ---
@@ -312,6 +345,111 @@ def _merge_segments(
         else:
             merged.append((s, e))
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Full-throttle corner filter
+# ---------------------------------------------------------------------------
+
+
+def _filter_fullgas_segments(
+    segments: list[dict[str, Any]],
+    *,
+    brake_arr: np.ndarray | None,
+    throttle_arr: np.ndarray | None,
+    speed_arr: np.ndarray | None,
+    steering_arr: np.ndarray | None,
+    min_brake: float,
+    max_throttle_lift: float,
+    min_speed_delta: float,
+    min_steering_deg: float,
+    debug_mode: bool = False,
+) -> list[dict[str, Any]]:
+    """Reject corner candidates that show no meaningful braking, speed drop, or steering.
+
+    A candidate is kept if at least one *applicable* condition passes:
+    - A: max(Brake) > min_brake  OR  min(Throttle) < max_throttle_lift
+    - B: max(Speed) - min(Speed) > min_speed_delta
+    - C: mean(|SteeringWheelAngle|) > min_steering_deg
+
+    A condition is "applicable" only when the required channel(s) are present.
+    If no conditions are applicable, the candidate is kept (benefit of the doubt).
+    """
+    kept: list[dict[str, Any]] = []
+    for candidate_id, seg in enumerate(segments, start=1):
+        s = seg["start_idx"]
+        e = seg["end_idx"] + 1  # exclusive slice end
+
+        # --- Condition A ---
+        passes_a: bool | None = None
+        if brake_arr is not None or throttle_arr is not None:
+            a_result = False
+            if brake_arr is not None:
+                max_brake = float(np.nanmax(brake_arr[s:e]))
+                if max_brake > min_brake:
+                    a_result = True
+            if not a_result and throttle_arr is not None:
+                min_throttle = float(np.nanmin(throttle_arr[s:e]))
+                if min_throttle < max_throttle_lift:
+                    a_result = True
+            passes_a = a_result
+
+        # --- Condition B ---
+        passes_b: bool | None = None
+        if speed_arr is not None:
+            seg_speed = speed_arr[s:e]
+            finite_speed = seg_speed[np.isfinite(seg_speed)]
+            if len(finite_speed) > 0:
+                speed_delta = float(np.max(finite_speed)) - float(np.min(finite_speed))
+                passes_b = speed_delta > min_speed_delta
+
+        # --- Condition C ---
+        passes_c: bool | None = None
+        if steering_arr is not None:
+            seg_steer = np.abs(steering_arr[s:e])
+            finite_steer = seg_steer[np.isfinite(seg_steer)]
+            if len(finite_steer) > 0:
+                mean_steer = float(np.nanmean(finite_steer))
+                passes_c = mean_steer > min_steering_deg
+
+        if debug_mode:
+            curv_slice = seg["signed_curv_slice"]
+            peak_curv = float(np.nanmax(np.abs(curv_slice))) if len(curv_slice) else 0.0
+            min_spd = (
+                float(np.nanmin(speed_arr[s:e])) if speed_arr is not None else float("nan")
+            )
+            max_thr = (
+                float(np.nanmax(throttle_arr[s:e]))
+                if throttle_arr is not None
+                else float("nan")
+            )
+            max_brk = (
+                float(np.nanmax(brake_arr[s:e])) if brake_arr is not None else float("nan")
+            )
+            mean_stw = (
+                float(np.nanmean(np.abs(steering_arr[s:e])))
+                if steering_arr is not None
+                else float("nan")
+            )
+            print(
+                f"[corner_map DEBUG] candidate={candidate_id} "
+                f"start={seg['lap_dist_start']:.4f} end={seg['lap_dist_end']:.4f} "
+                f"curv_peak={peak_curv:.5f} min_speed={min_spd:.2f}m/s "
+                f"max_throttle={max_thr:.3f} max_brake={max_brk:.3f} "
+                f"mean_steering={mean_stw:.2f}deg "
+                f"A={passes_a} B={passes_b} C={passes_c}"
+            )
+
+        applicable = [p for p in (passes_a, passes_b, passes_c) if p is not None]
+        if not applicable or any(applicable):
+            kept.append(seg)
+        elif debug_mode:
+            print(
+                f"[corner_map DEBUG] candidate={candidate_id} REJECTED "
+                f"(all applicable conditions failed)"
+            )
+
+    return kept
 
 
 # ---------------------------------------------------------------------------

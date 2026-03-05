@@ -28,6 +28,9 @@ def _write_lap_parquet(
     yaw_rate: np.ndarray,
     speed: np.ndarray,
     vert_accel: np.ndarray | None = None,
+    brake: np.ndarray | None = None,
+    throttle: np.ndarray | None = None,
+    steering: np.ndarray | None = None,
     filename: str = "lap_resampled.parquet",
 ) -> Path:
     """Write a minimal resampled-lap parquet with YawRate and Speed columns."""
@@ -42,6 +45,16 @@ def _write_lap_parquet(
     if vert_accel is not None:
         cols["VertAccel"] = pa.array(
             vert_accel.astype(np.float32).tolist(), type=pa.float32()
+        )
+    if brake is not None:
+        cols["Brake"] = pa.array(brake.astype(np.float32).tolist(), type=pa.float32())
+    if throttle is not None:
+        cols["Throttle"] = pa.array(
+            throttle.astype(np.float32).tolist(), type=pa.float32()
+        )
+    if steering is not None:
+        cols["SteeringWheelAngle"] = pa.array(
+            steering.astype(np.float32).tolist(), type=pa.float32()
         )
 
     table = pa.table(cols)
@@ -99,7 +112,9 @@ def test_single_corner_radius_plausible(tmp_path: Path) -> None:
     curvature = kappa_peak * np.exp(-0.5 * ((lap_dist - center) / sigma) ** 2)
     yaw_rate = curvature * speed  # YawRate = κ × Speed
 
-    parquet = _write_lap_parquet(tmp_path, yaw_rate=yaw_rate, speed=speed)
+    # Physics: braking in corner region so the candidate passes the fullgas filter
+    brake = np.where((lap_dist >= 0.45) & (lap_dist <= 0.55), 0.3, 0.0)
+    parquet = _write_lap_parquet(tmp_path, yaw_rate=yaw_rate, speed=speed, brake=brake)
     corner_map = build_corner_map(
         parquet_path=parquet,
         storage_root=tmp_path,
@@ -159,12 +174,20 @@ def test_reproducibility(tmp_path: Path) -> None:
     curvature = curv_a + curv_b
     yaw_rate = curvature * speed
 
+    # Physics: braking in both corner regions so candidates pass the fullgas filter
+    brake = np.where(
+        ((lap_dist >= 0.20) & (lap_dist <= 0.30))
+        | ((lap_dist >= 0.65) & (lap_dist <= 0.75)),
+        0.3,
+        0.0,
+    )
+
     # Use two separate storage roots so versions start at 1 independently
     root_a = tmp_path / "run_a"
     root_b = tmp_path / "run_b"
 
-    parquet_a = _write_lap_parquet(root_a, yaw_rate=yaw_rate, speed=speed)
-    parquet_b = _write_lap_parquet(root_b, yaw_rate=yaw_rate, speed=speed)
+    parquet_a = _write_lap_parquet(root_a, yaw_rate=yaw_rate, speed=speed, brake=brake)
+    parquet_b = _write_lap_parquet(root_b, yaw_rate=yaw_rate, speed=speed, brake=brake)
 
     track_key = "TestTrack__TwoCorners"
     map_a = build_corner_map(
@@ -202,6 +225,42 @@ def test_reproducibility(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 5 – Full-throttle arc → 0 corners (physics filter)
+# ---------------------------------------------------------------------------
+
+
+def test_fullgas_arc_not_a_corner(tmp_path: Path) -> None:
+    """A geometrically curved segment with Brake=0 and no speed drop must NOT
+    be classified as a corner (Condition A fails, B fails, C not applicable)."""
+    lap_dist = np.linspace(0.0, 1.0 - 1.0 / _N, _N, dtype=np.float64)
+    speed = np.full(_N, 50.0, dtype=np.float64)  # constant – no deceleration
+
+    # Moderate curvature well above detection threshold (κ ≈ 1/150, r ≈ 150 m)
+    kappa_peak = 1.0 / 150.0
+    sigma = 0.04
+    center = 0.5
+    curvature = kappa_peak * np.exp(-0.5 * ((lap_dist - center) / sigma) ** 2)
+    yaw_rate = curvature * speed  # detected geometrically
+
+    # Brake present but zero throughout (full throttle): passes_a = False
+    # Speed constant: passes_b = False
+    # SteeringWheelAngle not provided: passes_c = None (not applicable)
+    # → All applicable conditions fail → candidate rejected
+    brake = np.zeros(_N, dtype=np.float64)
+    parquet = _write_lap_parquet(tmp_path, yaw_rate=yaw_rate, speed=speed, brake=brake)
+    corner_map = build_corner_map(
+        parquet_path=parquet,
+        storage_root=tmp_path,
+        track_key="TestTrack__FullgasArc",
+    )
+
+    assert corner_map["corners"] == [], (
+        f"Full-throttle arc must not be classified as a corner, "
+        f"got {len(corner_map['corners'])} corner(s): {corner_map['corners']}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 4 – Missing Z channel → crest/compression = None, no crash
 # ---------------------------------------------------------------------------
 
@@ -215,8 +274,11 @@ def test_no_crash_without_z_axis(tmp_path: Path) -> None:
     curvature = kappa * np.exp(-0.5 * ((lap_dist - 0.5) / 0.05) ** 2)
     yaw_rate = curvature * speed
 
+    # Physics: braking in corner region so the candidate passes the fullgas filter
+    brake = np.where((lap_dist >= 0.45) & (lap_dist <= 0.55), 0.3, 0.0)
+
     # No vert_accel column
-    parquet = _write_lap_parquet(tmp_path, yaw_rate=yaw_rate, speed=speed)
+    parquet = _write_lap_parquet(tmp_path, yaw_rate=yaw_rate, speed=speed, brake=brake)
     corner_map = build_corner_map(
         parquet_path=parquet,
         storage_root=tmp_path,
