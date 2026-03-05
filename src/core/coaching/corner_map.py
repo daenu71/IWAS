@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 import pyarrow.parquet as pq
+
+from .storage import sanitize_name
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -111,6 +114,10 @@ def build_corner_map(
     parquet_path = Path(parquet_path)
     storage_root = Path(storage_root)
 
+    if debug_mode:
+        print(f"[corner_map DEBUG] build_corner_map track_key={track_key!r}")
+        print(f"[corner_map DEBUG] baseline parquet: {parquet_path}")
+
     data = _read_parquet_as_dict(parquet_path)
     n = len(data.get("LapDistPct", []))
 
@@ -201,6 +208,253 @@ def load_corner_map(
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Cross-session baseline lap search
+# ---------------------------------------------------------------------------
+
+_RUN_DIR_RE = re.compile(r"run_(\d+)", re.IGNORECASE)
+_LAP_DIR_RE = re.compile(r"lap_(\d+)", re.IGNORECASE)
+
+
+def find_best_baseline_lap(
+    coaching_storage_dir: Path | str,
+    track_key: str,
+    debug_mode: bool = False,
+) -> Path | None:
+    """Find the fastest valid resampled lap across all sessions matching *track_key*.
+
+    Iterates over every session folder in *coaching_storage_dir*, reads
+    ``session_meta.json``, builds the track key using the same sanitize logic
+    as ``AnalysisCache._infer_track_key``, and collects all valid laps whose
+    key matches *track_key*.  Returns the path to the fastest lap's resampled
+    parquet, or ``None`` if no valid candidate is found.
+
+    Parameters
+    ----------
+    coaching_storage_dir:
+        Root directory that contains individual session sub-folders.
+    track_key:
+        ``TrackDisplayName__TrackConfigName__CarClassShortName`` identifier
+        (sanitized).
+    debug_mode:
+        When ``True``, print diagnostic lines prefixed with
+        ``[corner_map DEBUG]``.
+    """
+    coaching_storage_dir = Path(coaching_storage_dir)
+    if debug_mode:
+        print(
+            f"[corner_map DEBUG] find_best_baseline_lap "
+            f"coaching_root={coaching_storage_dir} target_key={track_key!r}"
+        )
+
+    if not coaching_storage_dir.exists():
+        print(
+            f"[corner_map WARNING] coaching_storage_dir not found: "
+            f"{coaching_storage_dir}"
+        )
+        return None
+
+    best_path: Path | None = None
+    best_duration: float = float("inf")
+
+    for session_dir in sorted(coaching_storage_dir.iterdir()):
+        if not session_dir.is_dir():
+            continue
+        meta_path = session_dir / "session_meta.json"
+        if not meta_path.exists():
+            if debug_mode:
+                print(
+                    f"[corner_map WARNING] No session_meta.json in "
+                    f"{session_dir.name}, skipping"
+                )
+            continue
+
+        try:
+            meta: dict[str, Any] = json.loads(
+                meta_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            if debug_mode:
+                print(
+                    f"[corner_map WARNING] Cannot read session_meta.json in "
+                    f"{session_dir.name}, skipping"
+                )
+            continue
+
+        session_key = _session_track_key(meta)
+        if session_key != track_key:
+            continue
+
+        if debug_mode:
+            print(
+                f"[corner_map DEBUG] Matching session: {session_dir.name} "
+                f"key={session_key!r}"
+            )
+
+        for lap_parquet, duration in _iter_valid_laps(session_dir, debug_mode=debug_mode):
+            if debug_mode:
+                print(
+                    f"[corner_map DEBUG]   Candidate: {lap_parquet} "
+                    f"duration={duration:.3f}s"
+                )
+            if duration < best_duration:
+                best_duration = duration
+                best_path = lap_parquet
+
+    if debug_mode:
+        if best_path is not None:
+            print(
+                f"[corner_map DEBUG] Best baseline lap: {best_path} "
+                f"({best_duration:.3f}s)"
+            )
+        else:
+            print("[corner_map DEBUG] No valid baseline lap found")
+
+    if best_path is None:
+        print(
+            f"[corner_map ERROR] No valid baseline lap found for "
+            f"track_key={track_key!r}"
+        )
+
+    return best_path
+
+
+def _session_track_key(meta: dict[str, Any]) -> str:
+    """Build a sanitized track key from a session_meta dict."""
+    track_name = (
+        _meta_str(meta, "TrackDisplayName")
+        or _meta_str(meta, "TrackName")
+        or "unknown_track"
+    )
+    config_name = (
+        _meta_str(meta, "TrackConfigName")
+        or _meta_str(meta, "TrackConfig")
+        or "unknown_config"
+    )
+    car_class = _meta_str(meta, "CarClassShortName") or "unknown_class"
+    return (
+        f"{sanitize_name(track_name)}"
+        f"__{sanitize_name(config_name)}"
+        f"__{sanitize_name(car_class)}"
+    )
+
+
+def _meta_str(meta: dict[str, Any], key: str) -> str | None:
+    val = meta.get(key)
+    if val is None:
+        return None
+    text = str(val).strip()
+    return text or None
+
+
+def _iter_valid_laps(
+    session_dir: Path,
+    debug_mode: bool = False,
+) -> Iterator[tuple[Path, float]]:
+    """Yield ``(resampled_parquet, duration_s)`` for each valid lap in *session_dir*."""
+    for run_dir in sorted(session_dir.iterdir()):
+        if not run_dir.is_dir() or not _RUN_DIR_RE.match(run_dir.name):
+            continue
+
+        laps_root = run_dir / "laps"
+        if laps_root.is_dir():
+            lap_dirs = [d for d in sorted(laps_root.iterdir()) if d.is_dir()]
+        else:
+            lap_dirs = [
+                d
+                for d in sorted(run_dir.iterdir())
+                if d.is_dir() and _LAP_DIR_RE.match(d.name)
+            ]
+
+        for lap_dir in lap_dirs:
+            # Prefer analysis sub-dir resampled parquet
+            resampled = lap_dir / "analysis" / "lap_resampled.parquet"
+            if not resampled.exists():
+                resampled = lap_dir / "lap_resampled.parquet"
+            if not resampled.exists():
+                continue
+
+            if not _is_lap_valid(lap_dir, debug_mode=debug_mode):
+                continue
+
+            duration = _lap_duration_s(lap_dir, resampled)
+            yield resampled, duration
+
+
+def _is_lap_valid(lap_dir: Path, debug_mode: bool = False) -> bool:
+    """Return ``True`` when the lap is considered valid / fully computed."""
+    status_path = lap_dir / "analysis" / "analysis_status.json"
+    if status_path.exists():
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status_val = str(status.get("status", "")).lower()
+            if status_val in ("computed", "partial"):
+                return True
+            if status_val in ("blocked", "not_computed", "stale"):
+                if debug_mode:
+                    print(
+                        f"[corner_map DEBUG]   Skipping lap {lap_dir.name}: "
+                        f"status={status_val}"
+                    )
+                return False
+        except Exception:
+            pass
+
+    # Fallback: check lap_meta.json for explicit valid_lap flag
+    for meta_name in ("lap_meta.json", "meta.json"):
+        meta_path = lap_dir / meta_name
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                valid = meta.get("valid_lap")
+                if valid is True:
+                    return True
+                if valid is False:
+                    return False
+            except Exception:
+                pass
+
+    # Default: treat as valid when the resampled parquet exists
+    return True
+
+
+def _lap_duration_s(lap_dir: Path, resampled_path: Path) -> float:
+    """Return lap duration in seconds; ``inf`` when it cannot be determined."""
+    for meta_name in ("lap_meta.json", "meta.json"):
+        meta_path = lap_dir / meta_name
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                lap_summary = meta.get("lap_summary") or {}
+                for key in ("duration_s", "lap_time_s", "lap_time"):
+                    for src in (meta, lap_summary):
+                        raw = src.get(key)
+                        if raw is not None:
+                            try:
+                                d = float(raw)
+                                if d > 0:
+                                    return d
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+    # Fallback: derive from SessionTime channel in the resampled parquet
+    try:
+        table = pq.read_table(str(resampled_path), columns=["SessionTime"])
+        times = [
+            float(v)
+            for v in table.column("SessionTime").to_pylist()
+            if v is not None and math.isfinite(float(v))
+        ]
+        if len(times) >= 2:
+            return max(times) - min(times)
+    except Exception:
+        pass
+
+    return float("inf")
 
 
 # ---------------------------------------------------------------------------

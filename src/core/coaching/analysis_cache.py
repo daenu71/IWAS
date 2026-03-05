@@ -14,7 +14,7 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from .analysis_contract import AnalysisContract
-from .corner_map import build_corner_map, load_corner_map
+from .corner_map import build_corner_map, find_best_baseline_lap, load_corner_map
 from .event_engine import extract_lap_events
 from .feature_engine import extract_corner_features
 from .feature_schema import FeatureSchema
@@ -144,7 +144,7 @@ class AnalysisCache:
                 status["reasons"].extend(flatline_reasons)
                 return self._write_status(lap_dir, status)
 
-            storage_root = self._infer_session_dir(lap_dir)
+            storage_root = self._infer_coaching_root(lap_dir)
             track_key = self._infer_track_key(lap_dir)
             car_key = self._infer_car_key(lap_dir)
             run_id = self._infer_run_id(lap_dir)
@@ -152,8 +152,14 @@ class AnalysisCache:
 
             corner_map = load_corner_map(storage_root=storage_root, track_key=track_key)
             if corner_map is None:
+                baseline_parquet = find_best_baseline_lap(
+                    coaching_storage_dir=storage_root,
+                    track_key=track_key,
+                )
+                if baseline_parquet is None:
+                    baseline_parquet = resampled_path
                 corner_map = build_corner_map(
-                    parquet_path=resampled_path,
+                    parquet_path=baseline_parquet,
                     storage_root=storage_root,
                     track_key=track_key,
                 )
@@ -247,7 +253,7 @@ class AnalysisCache:
         return status
 
     def _current_corner_map_version(self, lap_dir: Path) -> int:
-        storage_root = self._infer_session_dir(lap_dir)
+        storage_root = self._infer_coaching_root(lap_dir)
         track_key = self._infer_track_key(lap_dir)
         current = load_corner_map(storage_root=storage_root, track_key=track_key)
         if current is None:
@@ -456,6 +462,10 @@ class AnalysisCache:
             reasons.append("lap_offtrack_meta")
         return reasons, not (incomplete is True or offtrack is True)
 
+    def _infer_coaching_root(self, lap_dir: Path) -> Path:
+        """Return the coaching storage root (parent of the session directory)."""
+        return self._infer_session_dir(lap_dir).parent
+
     def _infer_run_dir(self, lap_dir: Path) -> Path:
         if lap_dir.parent.name.lower() == "laps":
             return lap_dir.parent.parent
@@ -498,7 +508,15 @@ class AnalysisCache:
             or _coerce_optional_str(meta.get("TrackConfig"))
             or "unknown_config"
         )
-        return f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
+        car_class = (
+            _coerce_optional_str(meta.get("CarClassShortName"))
+            or "unknown_class"
+        )
+        return (
+            f"{sanitize_name(track_name)}"
+            f"__{sanitize_name(config_name)}"
+            f"__{sanitize_name(car_class)}"
+        )
 
     def _infer_car_key(self, lap_dir: Path) -> str:
         session_dir = self._infer_session_dir(lap_dir)
