@@ -29,3 +29,4 @@ assets/
 .cache/
 third_party/
 /data
+.claude/

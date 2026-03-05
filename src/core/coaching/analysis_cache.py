@@ -463,6 +463,8 @@ class AnalysisCache:
 
     def _infer_session_dir(self, lap_dir: Path) -> Path:
         run_dir = self._infer_run_dir(lap_dir)
+        if (run_dir / "session_meta.json").exists():
+            return run_dir
         if run_dir.parent != run_dir:
             return run_dir.parent
         return run_dir
