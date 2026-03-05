@@ -384,18 +384,14 @@ class CoachingDetailView(ttk.Frame):
             f" lo={lo:.4f} hi={hi:.4f}"
         )
 
-        events: list = []
-        total_evs = sum(len(g) for g in self._vm.events.values())
-        print(f"[CORNER-ZOOM-DEBUG] total events in vm: {total_evs}")
-        for group in self._vm.events.values():
-            for ev in group:
-                in_range = lo <= ev.lapdist_pct <= hi
-                print(
-                    f"[CORNER-ZOOM-DEBUG] event {ev.event_type}"
-                    f" lapdist={ev.lapdist_pct:.4f} IN_RANGE={in_range}"
-                )
-                if in_range:
-                    events.append(ev)
+        events: list = self._vm.corner_events.get(corner.corner_id, [])
+        if events:
+            print(
+                f"[CORNER-ZOOM-DEBUG] events source: corner_events"
+                f" ({len(events)} events)"
+            )
+        else:
+            print("[CORNER-ZOOM-DEBUG] events source: fallback_empty")
 
         render_corner_zoom(
             canvas=self._zoom_canvas,

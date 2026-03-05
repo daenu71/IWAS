@@ -94,6 +94,7 @@ class LapViewModel:
         self.lap_dist_pct: np.ndarray = np.empty(0, dtype=np.float64)
         self.corners: list[CornerInfo] = []
         self.events: dict[int, list[Event]] = {}
+        self.corner_events: dict[int, list[Event]] = {}
         self.features: dict[int, dict[str, Any]] = {}
         self.track_length_m: float | None = None
         self._resampled_path: Path | None = None
@@ -126,6 +127,7 @@ class LapViewModel:
         vm.track_length_m = _load_track_length_m(session_dir)
         vm.corners = _load_corners(session_dir, vm.track_length_m)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
+        vm.corner_events = _load_corner_events(analysis_dir / "corner_events.json")
         vm.features = _load_features(analysis_dir / "corner_features.parquet")
 
         vm._loaded = True
@@ -466,6 +468,41 @@ def _find_corner_id(lapdist_pct: float, corners: list[CornerInfo]) -> int:
         if lo <= lapdist_pct <= hi:
             return corner.corner_id
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Internals – corner_events
+# ---------------------------------------------------------------------------
+
+
+def _load_corner_events(corner_events_path: Path) -> dict[int, list[Event]]:
+    """Load corner_events.json and return a dict of corner_id → list[Event].
+
+    Returns an empty dict when the file is absent or cannot be parsed.
+    """
+    result: dict[int, list[Event]] = {}
+    if not corner_events_path.exists():
+        return result
+
+    raw = _read_json(corner_events_path)
+    corners_section = raw.get("corners", {})
+    if not isinstance(corners_section, dict):
+        return result
+
+    for corner_id_str, event_list in corners_section.items():
+        cid = _int_or(corner_id_str)
+        if cid is None or not isinstance(event_list, list):
+            continue
+        events: list[Event] = []
+        for item in event_list:
+            if not isinstance(item, dict):
+                continue
+            ev = _parse_event(item.get("event_type", ""), item)
+            if ev is not None:
+                events.append(ev)
+        result[cid] = events
+
+    return result
 
 
 # ---------------------------------------------------------------------------
