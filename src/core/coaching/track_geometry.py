@@ -135,6 +135,8 @@ def render_trackmap(
     lap_color: str = "#E53935",
     lap_dist_pct: Optional[np.ndarray] = None,
     on_corner_selected: Optional[Callable[[int], None]] = None,
+    zoom: float = 1.0,
+    offset: tuple = (0.0, 0.0),
 ) -> None:
     """Render a complete TrackMap onto *canvas*.
 
@@ -166,7 +168,7 @@ def render_trackmap(
     if xy is None or len(xy) < 2:
         return
 
-    coords = _to_canvas(xy, width, height)  # (N, 2) pixel coords
+    coords = _transform_zoom(xy, width, height, zoom, offset)  # (N, 2) pixel coords
     closed_flat = _closed_flat(coords)       # flat list, first == last
 
     # 1 – Base track line (grey)
@@ -477,6 +479,26 @@ def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     xn = (x - x_min) / scale
     yn = (y - y_min) / scale
     return np.column_stack([xn, yn])
+
+
+def _transform_zoom(
+    xy: np.ndarray, width: int, height: int,
+    zoom: float, offset: tuple,
+) -> np.ndarray:
+    """Map normalised [0, 1] coords to canvas pixels with zoom and offset.
+
+    At zoom=1.0 and offset=(0.0, 0.0) the result matches the same 20 px
+    padding used for the interactive TrackMap.  Y-axis is flipped so that
+    mathematical positive-Y maps upward on screen.
+    """
+    pad = 20
+    B_w = (width - 2 * pad) * zoom
+    B_h = (height - 2 * pad) * zoom
+    origin_x = pad + offset[0] * width + (width - 2 * pad) * (1 - zoom) / 2
+    origin_y = pad + offset[1] * height + (height - 2 * pad) * (1 - zoom) / 2
+    px = origin_x + xy[:, 0] * B_w
+    py = origin_y + (1.0 - xy[:, 1]) * B_h   # flip Y
+    return np.column_stack([px, py])
 
 
 def _to_canvas(xy: np.ndarray, width: int, height: int) -> np.ndarray:

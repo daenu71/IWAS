@@ -44,6 +44,10 @@ class CoachingDetailView(ttk.Frame):
         super().__init__(master, **kw)
         self._vm: Optional[LapViewModel] = None
         self._selected_corner_id: Optional[int] = None
+        self._map_zoom: float = 1.0
+        self._map_offset: tuple = (0.0, 0.0)
+        self._map_drag_start: Optional[tuple] = None
+        self._map_drag_offset_start: tuple = (0.0, 0.0)
         self._build_layout()
 
     # ------------------------------------------------------------------
@@ -139,6 +143,13 @@ class CoachingDetailView(ttk.Frame):
         self._trackmap_canvas = tk.Canvas(trackmap_lf, bg="#1e1e1e", highlightthickness=0)
         self._trackmap_canvas.grid(row=0, column=0, sticky="nsew")
         self._trackmap_canvas.bind("<Configure>", self._on_trackmap_resize)
+        self._trackmap_canvas.bind("<MouseWheel>", self._on_map_wheel)
+        self._trackmap_canvas.bind("<Button-4>", self._on_map_wheel)
+        self._trackmap_canvas.bind("<Button-5>", self._on_map_wheel)
+        self._trackmap_canvas.bind("<ButtonPress-1>", self._on_map_drag_start)
+        self._trackmap_canvas.bind("<B1-Motion>", self._on_map_drag_move)
+        self._trackmap_canvas.bind("<ButtonRelease-1>", self._on_map_drag_end)
+        self._trackmap_canvas.bind("<Double-Button-1>", self._on_map_reset)
 
         # Corner-Zoom Overlay – placed over trackmap_lf on demand (Story 3.3).
         # Uses place geometry manager (compatible with the canvas above using grid).
@@ -233,11 +244,72 @@ class CoachingDetailView(ttk.Frame):
             height=h,
             on_corner_selected=self.set_selected_corner,
             lap_dist_pct=vm.lap_dist_pct,
+            zoom=self._map_zoom,
+            offset=self._map_offset,
         )
 
     def _on_trackmap_resize(self, _event=None) -> None:
         if self._vm is not None:
             self._redraw_trackmap()
+
+    def _on_map_wheel(self, event) -> None:
+        if event.num == 4:
+            delta = 1
+        elif event.num == 5:
+            delta = -1
+        else:
+            delta = event.delta / 120
+
+        old_zoom = self._map_zoom
+        new_zoom = max(0.5, min(10.0, old_zoom * (1.1 ** delta)))
+        if new_zoom == old_zoom:
+            return
+
+        canvas = self._trackmap_canvas
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        pad = 20
+        B_w = w - 2 * pad
+        B_h = h - 2 * pad
+
+        origin_x = pad + self._map_offset[0] * w + B_w * (1 - old_zoom) / 2
+        origin_y = pad + self._map_offset[1] * h + B_h * (1 - old_zoom) / 2
+
+        new_origin_x = event.x - (event.x - origin_x) * (new_zoom / old_zoom)
+        new_origin_y = event.y - (event.y - origin_y) * (new_zoom / old_zoom)
+
+        new_offset_x = (new_origin_x - pad - B_w * (1 - new_zoom) / 2) / w
+        new_offset_y = (new_origin_y - pad - B_h * (1 - new_zoom) / 2) / h
+
+        self._map_zoom = new_zoom
+        self._map_offset = (new_offset_x, new_offset_y)
+        self._redraw_trackmap()
+
+    def _on_map_drag_start(self, event) -> None:
+        self._map_drag_start = (event.x, event.y)
+        self._map_drag_offset_start = self._map_offset
+
+    def _on_map_drag_move(self, event) -> None:
+        if self._map_drag_start is None:
+            return
+        canvas = self._trackmap_canvas
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        dx = event.x - self._map_drag_start[0]
+        dy = event.y - self._map_drag_start[1]
+        self._map_offset = (
+            self._map_drag_offset_start[0] + dx / w,
+            self._map_drag_offset_start[1] + dy / h,
+        )
+        self._redraw_trackmap()
+
+    def _on_map_drag_end(self, event) -> None:
+        self._map_drag_start = None
+
+    def _on_map_reset(self, event) -> None:
+        self._map_zoom = 1.0
+        self._map_offset = (0.0, 0.0)
+        self._redraw_trackmap()
 
     # ------------------------------------------------------------------
     # Corner-Zoom overlay helpers
