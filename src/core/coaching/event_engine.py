@@ -34,6 +34,8 @@ _DEFAULT_CONFIG_PATH = (
     / "config" / "coaching" / "event_config_v1.json"
 )
 
+_CORNER_EVENTS_ENGINE_VERSION = 1
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -124,6 +126,104 @@ def extract_lap_events(
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
+            json.dumps(result, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    return result
+
+
+def extract_corner_events(
+    *,
+    parquet_path: Path | str,
+    corners: list[dict],
+    output_path: Path | str | None = None,
+    config_path: Path | str | None = None,
+    track_length_m: float | None = None,
+) -> dict[str, Any]:
+    """Extract per-corner driving events from a resampled lap parquet.
+
+    Parameters
+    ----------
+    parquet_path:
+        Path to the resampled lap parquet (output of resample_lapdist).
+    corners:
+        Corner map entries, each with corner_id, start_lapdist_pct,
+        end_lapdist_pct.
+    output_path:
+        Where to write ``corner_events.json``.  No file is written when *None*.
+        If the file already exists and engine_version + config_version match,
+        the cached file is returned without recomputation.
+    config_path:
+        Event config JSON.  Defaults to ``config/coaching/event_config_v1.json``.
+    track_length_m:
+        Track length in metres (from session_meta.json).  Used to convert the
+        entry/exit padding from metres to LapDistPct fractions.  When *None*,
+        fractional fallbacks are used (entry=0.015, exit=0.008).
+
+    Returns
+    -------
+    dict
+        The corner events dict (also written to *output_path* when provided).
+    """
+    parquet_path = Path(parquet_path)
+    out_path = Path(output_path) if output_path is not None else None
+    cfg_path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
+    cfg = _load_config(cfg_path)
+    cfg_version = int(cfg.get("version", 1))
+
+    # Cache: skip recomputation when file exists and versions match
+    if out_path is not None and out_path.exists():
+        try:
+            existing: dict[str, Any] = json.loads(out_path.read_text(encoding="utf-8"))
+            meta = existing.get("meta", {})
+            if (
+                int(meta.get("engine_version", -1)) == _CORNER_EVENTS_ENGINE_VERSION
+                and int(meta.get("config_version", -1)) == cfg_version
+            ):
+                return existing
+        except Exception:
+            pass  # recompute on any parse error
+
+    entry_padding_m = float(cfg.get("corner_entry_padding_m", 80))
+    exit_padding_m = float(cfg.get("corner_exit_padding_m", 40))
+
+    if track_length_m and track_length_m > 0.0:
+        entry_pct = entry_padding_m / track_length_m
+        exit_pct = exit_padding_m / track_length_m
+    else:
+        entry_pct = 0.015
+        exit_pct = 0.008
+
+    data = _read_parquet_as_dict(parquet_path)
+    n = len(data.get("LapDistPct", []))
+    ldp = _get_channel(data, "LapDistPct", n)
+    st = _get_channel(data, "SessionTime", n)
+
+    corners_out: dict[str, list[dict]] = {}
+    for corner in corners:
+        corner_id = corner.get("corner_id")
+        start_pct = float(corner.get("start_lapdist_pct", 0.0))
+        end_pct = float(corner.get("end_lapdist_pct", 1.0))
+        lo = max(0.0, start_pct - entry_pct)
+        hi = min(1.0, end_pct + exit_pct)
+        events = _extract_corner_window_events(data, n, ldp, st, cfg, lo, hi)
+        corners_out[str(corner_id)] = events
+
+    result: dict[str, Any] = {
+        "meta": {
+            "engine_version": _CORNER_EVENTS_ENGINE_VERSION,
+            "config_version": cfg_version,
+            "entry_padding_m": entry_padding_m,
+            "exit_padding_m": exit_padding_m,
+            "track_length_m": track_length_m,
+        },
+        "corners": corners_out,
+    }
+
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
             json.dumps(result, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -449,6 +549,147 @@ def _events_compression(
         )
         events.append(ev)
     return events, None
+
+
+# ---------------------------------------------------------------------------
+# Corner-window event extractor
+# ---------------------------------------------------------------------------
+
+
+def _extract_corner_window_events(
+    data: dict,
+    n: int,
+    ldp: np.ndarray | None,
+    st: np.ndarray | None,
+    cfg: dict,
+    lo: float,
+    hi: float,
+) -> list[dict]:
+    """Return a sorted list of events within the LapDistPct window [lo, hi]."""
+    if ldp is None or n == 0:
+        return []
+
+    mask = (ldp >= lo) & (ldp <= hi)
+    if not np.any(mask):
+        return []
+
+    w_idxs = np.where(mask)[0]
+    w_start = int(w_idxs[0])
+    w_end = int(w_idxs[-1])
+
+    events: list[dict] = []
+    thr_brake = float(cfg["threshold_brake_start"])
+    min_speed_idx: int | None = None
+
+    # --- Brake channels ---
+    brake_ch = _get_channel(data, "Brake", n)
+    if brake_ch is not None:
+        # brake_start: first sample in window above threshold
+        for i in range(w_start, w_end + 1):
+            if math.isfinite(brake_ch[i]) and brake_ch[i] > thr_brake:
+                events.append(_make_event("brake_start", i, ldp, st, None))
+                break
+
+        # peak_brake: global max in window
+        w_brake = np.where(mask, brake_ch, np.nan)
+        if np.any(np.isfinite(w_brake)):
+            peak_val = float(np.nanmax(w_brake))
+            if peak_val > thr_brake:
+                peak_idx = int(np.nanargmax(w_brake))
+                events.append(
+                    _make_event("peak_brake", peak_idx, ldp, st, round(peak_val, 6))
+                )
+
+    # --- Turn-in ---
+    steer_ch = _get_channel(data, "SteeringWheelAngle", n)
+    thr_turn_in = float(cfg.get("threshold_turn_in", 0.1))
+    if steer_ch is not None:
+        for i in range(w_start, w_end + 1):
+            if math.isfinite(steer_ch[i]) and abs(steer_ch[i]) > thr_turn_in:
+                events.append(
+                    _make_event("turn_in", i, ldp, st, round(float(steer_ch[i]), 6))
+                )
+                break
+
+    # --- Min speed ---
+    speed_ch = _get_channel(data, "Speed", n)
+    if speed_ch is not None:
+        w_speed = np.where(mask, speed_ch, np.nan)
+        if np.any(np.isfinite(w_speed)):
+            min_speed_idx = int(np.nanargmin(w_speed))
+            min_val = float(speed_ch[min_speed_idx])
+            events.append(
+                _make_event("min_speed", min_speed_idx, ldp, st, round(min_val, 6))
+            )
+
+    # --- Throttle (search from min_speed onwards) ---
+    throttle_ch = _get_channel(data, "Throttle", n)
+    if throttle_ch is not None:
+        thr_on = float(cfg["threshold_throttle_on"])
+        thr_full = float(cfg["threshold_throttle_full"])
+        search_from = min_speed_idx if min_speed_idx is not None else w_start
+        found_on = False
+        found_full = False
+        for i in range(search_from, w_end + 1):
+            if not math.isfinite(throttle_ch[i]):
+                continue
+            if not found_on and throttle_ch[i] > thr_on:
+                events.append(_make_event("throttle_on", i, ldp, st, None))
+                found_on = True
+            if not found_full and throttle_ch[i] > thr_full:
+                events.append(_make_event("throttle_full", i, ldp, st, None))
+                found_full = True
+            if found_on and found_full:
+                break
+
+    # --- Gear changes ---
+    gear_ch = _get_channel(data, "Gear", n)
+    if gear_ch is not None:
+        prev_gear: int | None = None
+        for i in range(w_start, w_end + 1):
+            if not math.isfinite(gear_ch[i]):
+                continue
+            curr_gear = int(gear_ch[i])
+            if prev_gear is not None and curr_gear != prev_gear:
+                events.append(
+                    _make_event(
+                        "gear_change", i, ldp, st, {"from": prev_gear, "to": curr_gear}
+                    )
+                )
+            prev_gear = curr_gear
+
+    # --- Oversteer events ---
+    yaw_ch = _get_channel(data, "YawRate", n)
+    if yaw_ch is not None:
+        thr_yaw = float(cfg["threshold_oversteer_yawrate"])
+        min_samp = int(cfg.get("min_oversteer_samples", cfg.get("n_min_oversteer_samples", 3)))
+        w_yaw_abs = np.abs(yaw_ch[w_start : w_end + 1])
+        above_local = w_yaw_abs > thr_yaw
+        above_local[~np.isfinite(yaw_ch[w_start : w_end + 1])] = False
+        for s_l, e_l in _find_runs(above_local):
+            if (e_l - s_l + 1) < min_samp:
+                continue
+            s_g = w_start + s_l
+            e_g = w_start + e_l
+            sl = yaw_ch[s_g : e_g + 1]
+            peak_local = int(np.nanargmax(np.abs(sl)))
+            peak_g = s_g + peak_local
+            events.append(
+                _make_event(
+                    "oversteer_event",
+                    peak_g,
+                    ldp,
+                    st,
+                    {
+                        "start_lapdist_pct": round(float(ldp[s_g]), 6),
+                        "end_lapdist_pct": round(float(ldp[e_g]), 6),
+                        "peak_yawrate": round(float(yaw_ch[peak_g]), 6),
+                    },
+                )
+            )
+
+    events.sort(key=lambda e: e["lapdist_pct"])
+    return events
 
 
 # ---------------------------------------------------------------------------

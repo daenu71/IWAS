@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 
 from .analysis_contract import AnalysisContract
 from .corner_map import build_corner_map, find_best_baseline_lap, load_corner_map
-from .event_engine import extract_lap_events
+from .event_engine import extract_corner_events, extract_lap_events
 from .feature_engine import extract_corner_features
 from .feature_schema import FeatureSchema
 from .resample_lapdist import resample_lap
@@ -176,6 +176,22 @@ class AnalysisCache:
                 corner_map=corner_map,
             )
             status["artifacts"].append(events_path.name)
+
+            session_meta = _read_json_dict(
+                self._infer_session_dir(lap_dir) / "session_meta.json"
+            )
+            track_length_m = _coerce_optional_float(
+                session_meta.get("TrackLength") or session_meta.get("track_length_m")
+            )
+            corner_events_path = analysis_dir / "corner_events.json"
+            extract_corner_events(
+                parquet_path=resampled_path,
+                corners=corner_map.get("corners", []),
+                output_path=corner_events_path,
+                config_path=self._event_config_path,
+                track_length_m=track_length_m,
+            )
+            status["artifacts"].append(corner_events_path.name)
 
             features_path = analysis_dir / "corner_features.parquet"
             snapshots_dir = analysis_dir / "snapshots"
@@ -578,6 +594,13 @@ def _extract_number(pattern: re.Pattern[str], text: str) -> int | None:
 def _coerce_optional_int(value: Any) -> int | None:
     try:
         return int(value)
+    except Exception:
+        return None
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
     except Exception:
         return None
 

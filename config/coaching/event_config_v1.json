@@ -13,5 +13,9 @@
   "min_oversteer_samples": 3,
   "min_understeer_samples": 3,
   "min_crest_samples": 3,
-  "min_compression_samples": 3
+  "min_compression_samples": 3,
+  "corner_entry_padding_m": 80,
+  "corner_exit_padding_m": 40,
+  "threshold_turn_in": 0.1,
+  "n_min_oversteer_samples": 3
 }
