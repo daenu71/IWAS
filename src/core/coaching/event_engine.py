@@ -92,6 +92,13 @@ def extract_lap_events(
             missing[name] = miss
         return evs
 
+    throttle_full_event, throttle_off_events, throttle_miss = _throttle_full_and_off_events(
+        data, n, ldp, st, cfg
+    )
+    if throttle_miss:
+        missing["throttle_full"] = throttle_miss
+        missing["throttle_off"] = throttle_miss
+
     events: dict[str, Any] = {
         "turn_in":             _singular("turn_in",             _event_turn_in),
         "brake_start":         _singular("brake_start",         _event_brake_start),
@@ -100,8 +107,8 @@ def extract_lap_events(
         "brake_release_end":   _singular("brake_release_end",   _event_brake_release_end),
         "min_speed":           _singular("min_speed",           _event_min_speed),
         "throttle_on":         _singular("throttle_on",         _event_throttle_on),
-        "throttle_full":       _singular("throttle_full",       _event_throttle_full),
-        "throttle_off":        _array("throttle_off",           _events_throttle_off),
+        "throttle_full":       throttle_full_event,
+        "throttle_off":        throttle_off_events,
         "gear_change":         _array("gear_change",            _events_gear_change),
         "oversteer_event":     _array("oversteer_event",        _events_oversteer),
         "crest":               _array("crest",                  _events_crest),
@@ -345,14 +352,8 @@ def _event_throttle_on(
 def _event_throttle_full(
     data: dict, n: int, ldp: np.ndarray | None, st: np.ndarray | None, cfg: dict
 ) -> tuple[dict | None, str | None]:
-    ch = _get_channel(data, "Throttle", n)
-    if ch is None or ldp is None:
-        return None, "Throttle"
-    thr = float(cfg["threshold_throttle_full"])
-    for i in range(n):
-        if math.isfinite(ch[i]) and ch[i] > thr:
-            return _make_event("throttle_full", i, ldp, st, None), None
-    return None, None
+    throttle_full_event, _, miss = _throttle_full_and_off_events(data, n, ldp, st, cfg)
+    return throttle_full_event, miss
 
 
 # ---------------------------------------------------------------------------
@@ -385,22 +386,32 @@ def _events_gear_change(
 def _events_throttle_off(
     data: dict, n: int, ldp: np.ndarray | None, st: np.ndarray | None, cfg: dict
 ) -> tuple[list | None, str | None]:
+    _, throttle_off_events, miss = _throttle_full_and_off_events(data, n, ldp, st, cfg)
+    return throttle_off_events, miss
+
+
+def _throttle_full_and_off_events(
+    data: dict, n: int, ldp: np.ndarray | None, st: np.ndarray | None, cfg: dict
+) -> tuple[dict | None, list | None, str | None]:
     ch = _get_channel(data, "Throttle", n)
     if ch is None or ldp is None:
-        return None, "Throttle"
+        return None, None, "Throttle"
     thr = float(cfg["threshold_throttle_full"])
+    throttle_full_event: dict | None = None
     events: list[dict] = []
-    was_full = False
+    throttle_was_full = False
     for i in range(n):
         if not math.isfinite(ch[i]):
             continue
-        if ch[i] > thr:
-            was_full = True
-            continue
-        if was_full and ch[i] < thr:
+        throttle = float(ch[i])
+        if not throttle_was_full and throttle >= thr:
+            throttle_was_full = True
+            if throttle_full_event is None:
+                throttle_full_event = _make_event("throttle_full", i, ldp, st, None)
+        elif throttle_was_full and throttle < thr:
             events.append(_make_event("throttle_off", i, ldp, st, None))
-            was_full = False
-    return events, None
+            throttle_was_full = False
+    return throttle_full_event, events, None
 
 
 def _events_oversteer(
@@ -653,23 +664,20 @@ def _extract_corner_window_events(
         thr_full = float(cfg["threshold_throttle_full"])
         search_from = min_speed_idx if min_speed_idx is not None else w_start
         found_on = False
-        found_full = False
-        was_full = False
+        throttle_was_full = False
         for i in range(search_from, w_end + 1):
             if not math.isfinite(throttle_ch[i]):
                 continue
-            if not found_on and throttle_ch[i] > thr_on:
+            throttle = float(throttle_ch[i])
+            if not found_on and throttle > thr_on:
                 events.append(_make_event("throttle_on", i, ldp, st, None))
                 found_on = True
-            if not found_full and throttle_ch[i] > thr_full:
+            if not throttle_was_full and throttle >= thr_full:
+                throttle_was_full = True
                 events.append(_make_event("throttle_full", i, ldp, st, None))
-                found_full = True
-            if throttle_ch[i] > thr_full:
-                was_full = True
-                continue
-            if was_full and throttle_ch[i] < thr_full:
+            elif throttle_was_full and throttle < thr_full:
                 events.append(_make_event("throttle_off", i, ldp, st, None))
-                was_full = False
+                throttle_was_full = False
 
     # --- Gear changes ---
     gear_ch = _get_channel(data, "Gear", n)
