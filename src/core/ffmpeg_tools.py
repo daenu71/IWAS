@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from shutil import which
 
@@ -17,8 +18,13 @@ def _tool_filename(base_name: str) -> str:
     return name
 
 
-def _find_bundled_tool(base_name: str) -> Path | None:
-    """Find bundled tool."""
+def is_packaged_app() -> bool:
+    """Return True when running from a PyInstaller packaged app."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def _find_packaged_bundled_tool(base_name: str) -> Path | None:
+    """Find the bundled tool inside the packaged app."""
     fn = _tool_filename(base_name)
     # PyInstaller one-folder layout -> _internal/tools/ffmpeg/*
     try:
@@ -27,6 +33,12 @@ def _find_bundled_tool(base_name: str) -> Path | None:
             return p
     except Exception:
         pass
+    return None
+
+
+def _find_source_bundled_tool(base_name: str) -> Path | None:
+    """Find the developer-bundled tool for local source runs."""
+    fn = _tool_filename(base_name)
     # Developer layout (authoritative FFmpeg source for local runs).
     try:
         p2 = get_resource_path("third_party", "ffmpeg", "lgpl_shared", "bin", fn)
@@ -37,12 +49,15 @@ def _find_bundled_tool(base_name: str) -> Path | None:
     return None
 
 
-def resolve_media_tool(base_name: str) -> str:
-    """Resolve media tool."""
-    bundled = _find_bundled_tool(base_name)
-    if bundled is not None:
-        return str(bundled)
+def _find_bundled_tool(base_name: str) -> Path | None:
+    """Find the authoritative bundled tool for the current runtime mode."""
+    if is_packaged_app():
+        return _find_packaged_bundled_tool(base_name)
+    return _find_source_bundled_tool(base_name)
 
+
+def _find_path_tool(base_name: str) -> str | None:
+    """Resolve a tool via PATH."""
     name = str(base_name or "").strip() or "ffmpeg"
     hit = which(name)
     if hit:
@@ -52,7 +67,43 @@ def resolve_media_tool(base_name: str) -> str:
     hit2 = which(fn)
     if hit2:
         return str(hit2)
-    return name
+    return None
+
+
+def _missing_bundled_tool_error(base_name: str) -> RuntimeError:
+    """Return the packaged-mode missing-binary error."""
+    name = str(base_name or "").strip() or "ffmpeg"
+    return RuntimeError(f"Bundled {name} missing")
+
+
+def classify_media_tool_source(base_name: str, resolved_path: str | os.PathLike[str]) -> str:
+    """Classify the resolved media tool as bundled or PATH."""
+    bundled = _find_bundled_tool(base_name)
+    if bundled is None:
+        return "PATH"
+    try:
+        lhs = os.path.normcase(os.path.abspath(str(resolved_path)))
+        rhs = os.path.normcase(os.path.abspath(str(bundled)))
+        if lhs == rhs:
+            return "bundled"
+    except Exception:
+        pass
+    return "PATH"
+
+
+def resolve_media_tool(base_name: str) -> str:
+    """Resolve media tool."""
+    bundled = _find_bundled_tool(base_name)
+    if bundled is not None:
+        return str(bundled)
+
+    if is_packaged_app():
+        raise _missing_bundled_tool_error(base_name)
+
+    hit = _find_path_tool(base_name)
+    if hit is not None:
+        return hit
+    return str(base_name or "").strip() or "ffmpeg"
 
 
 def media_tool_exists(base_name: str) -> bool:
@@ -60,8 +111,9 @@ def media_tool_exists(base_name: str) -> bool:
     bundled = _find_bundled_tool(base_name)
     if bundled is not None:
         return True
-    name = str(base_name or "").strip() or "ffmpeg"
-    return (which(name) is not None) or (which(_tool_filename(name)) is not None)
+    if is_packaged_app():
+        return False
+    return _find_path_tool(base_name) is not None
 
 
 def resolve_ffmpeg_bin() -> str:
@@ -72,6 +124,11 @@ def resolve_ffmpeg_bin() -> str:
 def resolve_ffprobe_bin() -> str:
     """Resolve ffprobe bin."""
     return resolve_media_tool("ffprobe")
+
+
+def classify_ffmpeg_source(resolved_path: str | os.PathLike[str]) -> str:
+    """Classify the resolved ffmpeg binary source."""
+    return classify_media_tool_source("ffmpeg", resolved_path)
 
 
 def ffmpeg_exists() -> bool:
