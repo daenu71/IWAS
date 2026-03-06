@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from core.diagnostics import format_masked_ffmpeg_command
 from core.ffmpeg_tools import classify_ffmpeg_source, resolve_ffmpeg_bin
 from core.subprocess_utils import windows_no_window_subprocess_kwargs
 
@@ -210,7 +211,9 @@ def run_ffmpeg(
     ffmpeg_source = classify_ffmpeg_source(plan.cmd[0]) if plan.cmd else "PATH"
     print(f"FFmpeg source: {ffmpeg_source}", flush=True)
     _append(f"FFmpeg source: {ffmpeg_source}")
-    print(f"[FFMPEG-CMD] {' '.join(plan.cmd)}", flush=True)
+    masked_cmd = format_masked_ffmpeg_command(plan.cmd)
+    print(f"[FFMPEG-CMD] {masked_cmd}", flush=True)
+    _append(f"[FFMPEG-CMD] {masked_cmd}")
     try:
         p = subprocess.Popen(
             plan.cmd,

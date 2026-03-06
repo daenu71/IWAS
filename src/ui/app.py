@@ -1303,7 +1303,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         diagnostics_row = ttk.Frame(self)
         diagnostics_row.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 2))
         diagnostics_row.columnconfigure(1, weight=1)
-        btn_export_diag = ttk.Button(diagnostics_row, text="Export Diagnostics", command=self._start_diagnostics_export)
+        btn_export_diag = ttk.Button(diagnostics_row, text="Export Safe Diagnostics", command=self._start_diagnostics_export)
         btn_export_diag.grid(row=0, column=0, sticky="w", padx=(0, 10))
         self._diag_export_button = btn_export_diag
         ttk.Label(diagnostics_row, textvariable=self._diag_export_status_var).grid(row=0, column=1, sticky="w")
@@ -1493,7 +1493,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
         try:
             chosen = filedialog.asksaveasfilename(
                 parent=root,
-                title="Export Diagnostics",
+                title="Export Safe Diagnostics",
                 defaultextension=".zip",
                 filetypes=[("ZIP archive", "*.zip"), ("All files", "*.*")],
                 initialdir=str(default_dir),
@@ -1505,7 +1505,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
             return
         target_path = Path(str(chosen))
         self._diag_export_in_progress = True
-        self._diag_export_status_var.set("Preparing diagnostics export...")
+        self._diag_export_status_var.set("Preparing safe diagnostics export...")
         self._sync_widget_states()
 
         storage_dir = str(self._storage_dir_var.get()).strip()
@@ -1525,6 +1525,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
                     coaching_storage_dir=storage_dir,
                     output_video_dir=output_video_dir,
                     progress_cb=_progress,
+                    redact_sensitive=True,
                 )
                 self._diag_export_queue.put(("done", str(out_path)))
             except Exception as exc:
@@ -1559,7 +1560,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
                 try:
                     messagebox.showinfo(
                         "Diagnostics Export",
-                        f"Diagnostics bundle created:\n{payload}",
+                        f"Safe diagnostics bundle created:\n{payload}",
                         parent=self.winfo_toplevel(),
                     )
                 except Exception:
@@ -1572,7 +1573,7 @@ class CoachingRecordingSettingsPanel(ttk.LabelFrame):
                 try:
                     messagebox.showwarning(
                         "Diagnostics Export",
-                        f"Could not export diagnostics:\n{payload}",
+                        f"Could not export safe diagnostics:\n{payload}",
                         parent=self.winfo_toplevel(),
                     )
                 except Exception:

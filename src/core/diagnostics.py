@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Iterable, Sequence
 
 from core import persistence
@@ -16,6 +17,152 @@ _SECRET_KEY_RE = re.compile(
     r"(?i)(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key|client[_-]?secret)"
 )
 _RUN_META_RE = re.compile(r"^run_\d{4}_meta\.json$", re.IGNORECASE)
+_URL_SECRET_RE = re.compile(r"(?i)([?&](?:token|apikey|auth)=)([^&#\s\"']+)")
+_INLINE_SECRET_RE = re.compile(r"(?i)\b(token|apikey|auth)\b(\s*[:=]\s*)(['\"]?)([^'\"\s,&]+)(\3)")
+_WINDOWS_DRIVE_RE = re.compile(r"(?i)^[a-z]:[\\/]")
+_USER_PREFIX_TEXT_RE = re.compile(r"(?i)([a-z]:\\users\\)([^\\/\r\n]+)")
+
+
+def _looks_like_windows_abs_path(raw: str) -> bool:
+    text = str(raw or "").strip()
+    return bool(_WINDOWS_DRIVE_RE.match(text))
+
+
+def _mask_path_text(path_text: str, *, ffmpeg_style: bool = False) -> str:
+    text = str(path_text or "").strip().replace("/", "\\")
+    if not _looks_like_windows_abs_path(text):
+        return text
+
+    try:
+        parts = list(PureWindowsPath(text).parts)
+    except Exception:
+        parts = []
+    if len(parts) < 2:
+        return "<abs_path>"
+
+    lower_parts = [str(part).lower() for part in parts]
+    if len(parts) >= 3 and lower_parts[1] == "users":
+        remainder = "\\".join(parts[3:])
+        if ffmpeg_style:
+            return "<user_path>" + (f"\\{remainder}" if remainder else "")
+        return r"C:\Users\<redacted>" + (f"\\{remainder}" if remainder else "\\")
+
+    tail_parts = [part for part in parts[1:] if part not in ("\\", "/")]
+    if ffmpeg_style:
+        remainder = "\\".join(tail_parts[-2:] if len(tail_parts) >= 2 else tail_parts[-1:])
+        return "<abs_path>" + (f"\\{remainder}" if remainder else "")
+
+    remainder = "\\".join(tail_parts[-2:] if len(tail_parts) >= 2 else tail_parts[-1:])
+    return "<abs_path>" + (f"\\{remainder}" if remainder else "")
+
+
+def _scrub_url_tokens(text: str) -> str:
+    out = _URL_SECRET_RE.sub(r"\1<redacted>", str(text or ""))
+    out = _INLINE_SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}<redacted>{m.group(5)}", out)
+    return out
+
+
+def _scrub_semicolon_path_list(text: str) -> str:
+    value = str(text or "")
+    parts = value.split(";")
+    if len(parts) <= 1:
+        return value
+    if not any(_looks_like_windows_abs_path(part) for part in parts):
+        return value
+    return ";".join(
+        _mask_path_text(part, ffmpeg_style=True) if _looks_like_windows_abs_path(part) else part
+        for part in parts
+    )
+
+
+def _scrub_embedded_windows_paths(text: str) -> str:
+    out = str(text or "")
+    out = re.sub(
+        r'(?i)"([a-z]:\\[^"\r\n]+)"',
+        lambda m: f'"{_mask_path_text(m.group(1), ffmpeg_style=True)}"',
+        out,
+    )
+    out = re.sub(
+        r"(?i)(^|[\s=:(\[])([a-z]:\\[^\s,\"'\]\}\r\n]+)",
+        lambda m: f"{m.group(1)}{_mask_path_text(m.group(2), ffmpeg_style=True)}",
+        out,
+    )
+    return out
+
+
+def scrub_diagnostics_value(value: str) -> str:
+    raw = str(value or "")
+    leading = raw[: len(raw) - len(raw.lstrip())]
+    trailing = raw[len(raw.rstrip()):]
+    text = _scrub_url_tokens(raw)
+    stripped = text.strip()
+    if ";" in text:
+        scrubbed_paths = _scrub_semicolon_path_list(text)
+        if scrubbed_paths != text:
+            return scrubbed_paths
+    if _looks_like_windows_abs_path(stripped):
+        return f"{leading}{_mask_path_text(stripped, ffmpeg_style=True)}{trailing}"
+    return _USER_PREFIX_TEXT_RE.sub(r"\1<redacted>", _scrub_embedded_windows_paths(text))
+
+
+def mask_ffmpeg_command_args(args: Sequence[str]) -> list[str]:
+    masked: list[str] = []
+    for arg in args:
+        text = str(arg)
+        scrubbed = _scrub_url_tokens(text)
+        if _looks_like_windows_abs_path(scrubbed):
+            scrubbed = _mask_path_text(scrubbed, ffmpeg_style=True)
+        masked.append(scrubbed)
+    return masked
+
+
+def format_masked_ffmpeg_command(args: Sequence[str]) -> str:
+    return subprocess.list2cmdline(mask_ffmpeg_command_args(args))
+
+
+def scrub_ffmpeg_command_text(command_text: str) -> str:
+    out = _scrub_url_tokens(str(command_text or ""))
+    out = re.sub(
+        r'(?i)"([a-z]:\\[^"\r\n]+)"',
+        lambda m: f'"{_mask_path_text(m.group(1), ffmpeg_style=True)}"',
+        out,
+    )
+    out = re.sub(
+        r"(?i)(^|[\s=])([a-z]:\\[^\s\"'\r\n]+)",
+        lambda m: f"{m.group(1)}{_mask_path_text(m.group(2), ffmpeg_style=True)}",
+        out,
+    )
+    return _USER_PREFIX_TEXT_RE.sub(r"\1<redacted>", out)
+
+
+def scrub_diagnostics_text(text: str) -> str:
+    out_lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = _scrub_url_tokens(raw_line)
+        if "[FFMPEG-CMD]" in line:
+            prefix, marker, rest = line.partition("[FFMPEG-CMD]")
+            out_lines.append(f"{prefix}{marker} {scrub_ffmpeg_command_text(rest.strip())}".rstrip())
+            continue
+        if "=" in line:
+            key, sep, value = line.partition("=")
+            out_lines.append(f"{key}{sep}{scrub_diagnostics_value(value)}")
+            continue
+        out_lines.append(scrub_diagnostics_value(line))
+    return "\n".join(out_lines) + ("\n" if str(text or "").endswith("\n") or out_lines else "")
+
+
+def _sanitize_manifest_value(value):
+    if isinstance(value, dict):
+        return {str(k): _sanitize_manifest_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_manifest_value(v) for v in value]
+    if isinstance(value, str):
+        return scrub_diagnostics_value(value)
+    return value
+
+
+def _read_scrubbed_text(path: Path) -> str:
+    return scrub_diagnostics_text(path.read_text(encoding="utf-8", errors="replace"))
 
 
 def _safe_resolve(path: Path) -> Path:
@@ -235,7 +382,7 @@ def _read_redacted_text(path: Path) -> str:
             out_lines.append(f"{key}:{value}".rstrip())
             continue
         out_lines.append(line)
-    return "\n".join(out_lines) + "\n"
+    return scrub_diagnostics_text("\n".join(out_lines) + "\n")
 
 
 def _unique_arcname(base_name: str, used: set[str]) -> str:
@@ -260,6 +407,7 @@ def export_diagnostics_bundle(
     coaching_storage_dir: str | Path | None = None,
     output_video_dir: str | Path | None = None,
     progress_cb: Callable[[str], None] | None = None,
+    redact_sensitive: bool = True,
 ) -> Path:
     """Implement export diagnostics bundle logic."""
     def _progress(text: str) -> None:
@@ -304,7 +452,8 @@ def export_diagnostics_bundle(
             for log_file in _collect_recent_logs(project_root_path):
                 arcname = _unique_arcname(f"logs/{log_file.name}", used_arcnames)
                 try:
-                    zf.write(log_file, arcname=arcname)
+                    log_text = _read_scrubbed_text(log_file) if redact_sensitive else log_file.read_text(encoding="utf-8", errors="replace")
+                    zf.writestr(arcname, log_text)
                     cast_list = manifest["included_logs"]
                     if isinstance(cast_list, list):
                         cast_list.append(str(log_file))
@@ -320,7 +469,8 @@ def export_diagnostics_bundle(
                 if session_meta.exists():
                     arcname = _unique_arcname(f"coaching/{latest_session_dir.name}/{session_meta.name}", used_arcnames)
                     try:
-                        zf.write(session_meta, arcname=arcname)
+                        session_text = _read_scrubbed_text(session_meta) if redact_sensitive else session_meta.read_text(encoding="utf-8", errors="replace")
+                        zf.writestr(arcname, session_text)
                         cast_list = manifest["included_session_meta"]
                         if isinstance(cast_list, list):
                             cast_list.append(str(session_meta))
@@ -345,7 +495,8 @@ def export_diagnostics_bundle(
                     run_meta = run_meta_files[0]
                     arcname = _unique_arcname(f"coaching/{latest_session_dir.name}/{run_meta.name}", used_arcnames)
                     try:
-                        zf.write(run_meta, arcname=arcname)
+                        run_meta_text = _read_scrubbed_text(run_meta) if redact_sensitive else run_meta.read_text(encoding="utf-8", errors="replace")
+                        zf.writestr(arcname, run_meta_text)
                         cast_list = manifest["included_session_meta"]
                         if isinstance(cast_list, list):
                             cast_list.append(str(run_meta))
@@ -367,7 +518,7 @@ def export_diagnostics_bundle(
                 except Exception:
                     continue
                 try:
-                    redacted = _read_redacted_text(config_path)
+                    redacted = _read_redacted_text(config_path) if redact_sensitive else config_path.read_text(encoding="utf-8", errors="replace")
                     arcname = _unique_arcname(f"config/{config_path.name}", used_arcnames)
                     zf.writestr(arcname, redacted)
                     cast_list = manifest["included_configs"]
@@ -381,8 +532,8 @@ def export_diagnostics_bundle(
             _progress("Writing Windows dump pointers...")
             dump_instructions = (
                 "Windows crash dump pointers\n"
-                "Minidumps folder: C:\\Windows\\Minidump\\\n"
-                "Memory dump file: C:\\Windows\\MEMORY.DMP\n"
+                "Minidumps folder: <windows_minidump_path>\n"
+                "Memory dump file: <windows_memory_dump_path>\n"
                 "\n"
                 "Please attach the newest .dmp file(s) manually when reporting a crash.\n"
                 "iWAS does not auto-copy .dmp files (admin/system access may be required).\n"
@@ -390,7 +541,8 @@ def export_diagnostics_bundle(
             zf.writestr("windows_dump_paths.txt", dump_instructions)
 
             _progress("Finalizing diagnostics bundle...")
-            zf.writestr("diagnostics_manifest.json", json.dumps(manifest, indent=2))
+            final_manifest = _sanitize_manifest_value(manifest) if redact_sensitive else manifest
+            zf.writestr("diagnostics_manifest.json", json.dumps(final_manifest, indent=2))
     except Exception:
         try:
             tmp_bundle.unlink(missing_ok=True)
