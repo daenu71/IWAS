@@ -791,11 +791,26 @@ def _to_f64(arr: np.ndarray) -> np.ndarray:
     return out
 
 
+def _fix_nonfinite(arr: np.ndarray) -> np.ndarray:
+    finite_mask = np.isfinite(arr)
+    if finite_mask.all():
+        return arr
+    if not finite_mask.any():
+        return np.zeros_like(arr)
+    indices = np.arange(len(arr))
+    out = arr.copy()
+    out[~finite_mask] = np.interp(
+        indices[~finite_mask],
+        indices[finite_mask],
+        out[finite_mask],
+    )
+    return out
+
+
 def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Normalise *x* and *y* to [0, 1] preserving aspect ratio."""
-    valid = np.isfinite(x) & np.isfinite(y)
-    x = x[valid]
-    y = y[valid]
+    x = _fix_nonfinite(x)
+    y = _fix_nonfinite(y)
     if len(x) < 2:
         return np.empty((0, 2), dtype=np.float64)
     x_min, x_max = float(np.min(x)), float(np.max(x))
