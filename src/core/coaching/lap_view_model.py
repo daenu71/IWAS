@@ -593,44 +593,49 @@ def apply_corner_padding(
 
 
 def _load_track_length_m(session_dir: Path) -> float | None:
-    """Return track length in metres from session_meta.json, or None.
-
-    iRacing stores TrackLength either as a string with unit (for example
-    "4.062 km") or as a numeric metre value, depending on the version.
+    """Liest TrackLength aus session_info.yaml (WeekendInfo.TrackLength).
+    Format in iRacing: '4.062 km' oder '2.524 mi'
+    Fallback: None (kein Crash)
     """
-    session_meta = _read_json(session_dir / "session_meta.json")
-    print(f"[LVM-DEBUG] session_meta keys: {list(session_meta.keys())}")
-    print(f"[LVM-DEBUG] TrackLength raw: {session_meta.get('TrackLength')!r}")
-    return _parse_track_length_m(session_meta)
+    yaml_path = session_dir / "session_info.yaml"
+    if not yaml_path.exists():
+        print(f"[LVM-DEBUG] session_info.yaml nicht gefunden: {yaml_path}")
+        return None
+    try:
+        import yaml
+
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        raw = ((data or {}).get("WeekendInfo", {}).get("TrackLength"))
+        print(f"[LVM-DEBUG] WeekendInfo.TrackLength raw: {raw!r}")
+        return _parse_track_length_m_str(raw)
+    except ImportError:
+        print("[LVM-DEBUG] PyYAML nicht verfügbar")
+        return None
+    except Exception as exc:
+        print(f"[LVM-DEBUG] session_info.yaml Lesefehler: {exc}")
+        return None
 
 
-def _parse_track_length_m(session_meta: dict[str, Any]) -> float | None:
-    raw = session_meta.get("TrackLength") or session_meta.get("track_length")
+def _parse_track_length_m_str(raw) -> float | None:
+    """Parst iRacing TrackLength-String in Meter."""
     if raw is None:
         return None
     if isinstance(raw, (int, float)):
-        value = float(raw)
-        return value if value > 0.0 else None
-
+        return float(raw)
     s = str(raw).strip().lower()
-    if not s:
-        return None
     try:
         if "km" in s:
-            value = float(s.replace("km", "").strip()) * 1000.0
-        elif "miles" in s:
-            value = float(s.replace("miles", "").strip()) * 1609.344
-        elif "mile" in s:
-            value = float(s.replace("mile", "").strip()) * 1609.344
-        elif "mi" in s:
-            value = float(s.replace("mi", "").strip()) * 1609.344
-        elif s.endswith("m"):
-            value = float(s[:-1].strip())
-        else:
-            value = float(s)
+            return float(s.replace("km", "").strip()) * 1000.0
+        if "mi" in s or "mile" in s:
+            return (
+                float(s.replace("miles", "").replace("mile", "").replace("mi", "").strip())
+                * 1609.344
+            )
+        return float(s)
     except ValueError:
+        print(f"[LVM-DEBUG] TrackLength Parse-Fehler: {raw!r}")
         return None
-    return value if value > 0.0 else None
 
 
 # ---------------------------------------------------------------------------
