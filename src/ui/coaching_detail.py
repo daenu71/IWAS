@@ -195,13 +195,12 @@ class CoachingDetailView(ttk.Frame):
         self._zoom_overlay_visible = False
 
         self._zoom_back_btn = ttk.Button(
-            self._zoom_overlay, text="← Zurück",
+            self._zoom_overlay, text="← Back",
             command=self._hide_corner_zoom_overlay,
         )
         self._zoom_back_btn.grid(row=0, column=0, sticky="nw", padx=4, pady=(4, 2))
 
         self._zoom_legend_frame = self._build_corner_zoom_legend(self._zoom_overlay)
-        self._zoom_legend_frame.grid(row=1, column=0, sticky="nw", padx=6, pady=(0, 4))
 
         self._zoom_canvas = tk.Canvas(
             self._zoom_overlay, bg="#1e1e1e", highlightthickness=0,
@@ -215,32 +214,45 @@ class CoachingDetailView(ttk.Frame):
         self._zoom_canvas.bind("<B1-Motion>", self._on_corner_drag_move)
         self._zoom_canvas.bind("<ButtonRelease-1>", self._on_corner_drag_end)
         self._zoom_canvas.bind("<Double-Button-1>", self._on_corner_reset)
+        self._place_corner_zoom_legend()
 
         return frame
 
-    def _build_corner_zoom_legend(self, master: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(master)
+    def _build_corner_zoom_legend(self, master: tk.Widget) -> tk.Frame:
+        frame = tk.Frame(master, bg="#1e1e1e", bd=0, highlightthickness=0)
         for row_index, (event_name, symbol, color) in enumerate(_CORNER_ZOOM_LEGEND_ITEMS):
-            row = ttk.Frame(frame)
+            row = tk.Frame(frame, bg="#1e1e1e", bd=0, highlightthickness=0)
             row.grid(row=row_index, column=0, sticky="w")
 
-            ttk.Checkbutton(
+            tk.Checkbutton(
                 row,
                 variable=self._event_visibility[event_name],
+                bg="#1e1e1e",
+                activebackground="#1e1e1e",
+                selectcolor="#1e1e1e",
+                highlightthickness=0,
+                bd=0,
             ).grid(row=0, column=0, sticky="w")
-            ttk.Label(
+            tk.Label(
                 row,
                 text=symbol,
-                foreground=color,
+                fg=color,
+                bg="#1e1e1e",
                 width=2,
             ).grid(row=0, column=1, sticky="w", padx=(2, 6))
-            ttk.Label(row, text=event_name).grid(row=0, column=2, sticky="w")
+            tk.Label(row, text=event_name, fg="#f0f0f0", bg="#1e1e1e").grid(
+                row=0, column=2, sticky="w"
+            )
 
             self._event_visibility[event_name].trace_add(
                 "write",
                 lambda *_args: self._redraw_corner_zoom(),
             )
         return frame
+
+    def _place_corner_zoom_legend(self) -> None:
+        self._zoom_legend_frame.place(in_=self._zoom_canvas, anchor="nw", x=8, y=8)
+        self._zoom_legend_frame.lift()
 
     def _build_trace_placeholder(self) -> ttk.LabelFrame:
         """Collapsible placeholder for Story 3.4 (Telemetrie-Trace)."""
@@ -455,6 +467,7 @@ class CoachingDetailView(ttk.Frame):
         """Place the overlay frame over the TrackMap canvas and render."""
         self._zoom_overlay.place(relx=0, rely=0, relwidth=1.0, relheight=1.0)
         self._zoom_overlay.lift()
+        self._place_corner_zoom_legend()
         self._zoom_overlay_visible = True
         self._redraw_corner_zoom()
 
@@ -532,6 +545,7 @@ class CoachingDetailView(ttk.Frame):
             zoom=self._corner_zoom,
             offset=self._corner_offset,
         )
+        self._place_corner_zoom_legend()
 
     def _on_zoom_canvas_resize(self, _event=None) -> None:
         self._redraw_corner_zoom()
