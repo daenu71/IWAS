@@ -36,6 +36,7 @@ class NodeSummary:
     last_driven_ts: float | None = None
     lap_incomplete: bool = False
     lap_offtrack: bool = False
+    environment: dict[str, Any] | None = None
 
 
 @dataclass
@@ -737,9 +738,10 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
     """Build and return session event node."""
     session_path = session.session_dir
     session_id_str = _stable_path_id(session_path)
+    session_environment = _clone_environment_dict((session.session_meta or {}).get("environment"))
     run_nodes: list[CoachingTreeNode] = []
     for run in session.runs:
-        run_node = _build_run_node(session, run)
+        run_node = _build_run_node(session, run, inherited_environment=session_environment)
         run_nodes.append(run_node)
     event_label = _session_label(session)
     event_summary = NodeSummary(
@@ -748,6 +750,7 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
         laps_total_display=session.summary.laps_total_display,
         fastest_lap_s=session.summary.fastest_lap_s,
         last_driven_ts=session.summary.last_driven_ts or session.last_driven_ts,
+        environment=session_environment,
     )
     return CoachingTreeNode(
         id=f"session::{session_id_str}",
@@ -773,12 +776,18 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
     )
 
 
-def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
+def _build_run_node(
+    session: _SessionScan,
+    run: _RunScan,
+    *,
+    inherited_environment: dict[str, Any] | None = None,
+) -> CoachingTreeNode:
     """Build and return run node."""
     session_id_str = _stable_path_id(session.session_dir)
+    run_summary = _summary_with_environment(run.summary, inherited_environment)
     lap_nodes: list[CoachingTreeNode] = []
     for idx, segment in enumerate(run.lap_segments):
-        lap_nodes.append(_build_lap_node(session, run, idx, segment))
+        lap_nodes.append(_build_lap_node(session, run, idx, segment, inherited_environment=run_summary.environment))
 
     delete_paths: list[Path] = []
     if run.parquet_path is not None:
@@ -799,7 +808,7 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
         id=f"run::{session_id_str}::{run.run_id:04d}",
         kind="run",
         label=f"Run {run.run_id:04d}",
-        summary=run.summary,
+        summary=run_summary,
         path=run.parquet_path or session.session_dir,
         session_path=session.session_dir,
         run_id=run.run_id,
@@ -823,7 +832,14 @@ def _build_run_node(session: _SessionScan, run: _RunScan) -> CoachingTreeNode:
     )
 
 
-def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dict[str, Any]) -> CoachingTreeNode:
+def _build_lap_node(
+    session: _SessionScan,
+    run: _RunScan,
+    idx: int,
+    segment: dict[str, Any],
+    *,
+    inherited_environment: dict[str, Any] | None = None,
+) -> CoachingTreeNode:
     """Build and return lap node."""
     session_id_str = _stable_path_id(session.session_dir)
     lap_no = _coerce_optional_int(segment.get("lap_no"))
@@ -847,6 +863,7 @@ def _build_lap_node(session: _SessionScan, run: _RunScan, idx: int, segment: dic
         last_driven_ts=run.summary.last_driven_ts,
         lap_incomplete=lap_incomplete,
         lap_offtrack=lap_offtrack,
+        environment=_clone_environment_dict(inherited_environment),
     )
     lap_meta = dict(segment)
     lap_meta["lap_incomplete"] = lap_incomplete
@@ -896,6 +913,26 @@ def _aggregate_summary(nodes: list[CoachingTreeNode]) -> NodeSummary:
         laps_total_display=laps_total_display,
         fastest_lap_s=min(fastest_values) if fastest_values else None,
         last_driven_ts=max(last_values) if last_values else None,
+    )
+
+
+def _summary_with_environment(
+    summary: NodeSummary,
+    inherited_environment: dict[str, Any] | None,
+) -> NodeSummary:
+    """Return a summary copy with direct or inherited environment data."""
+    environment = _clone_environment_dict(summary.environment)
+    if environment is None:
+        environment = _clone_environment_dict(inherited_environment)
+    return NodeSummary(
+        total_time_s=summary.total_time_s,
+        laps=summary.laps,
+        laps_total_display=summary.laps_total_display,
+        fastest_lap_s=summary.fastest_lap_s,
+        last_driven_ts=summary.last_driven_ts,
+        lap_incomplete=summary.lap_incomplete,
+        lap_offtrack=summary.lap_offtrack,
+        environment=environment,
     )
 
 
@@ -1611,6 +1648,14 @@ def _meta_str(meta: dict[str, Any], key: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _clone_environment_dict(value: Any) -> dict[str, Any] | None:
+    """Return a shallow-copied environment dict or None."""
+    if not isinstance(value, dict):
+        return None
+    copied = dict(value)
+    return copied or None
 
 
 def _coerce_optional_float(value: Any) -> float | None:

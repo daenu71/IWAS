@@ -48,6 +48,13 @@ _CORNER_ZOOM_LEGEND_ITEMS = (
     ("understeer_event", "\u26a0", "#FF8000"),
     ("crest", "\u2312", "#00DDFF"),
 )
+_ENVIRONMENT_LAYOUT = (
+    (("Track", "track_temp_c"), ("Air", "air_temp_c")),
+    (("Humidity", "humidity_pct"), ("Fog", "fog_pct")),
+    (("Wind", "wind_speed_ms"), ("Dir", "wind_dir_deg")),
+    (("Skies", "skies"), ("Weather", "weather_type")),
+    (("Pressure", "air_pressure_hpa"),),
+)
 
 
 def _read_corner_event_padding_m() -> float:
@@ -59,6 +66,105 @@ def _read_corner_event_padding_m() -> float:
         return max(0.0, min(10000.0, val))
     except Exception:
         return 50.0
+
+
+class _EnvironmentInfoPanel(ttk.Frame):
+    """Compact environment table for the track map header."""
+
+    def __init__(self, master: tk.Widget, **kw) -> None:
+        super().__init__(master, **kw)
+        self._row_frames: list[ttk.Frame] = []
+        self._value_vars: dict[str, tk.StringVar] = {}
+        self._build()
+
+    def _build(self) -> None:
+        for row_index, row_fields in enumerate(_ENVIRONMENT_LAYOUT):
+            row_frame = ttk.Frame(self)
+            row_frame.grid(row=row_index, column=0, sticky="e")
+            self._row_frames.append(row_frame)
+            for pair_index, (label_text, key) in enumerate(row_fields):
+                base_col = pair_index * 4
+                ttk.Label(row_frame, text=f"{label_text}:").grid(
+                    row=0,
+                    column=base_col,
+                    sticky="e",
+                    padx=(0, 3),
+                )
+                value_var = tk.StringVar(master=self, value="")
+                ttk.Label(row_frame, textvariable=value_var).grid(
+                    row=0,
+                    column=base_col + 1,
+                    sticky="w",
+                    padx=(0, 12 if pair_index < len(row_fields) - 1 else 0),
+                )
+                self._value_vars[key] = value_var
+
+    def set_environment(self, environment: dict | None) -> None:
+        normalized = _normalize_environment(environment)
+        any_row_visible = False
+        for row_frame, row_fields in zip(self._row_frames, _ENVIRONMENT_LAYOUT):
+            row_visible = False
+            for _label_text, key in row_fields:
+                text = _format_environment_field(key, normalized.get(key) if normalized else None)
+                self._value_vars[key].set(text)
+                if text:
+                    row_visible = True
+            if row_visible:
+                row_frame.grid()
+                any_row_visible = True
+            else:
+                row_frame.grid_remove()
+        if any_row_visible:
+            self.grid()
+        else:
+            self.grid_remove()
+
+
+def _normalize_environment(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    copied = dict(value)
+    return copied or None
+
+
+def _format_environment_field(key: str, value: object) -> str:
+    if value is None:
+        return ""
+    if key in {"track_temp_c", "air_temp_c"}:
+        return _format_environment_number(value, suffix=" C", decimals=1)
+    if key in {"humidity_pct", "fog_pct"}:
+        return _format_environment_number(value, suffix=" %", decimals=1)
+    if key == "wind_speed_ms":
+        return _format_environment_number(value, suffix=" m/s", decimals=1)
+    if key == "wind_dir_deg":
+        degrees = _format_environment_number(value, suffix=" deg", decimals=0)
+        cardinal = _wind_cardinal(value)
+        return f"{degrees} {cardinal}".strip() if degrees else ""
+    if key == "air_pressure_hpa":
+        return _format_environment_number(value, suffix=" hPa", decimals=1)
+    return str(value).strip()
+
+
+def _format_environment_number(value: object, *, suffix: str, decimals: int) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return ""
+    if decimals <= 0 or abs(number - round(number)) < 0.05:
+        text = str(int(round(number)))
+    else:
+        text = f"{number:.{decimals}f}".rstrip("0").rstrip(".")
+    return f"{text}{suffix}"
+
+
+def _wind_cardinal(value: object) -> str:
+    try:
+        degrees = float(value) % 360.0
+    except Exception:
+        return ""
+    directions = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    index = int((degrees + 22.5) // 45) % len(directions)
+    return directions[index]
 
 
 class CoachingDetailView(ttk.Frame):
@@ -101,6 +207,7 @@ class CoachingDetailView(ttk.Frame):
             self.clear()
             return
         self._update_header(vm, is_purple=is_purple)
+        self._env_panel.set_environment(vm.meta.environment if vm.meta is not None else None)
         self._redraw_trackmap()
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -110,6 +217,7 @@ class CoachingDetailView(ttk.Frame):
         self._vm = None
         self._selected_corner_id = None
         self._set_header_empty()
+        self._env_panel.set_environment(None)
         self._trackmap_canvas.delete("all")
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -171,9 +279,26 @@ class CoachingDetailView(ttk.Frame):
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
+        trackmap_wrap = ttk.Frame(frame)
+        trackmap_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        trackmap_wrap.columnconfigure(0, weight=1)
+        trackmap_wrap.rowconfigure(1, weight=1)
+
+        trackmap_header = ttk.Frame(trackmap_wrap)
+        trackmap_header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        trackmap_header.columnconfigure(1, weight=1)
+        ttk.Label(trackmap_header, text="Track Map", font=("", 10, "bold")).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        self._env_panel = _EnvironmentInfoPanel(trackmap_header)
+        self._env_panel.grid(row=0, column=1, sticky="e")
+        self._env_panel.grid_remove()
+
         # TrackMap Canvas
-        trackmap_lf = ttk.LabelFrame(frame, text="Track Map")
-        trackmap_lf.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        trackmap_lf = ttk.Frame(trackmap_wrap, borderwidth=1, relief="groove")
+        trackmap_lf.grid(row=1, column=0, sticky="nsew")
         trackmap_lf.columnconfigure(0, weight=1)
         trackmap_lf.rowconfigure(0, weight=1)
 

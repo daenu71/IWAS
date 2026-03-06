@@ -39,6 +39,12 @@ def _write_session_meta(session_dir: Path) -> None:
         "TrackDisplayName": "Spa-Francorchamps",
         "TrackConfigName": "Full",
         "CarScreenName": "Dallara Formula 3",
+        "environment": {
+            "track_temp_c": 27.5,
+            "air_temp_c": 19.2,
+            "humidity_pct": 46.0,
+            "weather_type": "Dynamic",
+        },
     }
     (session_dir / "session_meta.json").write_text(
         json.dumps(meta), encoding="utf-8"
@@ -200,6 +206,12 @@ def test_load_full_artefact_set(tmp_path: Path) -> None:
     assert vm.meta.lap_no == 1
     assert vm.meta.lap_time == pytest.approx(132.456)
     assert vm.meta.valid is True
+    assert vm.meta.environment == {
+        "track_temp_c": 27.5,
+        "air_temp_c": 19.2,
+        "humidity_pct": 46.0,
+        "weather_type": "Dynamic",
+    }
 
     # geometry
     assert vm.lap_dist_pct.shape == (_N,)
@@ -308,6 +320,7 @@ def test_load_missing_meta_no_crash(tmp_path: Path) -> None:
     assert vm.meta.track == "unknown_track"
     assert vm.meta.car == "unknown_car"
     assert vm.meta.lap_time is None
+    assert vm.meta.environment is None
     assert vm.corners == []
     assert vm.events == {}
     assert vm.features == {}

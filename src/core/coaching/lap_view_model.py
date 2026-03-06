@@ -44,6 +44,7 @@ class LapMeta:
     lap_no: int
     lap_time: float | None
     valid: bool
+    environment: dict[str, Any] | None = None
 
 
 @dataclass
@@ -181,6 +182,7 @@ def _resolve_lap_dir(session_dir: Path, run_id: int, lap_no: int) -> Path:
 def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
     """Build LapMeta from session_meta.json and lap-level meta files."""
     session_meta = _read_json(session_dir / "session_meta.json")
+    environment = _normalize_environment(session_meta.get("environment"))
 
     track = (
         _str_or(session_meta.get("TrackDisplayName"))
@@ -214,7 +216,14 @@ def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
         or lap_meta.get("offtrack_surface", False)
     )
 
-    return LapMeta(track=track, car=car, lap_no=lap_no, lap_time=lap_time, valid=valid)
+    return LapMeta(
+        track=track,
+        car=car,
+        lap_no=lap_no,
+        lap_time=lap_time,
+        valid=valid,
+        environment=environment,
+    )
 
 
 def _read_lap_meta(session_dir: Path, run_id: int, lap_no: int) -> dict[str, Any]:
@@ -682,6 +691,13 @@ def _str_or(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_environment(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    copied = dict(value)
+    return copied or None
 
 
 def _float_or(value: Any) -> float | None:

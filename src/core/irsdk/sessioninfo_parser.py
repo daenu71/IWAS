@@ -48,6 +48,9 @@ def extract_session_meta(
         if raw_session_type is not None:
             meta["session_type_raw"] = str(raw_session_type)
             meta["SessionType"] = normalize_session_type(raw_session_type)
+        environment = _extract_environment(weekend_info)
+        if environment is not None:
+            meta["environment"] = environment
     else:
         regex_key_map = {
             "DriverName": ("DriverName", "UserName"),
@@ -63,6 +66,21 @@ def extract_session_meta(
         if raw_session_type is not None:
             meta["session_type_raw"] = str(raw_session_type)
             meta["SessionType"] = normalize_session_type(raw_session_type)
+        environment = _extract_environment(
+            {
+                "TrackTemp": _regex_extract_scalar(text, "TrackTemp"),
+                "AirTemp": _regex_extract_scalar(text, "AirTemp"),
+                "Humidity": _regex_extract_scalar(text, "Humidity"),
+                "Fog": _regex_extract_scalar(text, "Fog"),
+                "WindSpeed": _regex_extract_scalar(text, "WindSpeed"),
+                "WindDir": _regex_extract_scalar(text, "WindDir"),
+                "Skies": _regex_extract_scalar(text, "Skies"),
+                "WeatherType": _regex_extract_scalar(text, "WeatherType"),
+                "AirPressure": _regex_extract_scalar(text, "AirPressure"),
+            }
+        )
+        if environment is not None:
+            meta["environment"] = environment
 
     return _with_timestamps(meta, recorder_start_ts=recorder_start_ts, session_info_saved_ts=session_info_saved_ts)
 
@@ -189,12 +207,46 @@ def _regex_extract_scalar(text: str, key: str) -> str | None:
     return value or None
 
 
+def _extract_environment(weekend_info: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract environment metadata from WeekendInfo."""
+    environment = {
+        "track_temp_c": _coerce_optional_float(weekend_info.get("TrackTemp")),
+        "air_temp_c": _coerce_optional_float(weekend_info.get("AirTemp")),
+        "humidity_pct": _coerce_optional_float(weekend_info.get("Humidity")),
+        "fog_pct": _coerce_optional_float(weekend_info.get("Fog")),
+        "wind_speed_ms": _coerce_optional_float(weekend_info.get("WindSpeed")),
+        "wind_dir_deg": _coerce_optional_float(weekend_info.get("WindDir")),
+        "skies": _coerce_optional_str(weekend_info.get("Skies")),
+        "weather_type": _coerce_optional_str(weekend_info.get("WeatherType")),
+        "air_pressure_hpa": _coerce_optional_float(weekend_info.get("AirPressure")),
+    }
+    if any(value is not None for value in environment.values()):
+        return environment
+    return None
+
+
 def _coerce_int(value: Any) -> int | None:
     """Coerce int."""
     try:
         return int(value)
     except Exception:
         return None
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    """Coerce optional float."""
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _coerce_optional_str(value: Any) -> str | None:
+    """Coerce optional string."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _coalesce(*values: Any) -> Any:

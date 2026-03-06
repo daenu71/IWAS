@@ -7,7 +7,7 @@ import tkinter.font as tkfont
 from tkinter import ttk
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, NodeSummary
 
@@ -18,6 +18,13 @@ AnalyzeLapCallback = Callable[[CoachingTreeNode], None]
 AnalyzeRunCallback = Callable[[CoachingTreeNode, list[CoachingTreeNode]], None]
 
 _PURPLE = "#BF7FFF"
+_ENVIRONMENT_LAYOUT = (
+    (("Track", "track_temp_c"), ("Air", "air_temp_c")),
+    (("Humidity", "humidity_pct"), ("Fog", "fog_pct")),
+    (("Wind", "wind_speed_ms"), ("Dir", "wind_dir_deg")),
+    (("Skies", "skies"), ("Weather", "weather_type")),
+    (("Pressure", "air_pressure_hpa"),),
+)
 
 COACHING_TREE_COLUMN_WIDTHS: dict[str, int] = {
     "#0": 280,
@@ -36,6 +43,115 @@ COACHING_BROWSER_CONTENT_WIDTH_PX = (
     + COACHING_TREE_SCROLLBAR_WIDTH_PX
     + COACHING_TREE_BORDER_PX
 )
+
+
+class _EnvironmentTooltip:
+    """Compact hover tooltip for lap environment data."""
+
+    def __init__(self, owner: tk.Widget) -> None:
+        self._owner = owner
+        self._window: tk.Toplevel | None = None
+        self._row_frames: list[tk.Frame] = []
+        self._value_labels: dict[str, tk.Label] = {}
+
+    @property
+    def visible(self) -> bool:
+        return self._window is not None
+
+    def show(self, environment: dict[str, Any] | None, *, x_root: int, y_root: int) -> None:
+        normalized = _normalize_environment(environment)
+        if normalized is None:
+            self.hide()
+            return
+        self._ensure_window()
+        if self._window is None:
+            return
+        any_row_visible = False
+        for row_frame, row_fields in zip(self._row_frames, _ENVIRONMENT_LAYOUT):
+            row_visible = False
+            for _label_text, key in row_fields:
+                text = _format_environment_field(key, normalized.get(key))
+                self._value_labels[key].configure(text=text)
+                if text:
+                    row_visible = True
+            if row_visible:
+                row_frame.grid()
+                any_row_visible = True
+            else:
+                row_frame.grid_remove()
+        if not any_row_visible:
+            self.hide()
+            return
+        self.move(x_root=x_root, y_root=y_root)
+        self._window.deiconify()
+        self._window.lift()
+
+    def move(self, *, x_root: int, y_root: int) -> None:
+        if self._window is None:
+            return
+        self._window.geometry(f"+{int(x_root) + 14}+{int(y_root) + 14}")
+
+    def hide(self) -> None:
+        if self._window is None:
+            return
+        try:
+            self._window.destroy()
+        except Exception:
+            pass
+        self._window = None
+        self._row_frames = []
+        self._value_labels = {}
+
+    def _ensure_window(self) -> None:
+        if self._window is not None:
+            return
+        window = tk.Toplevel(self._owner)
+        window.overrideredirect(True)
+        try:
+            window.attributes("-topmost", True)
+        except Exception:
+            pass
+        window.configure(bg="#4b5563")
+        body = tk.Frame(window, bg="#111827", padx=8, pady=6)
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+        tk.Label(
+            body,
+            text="Session Conditions",
+            bg="#111827",
+            fg="#f9fafb",
+            anchor="w",
+            font=("TkDefaultFont", 9, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        table = tk.Frame(body, bg="#111827")
+        table.grid(row=1, column=0, sticky="w")
+        for row_index, row_fields in enumerate(_ENVIRONMENT_LAYOUT):
+            row_frame = tk.Frame(table, bg="#111827")
+            row_frame.grid(row=row_index, column=0, sticky="w")
+            self._row_frames.append(row_frame)
+            for pair_index, (label_text, key) in enumerate(row_fields):
+                base_col = pair_index * 4
+                tk.Label(
+                    row_frame,
+                    text=f"{label_text}:",
+                    bg="#111827",
+                    fg="#9ca3af",
+                    anchor="e",
+                ).grid(row=0, column=base_col, sticky="e", padx=(0, 4))
+                value_label = tk.Label(
+                    row_frame,
+                    text="",
+                    bg="#111827",
+                    fg="#f9fafb",
+                    anchor="w",
+                )
+                value_label.grid(
+                    row=0,
+                    column=base_col + 1,
+                    sticky="w",
+                    padx=(0, 12 if pair_index < len(row_fields) - 1 else 0),
+                )
+                self._value_labels[key] = value_label
+        self._window = window
 
 
 class CoachingBrowser(ttk.Frame):
@@ -74,6 +190,10 @@ class CoachingBrowser(ttk.Frame):
         self._overlay_font: tkfont.Font | None = None
         self._overlay_row_bg: str = "#FFFFFF"
         self._overlay_sel_bg: str = "#0078D4"
+        self._environment_hover_after_id: str | None = None
+        self._environment_hover_iid: str | None = None
+        self._environment_tooltip_iid: str | None = None
+        self._environment_pointer: tuple[int, int] = (0, 0)
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -92,6 +212,7 @@ class CoachingBrowser(ttk.Frame):
             show="tree headings",
             selectmode="browse",
         )
+        self._environment_tooltip = _EnvironmentTooltip(self.tree)
         self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.heading("#0", text="Name", anchor="w")
         self.tree.heading("analyze", text="", anchor="center")
@@ -161,6 +282,12 @@ class CoachingBrowser(ttk.Frame):
         self.tree.bind("<<TreeviewClose>>", lambda _: self._schedule_overlay_refresh(5), add="+")
         self.tree.bind("<MouseWheel>", lambda _: self._schedule_overlay_refresh(30), add="+")
         self.tree.bind("<Configure>", lambda _: self._schedule_overlay_refresh(10), add="+")
+        self.tree.bind("<MouseWheel>", lambda _e: self._on_tree_leave_for_environment(), add="+")
+        self.tree.bind("<Button-4>", lambda _e: self._on_tree_leave_for_environment(), add="+")
+        self.tree.bind("<Button-5>", lambda _e: self._on_tree_leave_for_environment(), add="+")
+        self.tree.bind("<Motion>", self._on_tree_motion_for_environment, add="+")
+        self.tree.bind("<Leave>", self._on_tree_leave_for_environment, add="+")
+        self.tree.bind("<ButtonPress-1>", lambda _e: self._on_tree_leave_for_environment(), add="+")
         self._cache_overlay_style()
         self._update_action_buttons()
 
@@ -201,6 +328,9 @@ class CoachingBrowser(ttk.Frame):
 
     def _rebuild_tree(self, *, selected_id: str | None) -> None:
         """Implement rebuild tree logic."""
+        self._cancel_environment_tooltip_schedule()
+        self._environment_hover_iid = None
+        self._hide_environment_tooltip()
         self._clear_overlays()
         self._best_text.clear()
         self.tree.delete(*self.tree.get_children(""))
@@ -266,6 +396,7 @@ class CoachingBrowser(ttk.Frame):
 
     def _on_tree_select(self, _event=None) -> None:
         """Implement on tree select logic."""
+        self._hide_environment_tooltip()
         self._update_action_buttons()
         self._schedule_overlay_refresh(1)
         node = self.selected_node()
@@ -281,6 +412,31 @@ class CoachingBrowser(ttk.Frame):
             return
         if node.can_open_folder:
             self._handle_open_folder()
+
+    def _on_tree_motion_for_environment(self, event) -> None:
+        """Track lap-row hover state for the environment tooltip."""
+        self._environment_pointer = (int(event.x_root), int(event.y_root))
+        iid = str(self.tree.identify_row(event.y) or "")
+        environment = self._tooltip_environment_for_iid(iid)
+        if environment is None:
+            self._cancel_environment_tooltip_schedule()
+            self._environment_hover_iid = None
+            self._hide_environment_tooltip()
+            return
+        if iid != self._environment_hover_iid:
+            self._cancel_environment_tooltip_schedule()
+            self._environment_hover_iid = iid
+            self._hide_environment_tooltip()
+            self._environment_hover_after_id = self.after(600, self._show_environment_tooltip)
+            return
+        if self._environment_tooltip.visible and self._environment_tooltip_iid == iid:
+            self._environment_tooltip.move(x_root=event.x_root, y_root=event.y_root)
+
+    def _on_tree_leave_for_environment(self, _event=None) -> None:
+        """Hide tooltip immediately when the pointer leaves the tree."""
+        self._cancel_environment_tooltip_schedule()
+        self._environment_hover_iid = None
+        self._hide_environment_tooltip()
 
     def _handle_open_folder(self) -> None:
         """Implement handle open folder logic."""
@@ -300,6 +456,7 @@ class CoachingBrowser(ttk.Frame):
 
     def _tree_yview(self, *args) -> None:
         """Handle yview scroll and keep overlays in sync."""
+        self._hide_environment_tooltip()
         self.tree.yview(*args)
         self._schedule_overlay_refresh(30)
 
@@ -438,6 +595,7 @@ class CoachingBrowser(ttk.Frame):
 
     def _handle_analyze(self, node: CoachingTreeNode) -> None:
         """Handle analyze button click for a lap or run node."""
+        self._hide_environment_tooltip()
         if self.tree.exists(node.id):
             self.tree.selection_set(node.id)
             self.tree.focus(node.id)
@@ -539,6 +697,49 @@ class CoachingBrowser(ttk.Frame):
         self.tree.focus(node_id)
         self.tree.see(node_id)
         return True
+
+    def _show_environment_tooltip(self) -> None:
+        """Show tooltip for the currently hovered lap row after the delay."""
+        self._environment_hover_after_id = None
+        iid = self._environment_hover_iid
+        environment = self._tooltip_environment_for_iid(iid)
+        if iid is None or environment is None:
+            self._hide_environment_tooltip()
+            return
+        self._environment_tooltip.show(
+            environment,
+            x_root=self._environment_pointer[0],
+            y_root=self._environment_pointer[1],
+        )
+        self._environment_tooltip_iid = iid
+
+    def _hide_environment_tooltip(self) -> None:
+        """Hide the environment tooltip and clear visible-row tracking."""
+        self._cancel_environment_tooltip_schedule()
+        self._environment_tooltip.hide()
+        self._environment_tooltip_iid = None
+
+    def _cancel_environment_tooltip_schedule(self) -> None:
+        """Cancel any pending delayed tooltip show."""
+        if self._environment_hover_after_id is None:
+            return
+        try:
+            self.after_cancel(self._environment_hover_after_id)
+        except Exception:
+            pass
+        self._environment_hover_after_id = None
+
+    def _tooltip_environment_for_iid(self, iid: str | None) -> dict[str, Any] | None:
+        """Return environment data for lap rows that should show a tooltip."""
+        if not iid:
+            return None
+        index = self._index
+        if index is None:
+            return None
+        node = index.nodes_by_id.get(iid)
+        if node is None or node.kind != "lap":
+            return None
+        return _normalize_environment(node.summary.environment)
 
 
 def _has_analysis_data(node: CoachingTreeNode) -> bool | str:
@@ -827,3 +1028,54 @@ def _coerce_optional_bool(value: object) -> bool | None:
         if text in {"1", "true", "yes", "y", "on"}:
             return True
     return None
+
+
+def _normalize_environment(value: object) -> dict[str, Any] | None:
+    """Return a shallow-copied environment dict or None."""
+    if not isinstance(value, dict):
+        return None
+    copied = dict(value)
+    return copied or None
+
+
+def _format_environment_field(key: str, value: object) -> str:
+    """Format one environment field for tooltip display."""
+    if value is None:
+        return ""
+    if key in {"track_temp_c", "air_temp_c"}:
+        return _format_environment_number(value, suffix=" C", decimals=1)
+    if key in {"humidity_pct", "fog_pct"}:
+        return _format_environment_number(value, suffix=" %", decimals=1)
+    if key == "wind_speed_ms":
+        return _format_environment_number(value, suffix=" m/s", decimals=1)
+    if key == "wind_dir_deg":
+        degrees = _format_environment_number(value, suffix=" deg", decimals=0)
+        cardinal = _wind_cardinal(value)
+        return f"{degrees} {cardinal}".strip() if degrees else ""
+    if key == "air_pressure_hpa":
+        return _format_environment_number(value, suffix=" hPa", decimals=1)
+    return str(value).strip()
+
+
+def _format_environment_number(value: object, *, suffix: str, decimals: int) -> str:
+    """Format an environment number with compact rounding."""
+    try:
+        number = float(value)
+    except Exception:
+        return ""
+    if decimals <= 0 or abs(number - round(number)) < 0.05:
+        text = str(int(round(number)))
+    else:
+        text = f"{number:.{decimals}f}".rstrip("0").rstrip(".")
+    return f"{text}{suffix}"
+
+
+def _wind_cardinal(value: object) -> str:
+    """Return a compact cardinal direction string for degrees."""
+    try:
+        degrees = float(value) % 360.0
+    except Exception:
+        return ""
+    directions = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    index = int((degrees + 22.5) // 45) % len(directions)
+    return directions[index]
