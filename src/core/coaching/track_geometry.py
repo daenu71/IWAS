@@ -575,6 +575,15 @@ def render_corner_zoom(
             rev.canvas_x, rev.canvas_y, image=sprite,
             anchor=tk.CENTER, tags=("zoom_event", tag),
         )
+        if rev.event.event_type == "gear_change":
+            canvas.create_text(
+                rev.canvas_x,
+                rev.canvas_y,
+                text=_gear_label(rev.event.value),
+                fill="#4488FF",
+                font=("Arial", 7, "bold"),
+                tags=("zoom_event", tag),
+            )
 
         tip = _EVENT_LABELS.get(rev.event.event_type,
                                rev.event.event_type.replace("_", " "))
@@ -590,6 +599,16 @@ def render_corner_zoom(
 # ---------------------------------------------------------------------------
 # Corner-Zoom private helpers
 # ---------------------------------------------------------------------------
+
+
+def _gear_label(event: dict) -> str:
+    """Return the non-neutral gear number for a gear_change event payload."""
+    if not isinstance(event, dict):
+        return ""
+    from_gear = event.get("from", 0)
+    to_gear = event.get("to", 0)
+    relevant = from_gear if to_gear == 0 else to_gear
+    return str(relevant)
 
 
 def _resolve_event_collisions(
