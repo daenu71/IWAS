@@ -34,7 +34,7 @@ _DEFAULT_CONFIG_PATH = (
     / "config" / "coaching" / "event_config_v1.json"
 )
 
-_CORNER_EVENTS_ENGINE_VERSION = 3
+_CORNER_EVENTS_ENGINE_VERSION = 4
 
 
 # ---------------------------------------------------------------------------
@@ -657,14 +657,15 @@ def _extract_corner_window_events(
                 _make_event("min_speed", min_speed_idx, ldp, st, round(min_val, 6))
             )
 
-    # --- Throttle (search from min_speed onwards) ---
+    # --- Throttle ---
     throttle_ch = _get_channel(data, "Throttle", n)
     if throttle_ch is not None:
         thr_on = float(cfg["threshold_throttle_on"])
         thr_full = float(cfg["threshold_throttle_full"])
         search_from = min_speed_idx if min_speed_idx is not None else w_start
         found_on = False
-        throttle_was_full = False
+
+        # Preserve existing throttle_on behaviour by searching from min_speed.
         for i in range(search_from, w_end + 1):
             if not math.isfinite(throttle_ch[i]):
                 continue
@@ -672,12 +673,23 @@ def _extract_corner_window_events(
             if not found_on and throttle > thr_on:
                 events.append(_make_event("throttle_on", i, ldp, st, None))
                 found_on = True
-            if not throttle_was_full and throttle >= thr_full:
-                throttle_was_full = True
+
+        # Detect full-throttle edges over the entire corner window so a lift
+        # around brake_start is not missed before min_speed.
+        throttle_was_full: bool | None = None
+        for i in range(w_start, w_end + 1):
+            if not math.isfinite(throttle_ch[i]):
+                continue
+            throttle = float(throttle_ch[i])
+            throttle_is_full = throttle >= thr_full
+            if throttle_was_full is None:
+                throttle_was_full = throttle_is_full
+                continue
+            if not throttle_was_full and throttle_is_full:
                 events.append(_make_event("throttle_full", i, ldp, st, None))
-            elif throttle_was_full and throttle < thr_full:
+            elif throttle_was_full and not throttle_is_full:
                 events.append(_make_event("throttle_off", i, ldp, st, None))
-                throttle_was_full = False
+            throttle_was_full = throttle_is_full
 
     # --- Gear changes ---
     gear_ch = _get_channel(data, "Gear", n)
