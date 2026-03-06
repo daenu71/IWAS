@@ -1536,7 +1536,13 @@ def _session_label(session: _SessionScan) -> str:
     ts_text = _format_dt_short(session.parsed_folder_ts or session.last_driven_ts)
     type_text = str(session.session_type or "Unknown")
     sid = str(session.session_id or session.folder_name)
-    label = f"{ts_text}  {type_text}  {sid}".strip()
+    driver = ((session.session_meta or {}).get("DriverName") or "").strip()
+    parts = [ts_text]
+    if driver:
+        parts.append(driver)
+    parts.append(type_text)
+    parts.append(sid)
+    label = "  ".join(parts).strip()
     if session.has_active_lock and not session.has_finalized_marker:
         return f"{label}  [ACTIVE]"
     return label
