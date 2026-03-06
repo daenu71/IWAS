@@ -60,6 +60,9 @@ _EVENT_STYLE: dict = {
     "crest":           ("⌒", "#00DDFF"),
 }
 
+# Symbol types that need a contrast background blob (hollow / low-contrast symbols)
+_BG_SYMBOL_TYPES = {"turn_in", "oversteer_event", "crest", "peak_brake"}
+
 
 class ResolvedEvent(NamedTuple):
     """An event with its resolved canvas position and connector anchor."""
@@ -353,6 +356,7 @@ def render_corner_zoom(
                     tags=("zoom_connector",),
                 )
 
+    _bg_col = _symbol_bg_color(canvas.cget("background"))
     for rev in resolved:
         style = _EVENT_STYLE.get(rev.event.event_type)
         if style is None:
@@ -360,6 +364,14 @@ def render_corner_zoom(
         symbol, color = style
 
         tag = f"zev_{id(rev.event)}"
+        if rev.event.event_type in _BG_SYMBOL_TYPES:
+            r = EVENT_SYMBOL_SIZE / 2
+            canvas.create_oval(
+                rev.canvas_x - r, rev.canvas_y - r,
+                rev.canvas_x + r, rev.canvas_y + r,
+                fill=_bg_col, outline="",
+                tags=("zoom_event_bg",),
+            )
         canvas.create_text(
             rev.canvas_x, rev.canvas_y, text=symbol, fill=color,
             font=_ZOOM_MARKER_FONT,
@@ -548,8 +560,18 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
         x0, y0, width - 2, height - 2,
         fill="#1a1a1a", outline="#555555", tags=("zoom_legend",),
     )
+    _bg_col = _symbol_bg_color(canvas.cget("background"))
     for i, (ev_type, symbol, color) in enumerate(items):
         ly = y0 + 4 + i * line_h
+        if ev_type in _BG_SYMBOL_TYPES:
+            # Centre of the symbol glyph (anchor="nw", ~5px char half-size)
+            scx = x0 + 6 + 5
+            scy = ly + 4
+            canvas.create_oval(
+                scx - 5, scy - 5, scx + 5, scy + 5,
+                fill=_bg_col, outline="",
+                tags=("zoom_legend",),
+            )
         canvas.create_text(
             x0 + 6, ly, text=symbol, fill=color,
             font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
@@ -563,6 +585,27 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _symbol_bg_color(canvas_bg: str) -> str:
+    """Return #FFFFFF for dark canvas backgrounds, #000000 for light ones."""
+    try:
+        bg = canvas_bg.strip().lstrip("#")
+        if len(bg) == 6:
+            r = int(bg[0:2], 16)
+            g = int(bg[2:4], 16)
+            b = int(bg[4:6], 16)
+        elif len(bg) == 3:
+            r = int(bg[0] + bg[0], 16)
+            g = int(bg[1] + bg[1], 16)
+            b = int(bg[2] + bg[2], 16)
+        else:
+            # Named colours (e.g. "black", "SystemButtonFace") – assume dark
+            return "#FFFFFF"
+        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+        return "#FFFFFF" if lum < 0.5 else "#000000"
+    except Exception:
+        return "#FFFFFF"
 
 
 def _build_dt(resampled_df, cols: set, n: int) -> np.ndarray:
