@@ -45,7 +45,7 @@ _ZOOM_PADDING = 0.10
 _ZOOM_LINE_COLOR = "#E53935"
 _ZOOM_LINE_WIDTH = 3
 _ZOOM_MARKER_FONT = ("Arial", 17)
-_ZOOM_LEGEND_FONT = ("Arial", 7)
+_ZOOM_LEGEND_FONT = ("Arial", 11)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
 EVENT_SYMBOL_SIZE = 18   # px; event symbol size used for collision detection
 
@@ -550,24 +550,22 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
     if not items:
         return
 
-    line_h = 13
-    box_w = 84
-    box_h = len(items) * line_h + 6
-    x0 = width - box_w - 2
-    y0 = height - box_h - 2
+    line_h = 18
+    box_w = 120
+    box_h = len(items) * line_h + 10
+    x0 = width - box_w - 10
+    y0 = height - box_h - 10
 
     canvas.create_rectangle(
-        x0, y0, width - 2, height - 2,
+        x0, y0, width - 10, height - 10,
         fill="#1a1a1a", outline="#555555", tags=("zoom_legend",),
     )
     _bg_col = _symbol_bg_color(canvas)
-    # Legend symbol radius: scale 7pt/17pt relative to main symbol radius
-    _leg_r = EVENT_SYMBOL_SIZE / 2 * 1.2 * (7 / 17)
+    _leg_r = EVENT_SYMBOL_SIZE * 0.8 / 2
     for i, (ev_type, symbol, color) in enumerate(items):
-        ly = y0 + 4 + i * line_h
+        ly = y0 + 5 + i * line_h
         if ev_type in _BG_SYMBOL_TYPES:
-            # Approximate centre of the glyph drawn at (x0+6, ly) anchor="nw"
-            scx = x0 + 6 + _leg_r
+            scx = x0 + 8 + _leg_r
             scy = ly + _leg_r
             _draw_symbol_bg(
                 canvas, scx, scy,
@@ -575,11 +573,11 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
                 ("zoom_legend",),
             )
         canvas.create_text(
-            x0 + 6, ly, text=symbol, fill=color,
+            x0 + 8, ly, text=symbol, fill=color,
             font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
         )
         canvas.create_text(
-            x0 + 18, ly, text=ev_type.replace("_", " "), fill="#AAAAAA",
+            x0 + 26, ly, text=ev_type.replace("_", " "), fill="#AAAAAA",
             font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
         )
 
@@ -632,7 +630,7 @@ def _draw_symbol_bg(
     elif ev_type == "gear_change":
         pts: list = []
         for k in range(6):
-            angle = math.radians(k * 60)     # flat hexagon, start at 0° (3-o'clock)
+            angle = math.radians(30 + k * 60)   # flat-top hexagon, start at 30°
             pts.extend([cx + r * math.cos(angle), cy + r * math.sin(angle)])
         canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
     elif ev_type == "oversteer_event":
