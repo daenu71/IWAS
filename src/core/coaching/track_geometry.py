@@ -17,6 +17,7 @@ render_trackmap(canvas, xy, corners, selected_corner_id, width, height, ...)
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional
 
@@ -60,8 +61,8 @@ _EVENT_STYLE: dict = {
     "crest":           ("⌒", "#00DDFF"),
 }
 
-# Symbol types that need a contrast background blob (hollow / low-contrast symbols)
-_BG_SYMBOL_TYPES = {"turn_in", "oversteer_event", "crest", "peak_brake"}
+# Symbol types that need a contrast background (hollow / low-contrast glyphs only)
+_BG_SYMBOL_TYPES = {"gear_change", "oversteer_event", "crest", "peak_brake"}
 
 
 class ResolvedEvent(NamedTuple):
@@ -356,7 +357,8 @@ def render_corner_zoom(
                     tags=("zoom_connector",),
                 )
 
-    _bg_col = _symbol_bg_color(canvas.cget("background"))
+    _bg_col = _symbol_bg_color(canvas)
+    _main_r = EVENT_SYMBOL_SIZE / 2 * 1.2
     for rev in resolved:
         style = _EVENT_STYLE.get(rev.event.event_type)
         if style is None:
@@ -365,12 +367,10 @@ def render_corner_zoom(
 
         tag = f"zev_{id(rev.event)}"
         if rev.event.event_type in _BG_SYMBOL_TYPES:
-            r = EVENT_SYMBOL_SIZE / 2
-            canvas.create_oval(
-                rev.canvas_x - r, rev.canvas_y - r,
-                rev.canvas_x + r, rev.canvas_y + r,
-                fill=_bg_col, outline="",
-                tags=("zoom_event_bg",),
+            _draw_symbol_bg(
+                canvas, rev.canvas_x, rev.canvas_y,
+                rev.event.event_type, _bg_col, _main_r,
+                ("zoom_event_bg",),
             )
         canvas.create_text(
             rev.canvas_x, rev.canvas_y, text=symbol, fill=color,
@@ -560,17 +560,19 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
         x0, y0, width - 2, height - 2,
         fill="#1a1a1a", outline="#555555", tags=("zoom_legend",),
     )
-    _bg_col = _symbol_bg_color(canvas.cget("background"))
+    _bg_col = _symbol_bg_color(canvas)
+    # Legend symbol radius: scale 7pt/17pt relative to main symbol radius
+    _leg_r = EVENT_SYMBOL_SIZE / 2 * 1.2 * (7 / 17)
     for i, (ev_type, symbol, color) in enumerate(items):
         ly = y0 + 4 + i * line_h
         if ev_type in _BG_SYMBOL_TYPES:
-            # Centre of the symbol glyph (anchor="nw", ~5px char half-size)
-            scx = x0 + 6 + 5
-            scy = ly + 4
-            canvas.create_oval(
-                scx - 5, scy - 5, scx + 5, scy + 5,
-                fill=_bg_col, outline="",
-                tags=("zoom_legend",),
+            # Approximate centre of the glyph drawn at (x0+6, ly) anchor="nw"
+            scx = x0 + 6 + _leg_r
+            scy = ly + _leg_r
+            _draw_symbol_bg(
+                canvas, scx, scy,
+                ev_type, _bg_col, _leg_r,
+                ("zoom_legend",),
             )
         canvas.create_text(
             x0 + 6, ly, text=symbol, fill=color,
@@ -587,25 +589,63 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
 # ---------------------------------------------------------------------------
 
 
-def _symbol_bg_color(canvas_bg: str) -> str:
-    """Return #FFFFFF for dark canvas backgrounds, #000000 for light ones."""
+def _symbol_bg_color(canvas: tk.Canvas) -> str:
+    """Return #FFFFFF for dark canvas backgrounds, #000000 for light ones.
+
+    Uses ``winfo_rgb`` so that named colours ('black', 'gray10', …) are
+    resolved correctly to their true RGB values.
+    """
     try:
-        bg = canvas_bg.strip().lstrip("#")
-        if len(bg) == 6:
-            r = int(bg[0:2], 16)
-            g = int(bg[2:4], 16)
-            b = int(bg[4:6], 16)
-        elif len(bg) == 3:
-            r = int(bg[0] + bg[0], 16)
-            g = int(bg[1] + bg[1], 16)
-            b = int(bg[2] + bg[2], 16)
-        else:
-            # Named colours (e.g. "black", "SystemButtonFace") – assume dark
-            return "#FFFFFF"
-        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+        r16, g16, b16 = canvas.winfo_rgb(canvas.cget("background"))
+        # winfo_rgb returns values in [0, 65535]
+        lum = (0.299 * r16 + 0.587 * g16 + 0.114 * b16) / 65535.0
         return "#FFFFFF" if lum < 0.5 else "#000000"
     except Exception:
         return "#FFFFFF"
+
+
+def _draw_symbol_bg(
+    canvas: tk.Canvas,
+    cx: float,
+    cy: float,
+    ev_type: str,
+    bg_col: str,
+    r: float,
+    tags: tuple,
+) -> None:
+    """Draw a shape-appropriate contrast background for a hollow symbol.
+
+    The background is drawn 1.2× larger than the nominal glyph radius *r*
+    (caller is expected to pass ``nominal_half_size * 1.2`` already).
+
+    Shapes:
+      peak_brake      → filled circle
+      gear_change     → filled flat-top regular hexagon
+      oversteer_event → filled equilateral triangle (apex up, ⚠ style)
+      crest           → thick horizontal line (width=4), matches ⌒ stroke
+    """
+    if ev_type == "peak_brake":
+        canvas.create_oval(
+            cx - r, cy - r, cx + r, cy + r,
+            fill=bg_col, outline="", tags=tags,
+        )
+    elif ev_type == "gear_change":
+        pts: list = []
+        for k in range(6):
+            angle = k * math.pi / 3          # flat-top hexagon
+            pts.extend([cx + r * math.cos(angle), cy - r * math.sin(angle)])
+        canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
+    elif ev_type == "oversteer_event":
+        pts = []
+        for k in range(3):
+            angle = math.pi / 2 + k * 2 * math.pi / 3   # apex at top
+            pts.extend([cx + r * math.cos(angle), cy - r * math.sin(angle)])
+        canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
+    elif ev_type == "crest":
+        canvas.create_line(
+            cx - r, cy, cx + r, cy,
+            fill=bg_col, width=4, tags=tags,
+        )
 
 
 def _build_dt(resampled_df, cols: set, n: int) -> np.ndarray:
