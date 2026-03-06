@@ -358,7 +358,7 @@ def render_corner_zoom(
                 )
 
     _bg_col = _symbol_bg_color(canvas)
-    _main_r = EVENT_SYMBOL_SIZE / 2 * 1.2
+    _main_r = EVENT_SYMBOL_SIZE / 2
     for rev in resolved:
         style = _EVENT_STYLE.get(rev.event.event_type)
         if style is None:
@@ -550,20 +550,32 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
     if not items:
         return
 
-    line_h = 18
-    box_w = 120
-    box_h = len(items) * line_h + 10
-    x0 = width - box_w - 10
-    y0 = height - box_h - 10
+    row_height = 18
+    padding_y = 6
+    labels = [ev_type.replace("_", " ") for ev_type, _, _ in items]
+    try:
+        import tkinter.font as tkFont
+        _font = tkFont.Font(family="Arial", size=11)
+        max_text_width = max(_font.measure(label) for label in labels)
+    except Exception:
+        max_text_width = max(len(label) for label in labels) * 7
+
+    symbol_col_width = EVENT_SYMBOL_SIZE + 6
+    text_col_width = max_text_width + 4
+    legend_width = symbol_col_width + text_col_width
+    legend_height = len(items) * row_height + padding_y * 2
+
+    x0 = width - legend_width - 10
+    y0 = height - legend_height - 10
 
     canvas.create_rectangle(
-        x0, y0, width - 10, height - 10,
-        fill="#1a1a1a", outline="#555555", tags=("zoom_legend",),
+        x0, y0, x0 + legend_width, y0 + legend_height,
+        fill="#1a1a1a", outline="#444444", tags=("zoom_legend",),
     )
     _bg_col = _symbol_bg_color(canvas)
     _leg_r = EVENT_SYMBOL_SIZE * 0.8 / 2
     for i, (ev_type, symbol, color) in enumerate(items):
-        ly = y0 + 5 + i * line_h
+        ly = y0 + padding_y + i * row_height
         if ev_type in _BG_SYMBOL_TYPES:
             scx = x0 + 8 + _leg_r
             scy = ly + _leg_r
@@ -613,36 +625,37 @@ def _draw_symbol_bg(
 ) -> None:
     """Draw a shape-appropriate contrast background for a hollow symbol.
 
-    The background is drawn 1.2× larger than the nominal glyph radius *r*
-    (caller is expected to pass ``nominal_half_size * 1.2`` already).
+    The background expands *r* by 2 px on every edge (absolute, not relative),
+    guaranteeing correct centering regardless of symbol size.
 
     Shapes:
       peak_brake      → filled circle
       gear_change     → filled flat-top regular hexagon
       oversteer_event → filled equilateral triangle (apex up, ⚠ style)
-      crest           → thick horizontal line (width=4), matches ⌒ stroke
+      crest           → thick horizontal line (width=8), matches ⌒ stroke
     """
+    r_bg = r + 2  # 2 px absolute expansion per side
     if ev_type == "peak_brake":
         canvas.create_oval(
-            cx - r, cy - r, cx + r, cy + r,
+            cx - r_bg, cy - r_bg, cx + r_bg, cy + r_bg,
             fill=bg_col, outline="", tags=tags,
         )
     elif ev_type == "gear_change":
         pts: list = []
         for k in range(6):
             angle = math.radians(30 + k * 60)   # flat-top hexagon, start at 30°
-            pts.extend([cx + r * math.cos(angle), cy + r * math.sin(angle)])
+            pts.extend([cx + r_bg * math.cos(angle), cy + r_bg * math.sin(angle)])
         canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
     elif ev_type == "oversteer_event":
         pts = []
         for k in range(3):
             angle = -math.pi / 2 + k * 2 * math.pi / 3   # apex at top
-            pts.extend([cx + r * math.cos(angle), cy + r * math.sin(angle)])
+            pts.extend([cx + r_bg * math.cos(angle), cy + r_bg * math.sin(angle)])
         canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
     elif ev_type == "crest":
         canvas.create_line(
-            cx - r, cy, cx + r, cy,
-            fill=bg_col, width=4, tags=tags,
+            cx - r_bg, cy, cx + r_bg, cy,
+            fill=bg_col, width=8, tags=tags,
         )
 
 
