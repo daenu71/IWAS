@@ -125,6 +125,7 @@ class LapViewModel:
         vm.meta = _load_meta(session_dir, run_id, lap_no)
         vm.lap_dist_pct, vm.track_xy = _load_resampled_geometry(vm._resampled_path)
         vm.track_length_m = _load_track_length_m(session_dir)
+        print(f"[LVM-DEBUG] track_length_m resolved: {vm.track_length_m!r}")
         vm.corners = _load_corners(session_dir, vm.track_length_m)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
         vm.corner_events = _load_corner_events(analysis_dir / "corner_events.json")
@@ -598,6 +599,8 @@ def _load_track_length_m(session_dir: Path) -> float | None:
     "4.062 km") or as a numeric metre value, depending on the version.
     """
     session_meta = _read_json(session_dir / "session_meta.json")
+    print(f"[LVM-DEBUG] session_meta keys: {list(session_meta.keys())}")
+    print(f"[LVM-DEBUG] TrackLength raw: {session_meta.get('TrackLength')!r}")
     return _parse_track_length_m(session_meta)
 
 
