@@ -191,21 +191,20 @@ class CoachingDetailView(ttk.Frame):
         # Uses place geometry manager (compatible with the canvas above using grid).
         self._zoom_overlay = tk.Frame(trackmap_lf, bg="#1e1e1e")
         self._zoom_overlay.columnconfigure(0, weight=1)
-        self._zoom_overlay.rowconfigure(2, weight=1)
+        self._zoom_overlay.rowconfigure(0, weight=1)
         self._zoom_overlay_visible = False
 
         self._zoom_back_btn = ttk.Button(
             self._zoom_overlay, text="← Back",
             command=self._hide_corner_zoom_overlay,
         )
-        self._zoom_back_btn.grid(row=0, column=0, sticky="nw", padx=4, pady=(4, 2))
 
         self._zoom_legend_frame = self._build_corner_zoom_legend(self._zoom_overlay)
 
         self._zoom_canvas = tk.Canvas(
             self._zoom_overlay, bg="#1e1e1e", highlightthickness=0,
         )
-        self._zoom_canvas.grid(row=2, column=0, sticky="nsew")
+        self._zoom_canvas.grid(row=0, column=0, sticky="nsew")
         self._zoom_canvas.bind("<Configure>", self._on_zoom_canvas_resize)
         self._zoom_canvas.bind("<MouseWheel>", self._on_corner_wheel)
         self._zoom_canvas.bind("<Button-4>", self._on_corner_wheel)
@@ -228,8 +227,10 @@ class CoachingDetailView(ttk.Frame):
                 row,
                 variable=self._event_visibility[event_name],
                 bg="#1e1e1e",
-                activebackground="#1e1e1e",
-                selectcolor="#1e1e1e",
+                activebackground="#2e2e2e",
+                fg="white",
+                selectcolor="#444444",
+                relief="flat",
                 highlightthickness=0,
                 bd=0,
             ).grid(row=0, column=0, sticky="w")
@@ -251,7 +252,9 @@ class CoachingDetailView(ttk.Frame):
         return frame
 
     def _place_corner_zoom_legend(self) -> None:
-        self._zoom_legend_frame.place(in_=self._zoom_canvas, anchor="nw", x=8, y=8)
+        self._zoom_back_btn.place(in_=self._zoom_canvas, anchor="nw", x=8, y=8)
+        self._zoom_back_btn.lift()
+        self._zoom_legend_frame.place(in_=self._zoom_canvas, anchor="nw", x=8, y=44)
         self._zoom_legend_frame.lift()
 
     def _build_trace_placeholder(self) -> ttk.LabelFrame:
