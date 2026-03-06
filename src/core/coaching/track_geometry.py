@@ -632,14 +632,14 @@ def _draw_symbol_bg(
     elif ev_type == "gear_change":
         pts: list = []
         for k in range(6):
-            angle = k * math.pi / 3          # flat-top hexagon
-            pts.extend([cx + r * math.cos(angle), cy - r * math.sin(angle)])
+            angle = math.radians(k * 60)     # flat hexagon, start at 0° (3-o'clock)
+            pts.extend([cx + r * math.cos(angle), cy + r * math.sin(angle)])
         canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
     elif ev_type == "oversteer_event":
         pts = []
         for k in range(3):
-            angle = math.pi / 2 + k * 2 * math.pi / 3   # apex at top
-            pts.extend([cx + r * math.cos(angle), cy - r * math.sin(angle)])
+            angle = -math.pi / 2 + k * 2 * math.pi / 3   # apex at top
+            pts.extend([cx + r * math.cos(angle), cy + r * math.sin(angle)])
         canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
     elif ev_type == "crest":
         canvas.create_line(
