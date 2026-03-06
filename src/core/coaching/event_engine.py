@@ -34,7 +34,7 @@ _DEFAULT_CONFIG_PATH = (
     / "config" / "coaching" / "event_config_v1.json"
 )
 
-_CORNER_EVENTS_ENGINE_VERSION = 1
+_CORNER_EVENTS_ENGINE_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,8 @@ def extract_corner_events(
         end_pct = float(corner.get("end_lapdist_pct", 1.0))
         lo = max(0.0, start_pct - entry_pct)
         hi = min(1.0, end_pct + exit_pct)
-        events = _extract_corner_window_events(data, n, ldp, st, cfg, lo, hi)
+        curvature_mean = float(corner.get("curvature_mean", 0.0))
+        events = _extract_corner_window_events(data, n, ldp, st, cfg, lo, hi, curvature_mean)
         corners_out[str(corner_id)] = events
 
     result: dict[str, Any] = {
@@ -564,6 +565,7 @@ def _extract_corner_window_events(
     cfg: dict,
     lo: float,
     hi: float,
+    curvature_mean: float = 0.0,
 ) -> list[dict]:
     """Return a sorted list of events within the LapDistPct window [lo, hi]."""
     if ldp is None or n == 0:
@@ -684,6 +686,38 @@ def _extract_corner_window_events(
                         "start_lapdist_pct": round(float(ldp[s_g]), 6),
                         "end_lapdist_pct": round(float(ldp[e_g]), 6),
                         "peak_yawrate": round(float(yaw_ch[peak_g]), 6),
+                    },
+                )
+            )
+
+    # --- Understeer events ---
+    speed_ch = _get_channel(data, "Speed", n)
+    if yaw_ch is not None and speed_ch is not None and curvature_mean > 0.0:
+        thr_under = float(cfg.get("threshold_understeer_yawrate", cfg.get("threshold_oversteer_yawrate", 0.3)))
+        min_samp_under = int(cfg.get("min_understeer_samples", 3))
+        w_speed = speed_ch[w_start : w_end + 1]
+        w_yaw = yaw_ch[w_start : w_end + 1]
+        ideal_yaw = w_speed * curvature_mean
+        delta = ideal_yaw - np.abs(w_yaw)
+        under = delta > thr_under
+        under[~np.isfinite(delta)] = False
+        for s_l, e_l in _find_runs(under):
+            if (e_l - s_l + 1) < min_samp_under:
+                continue
+            s_g = w_start + s_l
+            e_g = w_start + e_l
+            peak_local = s_l + int(np.nanargmax(delta[s_l : e_l + 1]))
+            peak_g = w_start + peak_local
+            events.append(
+                _make_event(
+                    "understeer_event",
+                    peak_g,
+                    ldp,
+                    st,
+                    {
+                        "start_lapdist_pct": round(float(ldp[s_g]), 6),
+                        "end_lapdist_pct": round(float(ldp[e_g]), 6),
+                        "peak_delta_yawrate": round(float(delta[peak_local]), 6),
                     },
                 )
             )
