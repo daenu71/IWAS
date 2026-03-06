@@ -49,8 +49,8 @@ _ZOOM_LINE_WIDTH = 3
 _ZOOM_MARKER_FONT = ("Arial", 17)
 _ZOOM_LEGEND_FONT = ("Arial", 11)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
-EVENT_SYMBOL_SIZE = 18   # px; event symbol size used for collision detection
-LEGEND_SYMBOL_SIZE = max(14, EVENT_SYMBOL_SIZE * 8 // 17)  # px; legend symbol size
+EVENT_SYMBOL_SIZE = 20   # px; event symbol size used for collision detection
+LEGEND_SYMBOL_SIZE = EVENT_SYMBOL_SIZE  # px; legend symbol size
 
 _EVENT_STYLE: dict = {
     "brake_start":     ("▼", "#CC2222"),
@@ -191,19 +191,22 @@ class EventSpriteCache:
                        cy + r * math.sin(math.radians(-90 + k * 120)))
                       for k in range(3)]
             draw.polygon(fg_pts, outline=fg, fill=None, width=2)
-            # Exclamation mark (white) centred inside triangle
-            white = (255, 255, 255, 255)
+            # Exclamation mark centred on triangle centroid (apex up)
+            fg_rgba = _hex_to_rgba(fg_color)
+            center_y = cy + r // 3
+            stroke_top    = center_y - r // 3
+            stroke_bottom = center_y + r // 8
             draw.rectangle(
-                [cx - max(1, r // 8), cy - r // 2 + max(1, r // 6),
-                 cx + max(1, r // 8), cy + r // 5],
-                fill=white,
+                [cx - max(1, size // 16), stroke_top,
+                 cx + max(1, size // 16), stroke_bottom],
+                fill=fg_rgba,
             )
-            dot_r = max(1, r // 8)
-            dot_y = cy + r // 5 + max(2, r // 5)
+            dot_top = stroke_bottom + max(2, size // 12)
+            dot_bot = dot_top + max(2, size // 12)
             draw.ellipse(
-                [cx - dot_r, dot_y,
-                 cx + dot_r, dot_y + dot_r * 2],
-                fill=white,
+                [cx - max(1, size // 16), dot_top,
+                 cx + max(1, size // 16), dot_bot],
+                fill=fg_rgba,
             )
 
         elif event_type == "understeer_event":
@@ -222,19 +225,22 @@ class EventSpriteCache:
                 (cx,     cy + r),
             ]
             draw.polygon(fg_pts, outline=fg, fill=None, width=2)
-            # Exclamation mark (white) centred inside triangle
-            white = (255, 255, 255, 255)
+            # Exclamation mark centred on triangle centroid (apex down)
+            fg_rgba = _hex_to_rgba(fg_color)
+            center_y = cy - r // 3
+            stroke_top    = center_y - r // 3
+            stroke_bottom = center_y + r // 8
             draw.rectangle(
-                [cx - max(1, r // 8), cy - r // 3,
-                 cx + max(1, r // 8), cy + r // 5],
-                fill=white,
+                [cx - max(1, size // 16), stroke_top,
+                 cx + max(1, size // 16), stroke_bottom],
+                fill=fg_rgba,
             )
-            dot_r = max(1, r // 8)
-            dot_y = cy + r // 5 + max(2, r // 5)
+            dot_top = stroke_bottom + max(2, size // 12)
+            dot_bot = dot_top + max(2, size // 12)
             draw.ellipse(
-                [cx - dot_r, dot_y,
-                 cx + dot_r, dot_y + dot_r * 2],
-                fill=white,
+                [cx - max(1, size // 16), dot_top,
+                 cx + max(1, size // 16), dot_bot],
+                fill=fg_rgba,
             )
 
         elif event_type == "crest":
