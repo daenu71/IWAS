@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from core.coaching.event_engine import extract_lap_events  # noqa: E402
+from core.coaching.event_engine import extract_corner_events, extract_lap_events  # noqa: E402
 
 _N = 2000  # grid size matching Story 2.1.1 default
 
@@ -134,7 +134,7 @@ def test_braking_events_detected(tmp_path: Path) -> None:
     # Output must contain all required event keys
     required_keys = {
         "turn_in", "brake_start", "peak_brake", "brake_release_start",
-        "brake_release_end", "min_speed", "throttle_on", "throttle_full",
+        "brake_release_end", "min_speed", "throttle_on", "throttle_full", "throttle_off",
         "gear_change", "oversteer_event", "understeer_event", "crest", "compression",
     }
     assert required_keys == set(ev.keys()), (
@@ -147,6 +147,7 @@ def test_braking_events_detected(tmp_path: Path) -> None:
     # Array events must be lists (not None) when channel present but not detected
     # (Brake was given; gear_change, oversteer etc. channels absent → None is ok)
     assert isinstance(ev["gear_change"], (list, type(None)))
+    assert isinstance(ev["throttle_off"], (list, type(None)))
 
 
 def test_braking_events_write_output(tmp_path: Path) -> None:
@@ -224,7 +225,76 @@ def test_missing_brake_channel_reported_in_meta(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Determinism
+# Test 3: Throttle lift detection
+# ---------------------------------------------------------------------------
+
+
+def test_throttle_off_detected_as_array_event(tmp_path: Path) -> None:
+    throttle = np.zeros(_N, dtype=np.float64)
+    throttle[100:150] = 1.0
+    throttle[150:220] = 0.4
+    throttle[300:350] = 1.0
+    throttle[350:430] = 0.2
+
+    parquet_path = _write_parquet(tmp_path, throttle=throttle)
+    cfg_path = _inline_config(tmp_path)
+
+    result = extract_lap_events(parquet_path=parquet_path, config_path=cfg_path)
+    ev = result["events"]
+
+    assert ev["throttle_full"] is not None
+    assert isinstance(ev["throttle_off"], list)
+    assert len(ev["throttle_off"]) == 2
+    assert [item["name"] for item in ev["throttle_off"]] == ["throttle_off", "throttle_off"]
+    assert [item["value"] for item in ev["throttle_off"]] == [None, None]
+    assert ev["throttle_off"][0]["lapdist_pct"] == pytest.approx(150 / _N, abs=1e-6)
+    assert ev["throttle_off"][1]["lapdist_pct"] == pytest.approx(350 / _N, abs=1e-6)
+
+
+def test_missing_throttle_channel_reports_throttle_off_in_meta(tmp_path: Path) -> None:
+    parquet_path = _write_parquet(tmp_path)
+    cfg_path = _inline_config(tmp_path)
+
+    result = extract_lap_events(parquet_path=parquet_path, config_path=cfg_path)
+
+    assert result["events"]["throttle_off"] is None
+    assert result["meta"]["missing_channels"]["throttle_off"] == "Throttle"
+
+
+def test_corner_events_include_throttle_off(tmp_path: Path) -> None:
+    throttle = np.zeros(_N, dtype=np.float64)
+    throttle[100:150] = 1.0
+    throttle[150:220] = 0.4
+    throttle[300:350] = 1.0
+    throttle[350:430] = 0.2
+
+    parquet_path = _write_parquet(tmp_path, throttle=throttle)
+    cfg_path = _inline_config(tmp_path)
+    corners = [
+        {
+            "corner_id": 7,
+            "start_lapdist_pct": 0.0,
+            "end_lapdist_pct": 0.3,
+            "curvature_mean": 0.0,
+        }
+    ]
+
+    result = extract_corner_events(
+        parquet_path=parquet_path,
+        corners=corners,
+        config_path=cfg_path,
+    )
+    throttle_off = [
+        item for item in result["corners"]["7"] if item.get("name") == "throttle_off"
+    ]
+
+    assert len(throttle_off) == 2
+    assert throttle_off[0]["lapdist_pct"] == pytest.approx(150 / _N, abs=1e-6)
+    assert throttle_off[1]["lapdist_pct"] == pytest.approx(350 / _N, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Determinism
 # ---------------------------------------------------------------------------
 
 

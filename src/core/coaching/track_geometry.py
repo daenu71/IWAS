@@ -65,6 +65,8 @@ _EVENT_STYLE: dict = {
     "turn_in":         ("◀", "#FF8800"),
     "min_speed":       ("★", "#FFDD00"),
     "throttle_on":     ("▲", "#88FF44"),
+    # Default ▲ to match the current requirement; switch to ▽ if a distinct lift marker is preferred.
+    "throttle_off":    ("▲", "#88FF88"),
     "throttle_full":   ("▲", "#00CC00"),
     "gear_change":     ("⬡", "#4488FF"),
     "oversteer_event":  ("⚠", "#FF44FF"),
@@ -298,7 +300,8 @@ class EventSpriteCache:
                              cy + rad * math.sin(angle)))
             draw.polygon(pts, fill=fg)
 
-        elif event_type in ("throttle_on", "throttle_full"):
+        elif event_type in ("throttle_on", "throttle_full", "throttle_off"):
+            # throttle_off currently shares the apex-up triangle; invert this if the style switches to ▽ later.
             pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
             draw.polygon(pts, fill=fg)
 

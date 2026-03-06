@@ -41,6 +41,7 @@ _CORNER_ZOOM_LEGEND_ITEMS = (
     ("turn_in", "\u25c0", "#FF8800"),
     ("min_speed", "\u2605", "#FFDD00"),
     ("throttle_on", "\u25b2", "#88FF44"),
+    ("throttle_off", "\u25b2", "#88FF88"),
     ("throttle_full", "\u25b2", "#00CC00"),
     ("gear_change", "\u2b21", "#4488FF"),
     ("oversteer_event", "\u26a0", "#FF44FF"),

@@ -34,7 +34,7 @@ _DEFAULT_CONFIG_PATH = (
     / "config" / "coaching" / "event_config_v1.json"
 )
 
-_CORNER_EVENTS_ENGINE_VERSION = 2
+_CORNER_EVENTS_ENGINE_VERSION = 3
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,7 @@ def extract_lap_events(
         "min_speed":           _singular("min_speed",           _event_min_speed),
         "throttle_on":         _singular("throttle_on",         _event_throttle_on),
         "throttle_full":       _singular("throttle_full",       _event_throttle_full),
+        "throttle_off":        _array("throttle_off",           _events_throttle_off),
         "gear_change":         _array("gear_change",            _events_gear_change),
         "oversteer_event":     _array("oversteer_event",        _events_oversteer),
         "crest":               _array("crest",                  _events_crest),
@@ -381,6 +382,27 @@ def _events_gear_change(
     return events, None
 
 
+def _events_throttle_off(
+    data: dict, n: int, ldp: np.ndarray | None, st: np.ndarray | None, cfg: dict
+) -> tuple[list | None, str | None]:
+    ch = _get_channel(data, "Throttle", n)
+    if ch is None or ldp is None:
+        return None, "Throttle"
+    thr = float(cfg["threshold_throttle_full"])
+    events: list[dict] = []
+    was_full = False
+    for i in range(n):
+        if not math.isfinite(ch[i]):
+            continue
+        if ch[i] > thr:
+            was_full = True
+            continue
+        if was_full and ch[i] < thr:
+            events.append(_make_event("throttle_off", i, ldp, st, None))
+            was_full = False
+    return events, None
+
+
 def _events_oversteer(
     data: dict, n: int, ldp: np.ndarray | None, st: np.ndarray | None, cfg: dict
 ) -> tuple[list | None, str | None]:
@@ -632,6 +654,7 @@ def _extract_corner_window_events(
         search_from = min_speed_idx if min_speed_idx is not None else w_start
         found_on = False
         found_full = False
+        was_full = False
         for i in range(search_from, w_end + 1):
             if not math.isfinite(throttle_ch[i]):
                 continue
@@ -641,8 +664,12 @@ def _extract_corner_window_events(
             if not found_full and throttle_ch[i] > thr_full:
                 events.append(_make_event("throttle_full", i, ldp, st, None))
                 found_full = True
-            if found_on and found_full:
-                break
+            if throttle_ch[i] > thr_full:
+                was_full = True
+                continue
+            if was_full and throttle_ch[i] < thr_full:
+                events.append(_make_event("throttle_off", i, ldp, st, None))
+                was_full = False
 
     # --- Gear changes ---
     gear_ch = _get_channel(data, "Gear", n)
