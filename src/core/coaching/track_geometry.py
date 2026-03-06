@@ -447,12 +447,28 @@ def render_corner_zoom(
 
     n = len(xy)
     if lap_dist_pct is not None and len(lap_dist_pct) == n:
-        mask = (lap_dist_pct >= lo_eff) & (lap_dist_pct <= hi_eff)
+        if lo_eff <= hi_eff:
+            # Normalfall
+            mask = (lap_dist_pct >= lo_eff) & (lap_dist_pct <= hi_eff)
+        else:
+            # Wrap-around: Corner überspannt LapDistPct 0/1
+            mask = (lap_dist_pct >= lo_eff) | (lap_dist_pct <= hi_eff)
         indices = np.where(mask)[0]
+        if len(indices) < 2:
+            # Echter Fallback: Corner-Segment nicht gefunden
+            # Zeige nur die nächsten 10% der Strecke um den Apex
+            apex_pct = (lo_eff + hi_eff) / 2 % 1.0
+            fallback_lo = (apex_pct - 0.05) % 1.0
+            fallback_hi = (apex_pct + 0.05) % 1.0
+            if fallback_lo <= fallback_hi:
+                mask = (lap_dist_pct >= fallback_lo) & (lap_dist_pct <= fallback_hi)
+            else:
+                mask = (lap_dist_pct >= fallback_lo) | (lap_dist_pct <= fallback_hi)
+            indices = np.where(mask)[0]
     else:
         indices = _corner_indices(corner, lap_dist_pct, n)
     if len(indices) < 2:
-        indices = np.arange(n)
+        return
 
     seg_xy = xy[indices]
     seg_ldp = (
@@ -777,8 +793,11 @@ def _to_f64(arr: np.ndarray) -> np.ndarray:
 
 def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Normalise *x* and *y* to [0, 1] preserving aspect ratio."""
-    x = np.where(np.isfinite(x), x, 0.0)
-    y = np.where(np.isfinite(y), y, 0.0)
+    valid = np.isfinite(x) & np.isfinite(y)
+    x = x[valid]
+    y = y[valid]
+    if len(x) < 2:
+        return np.empty((0, 2), dtype=np.float64)
     x_min, x_max = float(np.min(x)), float(np.max(x))
     y_min, y_max = float(np.min(y)), float(np.max(y))
     x_range = x_max - x_min or 1.0
