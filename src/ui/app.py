@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from dataclasses import dataclass
@@ -72,6 +73,8 @@ TIME_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{3})")
 UPDATE_VERSION_JSON_URL = "https://raw.githubusercontent.com/daenu71/IWAS/main/version.json"
 UPDATE_RELEASE_LATEST_URL = "https://github.com/daenu71/IWAS/releases/latest"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5.0
+UPDATE_RELEASE_ALLOWED_HOSTS = {"github.com", "www.github.com"}
+UPDATE_RELEASE_ALLOWED_PATH_PREFIX = "/daenu71/IWAS/releases"
 
 
 def _sync_irsdk_recorder_service_from_settings() -> None:
@@ -174,6 +177,17 @@ def _fetch_update_manifest() -> tuple[str, str, str]:
     return version.strip(), release_url.strip(), notes.strip()
 
 
+def _is_allowed_update_release_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    if parsed.hostname not in UPDATE_RELEASE_ALLOWED_HOSTS:
+        return False
+    if not parsed.path.startswith(UPDATE_RELEASE_ALLOWED_PATH_PREFIX):
+        return False
+    return True
+
+
 def _show_update_available_dialog(root: tk.Misc, online_version: str, release_url: str, notes: str) -> None:
     try:
         win = tk.Toplevel(root)
@@ -209,6 +223,10 @@ def _show_update_available_dialog(root: tk.Misc, online_version: str, release_ur
     btn_row.grid(row=next_row, column=0, sticky="e")
 
     def _open_download_page() -> None:
+        if not _is_allowed_update_release_url(release_url):
+            _LOG.warning("Rejected update URL: %s", release_url)
+            messagebox.showerror("Update check failed", "Invalid update URL", parent=win)
+            return
         try:
             webbrowser.open(release_url)
         except Exception:
