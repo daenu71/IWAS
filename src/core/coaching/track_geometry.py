@@ -517,7 +517,7 @@ def render_corner_zoom(
     ])
 
     # Canvas mapping with zoom/offset (Y flipped, shared transform with TrackMap)
-    fit_context = _legend_aware_fit_context(seg_norm, width, height)
+    fit_context = _legend_aware_fit_context(seg_norm, width, height, legend_width=0)
     canvas._fit_context = fit_context
     seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset, fit_context=fit_context)
 
@@ -539,7 +539,6 @@ def render_corner_zoom(
                            fill="#888888", outline="", tags=(tag,))
 
     # -- Event markers ------------------------------------------------------
-    drawn_types: set = set()
     event_map: dict = {}  # tag -> tooltip text
 
     resolved = _resolve_event_collisions(events, seg_ldp, seg_canvas, lo_eff, hi_eff)
@@ -583,15 +582,10 @@ def render_corner_zoom(
             tip += f"\n{rev.event.value}"
 
         event_map[tag] = tip
-        drawn_types.add(rev.event.event_type)
 
     # Single motion handler instead of per-item tag_bind (avoids tooltip-loop freeze)
     canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
     canvas.bind("<Leave>", lambda _e: _zoom_hide_tooltip(canvas))
-
-    # -- Legend -------------------------------------------------------------
-    _zoom_draw_legend(canvas, drawn_types, width, height)
-
 
 # ---------------------------------------------------------------------------
 # Corner-Zoom private helpers

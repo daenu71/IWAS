@@ -35,6 +35,18 @@ from core.coaching.lap_view_model import LapViewModel
 from core.coaching.track_geometry import render_corner_zoom, render_trackmap
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
+_CORNER_ZOOM_LEGEND_ITEMS = (
+    ("brake_start", "\u25bc", "#CC2222"),
+    ("peak_brake", "\u25cf", "#770000"),
+    ("turn_in", "\u25c0", "#FF8800"),
+    ("min_speed", "\u2605", "#FFDD00"),
+    ("throttle_on", "\u25b2", "#88FF44"),
+    ("throttle_full", "\u25b2", "#00CC00"),
+    ("gear_change", "\u2b21", "#4488FF"),
+    ("oversteer_event", "\u26a0", "#FF44FF"),
+    ("understeer_event", "\u26a0", "#FF8000"),
+    ("crest", "\u2312", "#00DDFF"),
+)
 
 
 def _read_corner_event_padding_m() -> float:
@@ -59,6 +71,11 @@ class CoachingDetailView(ttk.Frame):
         super().__init__(master, **kw)
         self._vm: Optional[LapViewModel] = None
         self._selected_corner_id: Optional[int] = None
+        self._event_visibility: dict[str, tk.BooleanVar] = {
+            name: tk.BooleanVar(master=self, value=True)
+            for name, _, _ in _CORNER_ZOOM_LEGEND_ITEMS
+        }
+        self._current_events: list = []
         self._map_zoom: float = 1.0
         self._map_offset: tuple = (0.0, 0.0)
         self._map_drag_start: Optional[tuple] = None
@@ -173,18 +190,23 @@ class CoachingDetailView(ttk.Frame):
         # Corner-Zoom Overlay – placed over trackmap_lf on demand (Story 3.3).
         # Uses place geometry manager (compatible with the canvas above using grid).
         self._zoom_overlay = tk.Frame(trackmap_lf, bg="#1e1e1e")
+        self._zoom_overlay.columnconfigure(0, weight=1)
+        self._zoom_overlay.rowconfigure(2, weight=1)
         self._zoom_overlay_visible = False
 
         self._zoom_back_btn = ttk.Button(
             self._zoom_overlay, text="← Zurück",
             command=self._hide_corner_zoom_overlay,
         )
-        self._zoom_back_btn.pack(side="top", anchor="nw", padx=4, pady=(4, 2))
+        self._zoom_back_btn.grid(row=0, column=0, sticky="nw", padx=4, pady=(4, 2))
+
+        self._zoom_legend_frame = self._build_corner_zoom_legend(self._zoom_overlay)
+        self._zoom_legend_frame.grid(row=1, column=0, sticky="nw", padx=6, pady=(0, 4))
 
         self._zoom_canvas = tk.Canvas(
             self._zoom_overlay, bg="#1e1e1e", highlightthickness=0,
         )
-        self._zoom_canvas.pack(fill="both", expand=True)
+        self._zoom_canvas.grid(row=2, column=0, sticky="nsew")
         self._zoom_canvas.bind("<Configure>", self._on_zoom_canvas_resize)
         self._zoom_canvas.bind("<MouseWheel>", self._on_corner_wheel)
         self._zoom_canvas.bind("<Button-4>", self._on_corner_wheel)
@@ -194,6 +216,30 @@ class CoachingDetailView(ttk.Frame):
         self._zoom_canvas.bind("<ButtonRelease-1>", self._on_corner_drag_end)
         self._zoom_canvas.bind("<Double-Button-1>", self._on_corner_reset)
 
+        return frame
+
+    def _build_corner_zoom_legend(self, master: tk.Widget) -> ttk.Frame:
+        frame = ttk.Frame(master)
+        for row_index, (event_name, symbol, color) in enumerate(_CORNER_ZOOM_LEGEND_ITEMS):
+            row = ttk.Frame(frame)
+            row.grid(row=row_index, column=0, sticky="w")
+
+            ttk.Checkbutton(
+                row,
+                variable=self._event_visibility[event_name],
+            ).grid(row=0, column=0, sticky="w")
+            ttk.Label(
+                row,
+                text=symbol,
+                foreground=color,
+                width=2,
+            ).grid(row=0, column=1, sticky="w", padx=(2, 6))
+            ttk.Label(row, text=event_name).grid(row=0, column=2, sticky="w")
+
+            self._event_visibility[event_name].trace_add(
+                "write",
+                lambda *_args: self._redraw_corner_zoom(),
+            )
         return frame
 
     def _build_trace_placeholder(self) -> ttk.LabelFrame:
@@ -460,6 +506,7 @@ class CoachingDetailView(ttk.Frame):
         )
 
         events: list = self._vm.corner_events.get(corner.corner_id, [])
+        self._current_events = list(events)
         if events:
             print(
                 f"[CORNER-ZOOM-DEBUG] events source: corner_events"
@@ -468,11 +515,15 @@ class CoachingDetailView(ttk.Frame):
         else:
             print("[CORNER-ZOOM-DEBUG] events source: fallback_empty")
 
+        visible_events = [
+            event for event in self._current_events if self._is_corner_event_visible(event)
+        ]
+
         render_corner_zoom(
             canvas=self._zoom_canvas,
             xy=self._vm.track_xy,
             corner=corner,
-            events=events,
+            events=visible_events,
             width=w,
             height=h,
             lap_dist_pct=self._vm.lap_dist_pct,
@@ -487,7 +538,27 @@ class CoachingDetailView(ttk.Frame):
 
     def _clear_corner_zoom(self) -> None:
         """Hide overlay."""
+        self._current_events = []
         self._hide_corner_zoom_overlay()
+
+    def _is_corner_event_visible(self, event) -> bool:
+        event_name = self._get_corner_event_name(event)
+        if not event_name:
+            return True
+        visibility_var = self._event_visibility.get(event_name)
+        if visibility_var is None:
+            return True
+        return bool(visibility_var.get())
+
+    @staticmethod
+    def _get_corner_event_name(event) -> str:
+        if isinstance(event, dict):
+            raw_name = event.get("name") or event.get("event_type")
+        else:
+            raw_name = getattr(event, "event_type", None) or getattr(event, "name", None)
+        if raw_name is None:
+            return ""
+        return str(raw_name)
 
     # ------------------------------------------------------------------
     # Scorecard helpers
