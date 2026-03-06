@@ -687,6 +687,7 @@ def save_debug_settings(values: dict[str, object]) -> dict[str, object]:
 
 # Pfad für window_state.json (analog zu den bestehenden JSON-Dateien)
 window_state_file = config_dir / "window_state.json"
+_coaching_ui_state_file = config_dir / "coaching_ui_state.json"
 
 
 def load_window_state() -> dict:
@@ -706,5 +707,31 @@ def save_window_state(state: dict) -> None:
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
         window_state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_coaching_ui_state() -> dict:
+    """Lädt den gespeicherten UI-Zustand für das Coaching-System.
+    Gibt ein leeres dict zurück bei Fehler oder fehlender Datei."""
+    try:
+        if _coaching_ui_state_file.exists():
+            data = json.loads(_coaching_ui_state_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_coaching_ui_state(state: dict) -> None:
+    """Speichert den UI-Zustand. Schluckt alle Exceptions.
+    Mergt den übergebenen state mit dem bestehenden Inhalt der Datei."""
+    try:
+        existing = load_coaching_ui_state()
+        merged = dict(existing)
+        merged.update(state if isinstance(state, dict) else {})
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _coaching_ui_state_file.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     except Exception:
         pass

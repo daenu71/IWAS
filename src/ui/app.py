@@ -1786,6 +1786,7 @@ class CoachingView(ttk.Frame):
             on_refresh=self._refresh_coaching_index,
             on_open_folder=self._open_coaching_node_folder,
             on_delete_node=self._delete_coaching_node,
+            on_select_node=self._handle_select_node,
             on_analyze_lap=self._handle_analyze_lap,
             on_analyze_run=self._handle_analyze_run,
         )
@@ -1796,6 +1797,7 @@ class CoachingView(ttk.Frame):
             self._browser_widget.tree.bind("<Configure>", self._debug_log_layout_widths, add="+")
             self.after(0, self._debug_log_layout_widths)
         self._refresh_coaching_index()
+        self.after(100, self._restore_coaching_ui_state)
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.after(300, self._poll_recorder_status)
 
@@ -1961,6 +1963,69 @@ class CoachingView(ttk.Frame):
             msg += f", {fail_count} failed"
         self._browser_widget.set_message(msg)
         self._browser_widget._schedule_overlay_refresh(50)
+
+    def _handle_select_node(self, node: CoachingTreeNode) -> None:
+        """Speichert die selektierte Lap in coaching_ui_state.json."""
+        if node.kind != "lap":
+            return
+        session_path = node.session_path
+        run_id = node.run_id
+        meta = node.meta if isinstance(node.meta, dict) else {}
+        lap_no_raw = meta.get("lap_no")
+        if session_path is None or run_id is None or lap_no_raw is None:
+            return
+        try:
+            persistence.save_coaching_ui_state({
+                "last_lap": {
+                    "session_dir": str(session_path),
+                    "run_id": int(run_id),
+                    "lap_no": int(lap_no_raw),
+                }
+            })
+        except Exception:
+            pass
+
+    def _restore_coaching_ui_state(self) -> None:
+        """Stellt den letzten Lap-Fokus aus coaching_ui_state.json wieder her."""
+        try:
+            state = persistence.load_coaching_ui_state()
+            last_lap = state.get("last_lap")
+            if not isinstance(last_lap, dict):
+                return
+            session_dir = str(last_lap.get("session_dir", ""))
+            run_id_raw = last_lap.get("run_id")
+            lap_no_raw = last_lap.get("lap_no")
+            if not session_dir or run_id_raw is None or lap_no_raw is None:
+                return
+            try:
+                run_id = int(run_id_raw)
+                lap_no = int(lap_no_raw)
+            except Exception:
+                return
+            if not Path(session_dir).is_dir():
+                return
+            parquet = Path(session_dir) / f"run_{run_id:04d}.parquet"
+            if not parquet.exists():
+                return
+            node_id = self._browser_widget.find_lap_node_id(session_dir, run_id, lap_no)
+            if node_id is None:
+                return
+            found = self._browser_widget.expand_and_select(node_id)
+            if not found:
+                return
+            index = self._coaching_index
+            if index is None:
+                return
+            node = index.nodes_by_id.get(node_id)
+            if node is None:
+                return
+            from ui.coaching_browser import _lap_is_incomplete, _node_lap_summary
+            lap_sum = _node_lap_summary(node)
+            if _lap_is_incomplete(node.summary, lap_summary=lap_sum):
+                return
+            self._handle_analyze_lap(node)
+        except Exception:
+            pass
 
     def _is_session_delete_locked(self, session_path: Path) -> bool:
         lock_path = session_path / ACTIVE_SESSION_LOCK_FILENAME
@@ -5805,6 +5870,10 @@ def main() -> None:
         active["name"] = name
         root.title(_window_title_for_view(name))
         _set_active_button(name)
+        try:
+            persistence.save_coaching_ui_state({"active_tab": name})
+        except Exception:
+            pass
 
     DEFAULT_VIEW_LABEL = "Video Analysis"
     nav_start_column = 1 if "logo_image" in brand_assets else 0
@@ -5850,6 +5919,13 @@ def main() -> None:
     root.protocol("WM_DELETE_WINDOW", _on_app_close)
 
     show_view(DEFAULT_VIEW_LABEL)
+    try:
+        _saved_ui_state = persistence.load_coaching_ui_state()
+        _saved_tab = _saved_ui_state.get("active_tab", "")
+        if _saved_tab and _saved_tab in VIEW_REGISTRY and _saved_tab != DEFAULT_VIEW_LABEL:
+            show_view(_saved_tab)
+    except Exception:
+        pass
     try:
         _sync_irsdk_recorder_service_from_settings()
     except Exception:

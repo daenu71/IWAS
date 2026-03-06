@@ -472,6 +472,69 @@ class CoachingBrowser(ttk.Frame):
         else:
             self._btn_delete.state(["disabled"])
 
+    def find_lap_node_id(self, session_dir: str, run_id: int, lap_no: int) -> str | None:
+        """Sucht den Node-ID für die angegebene Lap. Gibt None zurück, wenn nicht gefunden."""
+        index = self._index
+        if index is None:
+            return None
+        try:
+            session_path_resolved = str(Path(session_dir).resolve())
+        except Exception:
+            session_path_resolved = session_dir
+        for node_id, node in index.nodes_by_id.items():
+            if node.kind != "lap":
+                continue
+            if node.run_id != run_id:
+                continue
+            if node.session_path is None:
+                continue
+            try:
+                node_session_resolved = str(Path(node.session_path).resolve())
+            except Exception:
+                node_session_resolved = str(node.session_path)
+            if node_session_resolved != session_path_resolved:
+                continue
+            meta = node.meta if isinstance(node.meta, dict) else {}
+            try:
+                if int(meta.get("lap_no", -1)) == lap_no:
+                    return node_id
+            except Exception:
+                pass
+        return None
+
+    def _collapse_recursive(self, iid: str) -> None:
+        """Klappt einen Node und alle seine Kinder rekursiv zu."""
+        self.tree.item(iid, open=False)
+        self._expanded_ids.discard(iid)
+        for child in self.tree.get_children(iid):
+            self._collapse_recursive(child)
+
+    def expand_and_select(self, node_id: str) -> bool:
+        """Klappt den Pfad zu node_id auf, selektiert und fokussiert den Node.
+        Alle anderen Äste bleiben zugeklappt.
+        Gibt True zurück, wenn node_id im Tree gefunden wurde."""
+        if not self.tree.exists(node_id):
+            return False
+        # Alle Top-Level-Nodes zuklappen
+        for iid in self.tree.get_children(""):
+            self._collapse_recursive(iid)
+        # Pfad von der Wurzel zum node_id aufbauen
+        path: list[str] = []
+        current = node_id
+        while current:
+            path.append(current)
+            current = self.tree.parent(current)
+        path.reverse()
+        # Jeden Knoten auf dem Pfad (außer dem Blatt selbst) aufklappen
+        for iid in path[:-1]:
+            self.tree.item(iid, open=True)
+            self._expanded_ids.add(iid)
+        # Node selektieren und in Sicht bringen
+        self.tree.selection_set(node_id)
+        self.tree.focus(node_id)
+        self.tree.see(node_id)
+        return True
+
 
 def _has_analysis_data(node: CoachingTreeNode) -> bool | str:
     """Return True if analyzed, False if not, 'partial' if only some laps analyzed (run only)."""
