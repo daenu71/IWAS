@@ -36,14 +36,14 @@ _LAP_WIDTH = 2
 _SEG_WIDTH = 7           # corner-segment highlight width (px)
 _CORNER_COLOR = "#FFD700"   # default corner colour
 _SELECTED_COLOR = "#FFFFFF" # selected corner colour
-_LABEL_FONT = ("Arial", 7, "bold")
-_LABEL_OFFSET = 9        # px above midpoint
+_LABEL_FONT = ("Arial", 12, "bold")
+_LABEL_OFFSET = 13       # px above midpoint
 
 # Corner-Zoom constants
 _ZOOM_PADDING = 0.10
 _ZOOM_LINE_COLOR = "#E53935"
 _ZOOM_LINE_WIDTH = 3
-_ZOOM_MARKER_FONT = ("Arial", 13)
+_ZOOM_MARKER_FONT = ("Arial", 17)
 _ZOOM_LEGEND_FONT = ("Arial", 7)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
 
