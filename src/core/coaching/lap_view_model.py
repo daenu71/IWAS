@@ -594,19 +594,40 @@ def apply_corner_padding(
 def _load_track_length_m(session_dir: Path) -> float | None:
     """Return track length in metres from session_meta.json, or None.
 
-    iRacing stores TrackLength as a plain km value (e.g. 5.845) or as a
-    string with unit (e.g. "5.845 km").  Both formats are accepted.
-    Returns None when the key is absent or cannot be parsed.
+    iRacing stores TrackLength either as a string with unit (for example
+    "4.062 km") or as a numeric metre value, depending on the version.
     """
     session_meta = _read_json(session_dir / "session_meta.json")
-    raw = session_meta.get("TrackLength")
+    return _parse_track_length_m(session_meta)
+
+
+def _parse_track_length_m(session_meta: dict[str, Any]) -> float | None:
+    raw = session_meta.get("TrackLength") or session_meta.get("track_length")
     if raw is None:
         return None
-    try:
-        val = float(str(raw).split()[0])
-        return val * 1000.0 if val > 0 else None
-    except Exception:
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return value if value > 0.0 else None
+
+    s = str(raw).strip().lower()
+    if not s:
         return None
+    try:
+        if "km" in s:
+            value = float(s.replace("km", "").strip()) * 1000.0
+        elif "miles" in s:
+            value = float(s.replace("miles", "").strip()) * 1609.344
+        elif "mile" in s:
+            value = float(s.replace("mile", "").strip()) * 1609.344
+        elif "mi" in s:
+            value = float(s.replace("mi", "").strip()) * 1609.344
+        elif s.endswith("m"):
+            value = float(s[:-1].strip())
+        else:
+            value = float(s)
+    except ValueError:
+        return None
+    return value if value > 0.0 else None
 
 
 # ---------------------------------------------------------------------------

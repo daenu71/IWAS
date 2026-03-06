@@ -85,6 +85,8 @@ _TOOLTIP_TITLES: dict[str, str] = {
     "peak_brake": "brake peak",
 }
 
+_TOOLTIP_TRACK_LENGTH_DEBUG_PRINTED = False
+
 
 def _fmt_lapdist_m(lapdist_pct: float, track_length_m: float | None) -> str:
     """LapDistPct -> metres, fallback to raw pct if track length is unavailable."""
@@ -96,6 +98,14 @@ def _fmt_lapdist_m(lapdist_pct: float, track_length_m: float | None) -> str:
     if math.isfinite(track_length) and track_length > 0.0:
         return f"{lapdist * track_length:.2f}m"
     return f"{lapdist:.4f}"
+
+
+def _log_tooltip_track_length_once(track_length_m: float | None) -> None:
+    global _TOOLTIP_TRACK_LENGTH_DEBUG_PRINTED
+    if _TOOLTIP_TRACK_LENGTH_DEBUG_PRINTED:
+        return
+    print(f"[TOOLTIP-DEBUG] track_length_m={track_length_m!r}")
+    _TOOLTIP_TRACK_LENGTH_DEBUG_PRINTED = True
 
 
 def _fmt_yawrate(rad_per_s: float) -> str:
@@ -158,6 +168,8 @@ def _tooltip_lines(event, track_length_m: float | None, speed_units: str) -> lis
         yawrate_peak = _coerce_float(
             value.get("yawrate_delta_peak", value.get("peak_yawrate", value.get("peak_delta_yawrate")))
         )
+        if start_pct is not None or end_pct is not None:
+            _log_tooltip_track_length_once(track_length_m)
         if start_pct is not None:
             lines.append(f"Start: {_fmt_lapdist_m(start_pct, track_length_m)}")
         if end_pct is not None:
