@@ -22,6 +22,7 @@ config/png_view.json
 config/startframes.json
 config/ui_last_run.json
 config/window_state.json
+config/coaching_ui_state.json
 /input
 /.idea/.gitignore
 /.idea/*.iml
