@@ -547,6 +547,7 @@ class CoachingDetailView(ttk.Frame):
             hi=hi,
             zoom=self._corner_zoom,
             offset=self._corner_offset,
+            track_length_m=self._vm.track_length_m,
         )
         self._place_corner_zoom_legend()
 

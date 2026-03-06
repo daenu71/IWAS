@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional
 import numpy as np
 from PIL import Image, ImageDraw
 from PIL.ImageTk import PhotoImage as PILPhotoImage
+from core import persistence
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -79,6 +80,117 @@ _EVENT_LABELS: dict = {
     "oversteer_event":  "oversteer",
     "understeer_event": "understeer",
 }
+
+_TOOLTIP_TITLES: dict[str, str] = {
+    "peak_brake": "brake peak",
+}
+
+
+def _fmt_lapdist_m(lapdist_pct: float, track_length_m: float | None) -> str:
+    """LapDistPct -> metres, fallback to raw pct if track length is unavailable."""
+    try:
+        lapdist = float(lapdist_pct)
+        track_length = float(track_length_m) if track_length_m is not None else math.nan
+    except Exception:
+        return str(lapdist_pct)
+    if math.isfinite(track_length) and track_length > 0.0:
+        return f"{lapdist * track_length:.2f}m"
+    return f"{lapdist:.4f}"
+
+
+def _fmt_yawrate(rad_per_s: float) -> str:
+    """rad/s -> deg/s, 2 decimals."""
+    return f"{math.degrees(rad_per_s):.2f}°/s"
+
+
+def _fmt_steering(rad: float) -> str:
+    """Radians -> degrees, 2 decimals."""
+    return f"{math.degrees(rad):.2f}°"
+
+
+def _fmt_speed(m_per_s: float, speed_units: str) -> str:
+    """m/s -> km/h or mph depending on speed_units."""
+    units = str(speed_units or "km/h").strip().lower()
+    if units in ("mph", "imperial"):
+        return f"{m_per_s * 2.23694:.1f} mph"
+    return f"{m_per_s * 3.6:.1f} km/h"
+
+
+def _fmt_pct(value: float) -> str:
+    """0.0-1.0 -> percent, 2 decimals."""
+    return f"{value * 100:.2f}%"
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _read_speed_units() -> str:
+    for section in ("units", "display", "video_compare"):
+        raw = str(persistence.cfg_get(section, "speed_units", "")).strip().lower()
+        if raw:
+            if raw in ("mph", "imperial"):
+                return "mph"
+            if raw in ("kmh", "km/h", "metric"):
+                return "km/h"
+            return raw
+    return "km/h"
+
+
+def _tooltip_title(event_type: str) -> str:
+    base_title = _EVENT_LABELS.get(event_type, event_type.replace("_", " "))
+    return _TOOLTIP_TITLES.get(event_type, base_title)
+
+
+def _tooltip_lines(event, track_length_m: float | None, speed_units: str) -> list[str]:
+    event_type = str(getattr(event, "event_type", "") or "")
+    value = getattr(event, "value", None)
+    if event_type in ("oversteer_event", "understeer_event"):
+        if not isinstance(value, dict):
+            return []
+        lines: list[str] = []
+        start_pct = _coerce_float(value.get("start_lapdist_pct"))
+        end_pct = _coerce_float(value.get("end_lapdist_pct"))
+        yawrate_peak = _coerce_float(
+            value.get("yawrate_delta_peak", value.get("peak_yawrate", value.get("peak_delta_yawrate")))
+        )
+        if start_pct is not None:
+            lines.append(f"Start: {_fmt_lapdist_m(start_pct, track_length_m)}")
+        if end_pct is not None:
+            lines.append(f"End:   {_fmt_lapdist_m(end_pct, track_length_m)}")
+        if yawrate_peak is not None:
+            lines.append(f"Yawrate peak: {_fmt_yawrate(yawrate_peak)}")
+        return lines
+    if event_type == "gear_change":
+        if not isinstance(value, dict):
+            return []
+        from_gear = value.get("from")
+        to_gear = value.get("to")
+        if from_gear is None or to_gear is None:
+            return []
+        return [f"{from_gear} -> {to_gear}"]
+    scalar = _coerce_float(value)
+    if event_type == "turn_in":
+        return [f"Steering: {_fmt_steering(scalar)}"] if scalar is not None else []
+    if event_type == "peak_brake":
+        return [f"Brake: {_fmt_pct(scalar)}"] if scalar is not None else []
+    if event_type == "min_speed":
+        return [f"Speed: {_fmt_speed(scalar, speed_units)}"] if scalar is not None else []
+    if scalar is not None:
+        return [f"{scalar:.4f}"]
+    if value is None:
+        return []
+    return [str(value)]
+
+
+def _build_event_tooltip(event, track_length_m: float | None, speed_units: str) -> str:
+    title = _tooltip_title(str(getattr(event, "event_type", "") or ""))
+    lines = _tooltip_lines(event, track_length_m, speed_units)
+    return title if not lines else "\n".join([title, *lines])
 
 
 class _FitContext(NamedTuple):
@@ -435,6 +547,7 @@ def render_corner_zoom(
     hi: Optional[float] = None,
     zoom: float = 1.0,
     offset: tuple = (0.0, 0.0),
+    track_length_m: float | None = None,
 ) -> None:
     """Render a zoomed view of *corner* onto *canvas*.
 
@@ -520,6 +633,7 @@ def render_corner_zoom(
     fit_context = _legend_aware_fit_context(seg_norm, width, height, legend_width=0)
     canvas._fit_context = fit_context
     seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset, fit_context=fit_context)
+    speed_units = _read_speed_units()
 
     # -- Road band (future: road_geometry support) --------------------------
     # road_geometry rendering intentionally omitted until type is defined.
@@ -585,12 +699,7 @@ def render_corner_zoom(
                 tags=("zoom_event", tag),
             )
 
-        tip = _EVENT_LABELS.get(rev.event.event_type,
-                               rev.event.event_type.replace("_", " "))
-        if rev.event.value is not None:
-            tip += f"\n{rev.event.value}"
-
-        event_map[tag] = tip
+        event_map[tag] = _build_event_tooltip(rev.event, track_length_m, speed_units)
 
     # Single motion handler instead of per-item tag_bind (avoids tooltip-loop freeze)
     canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
