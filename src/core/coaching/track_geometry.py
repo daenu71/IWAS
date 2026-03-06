@@ -60,12 +60,19 @@ _EVENT_STYLE: dict = {
     "throttle_on":     ("▲", "#88FF44"),
     "throttle_full":   ("▲", "#00CC00"),
     "gear_change":     ("⬡", "#4488FF"),
-    "oversteer_event": ("⚠", "#FF44FF"),
-    "crest":           ("⌒", "#00DDFF"),
+    "oversteer_event":  ("⚠", "#FF44FF"),
+    "understeer_event": ("⚠", "#FF8000"),
+    "crest":            ("⌒", "#00DDFF"),
 }
 
 # Symbol types that need a contrast background (hollow / low-contrast glyphs only)
-_BG_SYMBOL_TYPES = {"gear_change", "oversteer_event", "crest", "peak_brake"}
+_BG_SYMBOL_TYPES = {"gear_change", "oversteer_event", "understeer_event", "crest", "peak_brake"}
+
+# Short display labels for legend and tooltip (override default replace("_"," "))
+_EVENT_LABELS: dict = {
+    "oversteer_event":  "oversteer",
+    "understeer_event": "understeer",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +191,51 @@ class EventSpriteCache:
                        cy + r * math.sin(math.radians(-90 + k * 120)))
                       for k in range(3)]
             draw.polygon(fg_pts, outline=fg, fill=None, width=2)
+            # Exclamation mark (white) centred inside triangle
+            white = (255, 255, 255, 255)
+            draw.rectangle(
+                [cx - max(1, r // 8), cy - r // 2 + max(1, r // 6),
+                 cx + max(1, r // 8), cy + r // 5],
+                fill=white,
+            )
+            dot_r = max(1, r // 8)
+            dot_y = cy + r // 5 + max(2, r // 5)
+            draw.ellipse(
+                [cx - dot_r, dot_y,
+                 cx + dot_r, dot_y + dot_r * 2],
+                fill=white,
+            )
+
+        elif event_type == "understeer_event":
+            # Background: filled triangle apex down r+2
+            if bg:
+                bg_pts = [
+                    (cx - r_bg, cy - r_bg),
+                    (cx + r_bg, cy - r_bg),
+                    (cx,        cy + r_bg),
+                ]
+                draw.polygon(bg_pts, fill=bg)
+            # Symbol: triangle outline r, apex down (▽)
+            fg_pts = [
+                (cx - r, cy - r),
+                (cx + r, cy - r),
+                (cx,     cy + r),
+            ]
+            draw.polygon(fg_pts, outline=fg, fill=None, width=2)
+            # Exclamation mark (white) centred inside triangle
+            white = (255, 255, 255, 255)
+            draw.rectangle(
+                [cx - max(1, r // 8), cy - r // 3,
+                 cx + max(1, r // 8), cy + r // 5],
+                fill=white,
+            )
+            dot_r = max(1, r // 8)
+            dot_y = cy + r // 5 + max(2, r // 5)
+            draw.ellipse(
+                [cx - dot_r, dot_y,
+                 cx + dot_r, dot_y + dot_r * 2],
+                fill=white,
+            )
 
         elif event_type == "crest":
             # Background: rectangle below arc
@@ -509,7 +561,8 @@ def render_corner_zoom(
             anchor=tk.CENTER, tags=("zoom_event", tag),
         )
 
-        tip = rev.event.event_type.replace("_", " ")
+        tip = _EVENT_LABELS.get(rev.event.event_type,
+                               rev.event.event_type.replace("_", " "))
         if rev.event.value is not None:
             tip += f"\n{rev.event.value}"
 
@@ -683,7 +736,7 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
 
     row_height = 18
     padding_y = 6
-    labels = [ev_type.replace("_", " ") for ev_type, _, _ in items]
+    labels = [_EVENT_LABELS.get(ev_type, ev_type.replace("_", " ")) for ev_type, _, _ in items]
     try:
         import tkinter.font as tkFont
         _font = tkFont.Font(family="Arial", size=11)
@@ -722,7 +775,7 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
         )
         canvas.create_text(
             x0 + 8 + LEGEND_SYMBOL_SIZE + 4, ly,
-            text=ev_type.replace("_", " "), fill="#AAAAAA",
+            text=_EVENT_LABELS.get(ev_type, ev_type.replace("_", " ")), fill="#AAAAAA",
             font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
         )
 
