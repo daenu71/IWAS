@@ -22,6 +22,8 @@ import tkinter as tk
 from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional
 
 import numpy as np
+from PIL import Image, ImageDraw
+from PIL.ImageTk import PhotoImage as PILPhotoImage
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -48,6 +50,7 @@ _ZOOM_MARKER_FONT = ("Arial", 17)
 _ZOOM_LEGEND_FONT = ("Arial", 11)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
 EVENT_SYMBOL_SIZE = 18   # px; event symbol size used for collision detection
+LEGEND_SYMBOL_SIZE = max(14, EVENT_SYMBOL_SIZE * 8 // 17)  # px; legend symbol size
 
 _EVENT_STYLE: dict = {
     "brake_start":     ("▼", "#CC2222"),
@@ -63,6 +66,135 @@ _EVENT_STYLE: dict = {
 
 # Symbol types that need a contrast background (hollow / low-contrast glyphs only)
 _BG_SYMBOL_TYPES = {"gear_change", "oversteer_event", "crest", "peak_brake"}
+
+
+# ---------------------------------------------------------------------------
+# PIL sprite helpers
+# ---------------------------------------------------------------------------
+
+
+def _hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
+    h = hex_color.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha)
+
+
+def _contrast_color(canvas: tk.Canvas) -> str:
+    """#FFFFFF for dark canvas backgrounds, #000000 for light ones."""
+    try:
+        rgb = canvas.winfo_rgb(canvas.cget("background"))
+        luminance = (rgb[0] / 65535 * 0.299 +
+                     rgb[1] / 65535 * 0.587 +
+                     rgb[2] / 65535 * 0.114)
+        return "#FFFFFF" if luminance < 0.5 else "#000000"
+    except Exception:
+        return "#FFFFFF"
+
+
+class EventSpriteCache:
+    """Generates and caches PIL-based event symbols as tk.PhotoImage.
+
+    Key: (event_type, size, fg_color_hex, bg_color_hex)
+    bg_color_hex=None means no background (symbol is filled).
+    """
+
+    _cache: dict = {}
+
+    @classmethod
+    def get(cls, event_type: str, size: int,
+            fg_color: str, bg_color: "str | None",
+            canvas: tk.Canvas) -> PILPhotoImage:
+        key = (event_type, size, fg_color, bg_color)
+        if key not in cls._cache:
+            cls._cache[key] = cls._make(event_type, size, fg_color, bg_color, canvas)
+        return cls._cache[key]
+
+    @classmethod
+    def clear(cls) -> None:
+        cls._cache.clear()
+
+    @classmethod
+    def _make(cls, event_type: str, size: int,
+              fg_color: str, bg_color: "str | None",
+              canvas: tk.Canvas) -> PILPhotoImage:
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        cx = size // 2
+        cy = size // 2
+        r = size // 2 - 2  # inner radius with 2px margin
+        r_bg = r + 2
+
+        fg = _hex_to_rgba(fg_color)
+        bg = _hex_to_rgba(bg_color) if bg_color else None
+
+        if event_type == "brake_start":
+            pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
+            draw.polygon(pts, fill=fg)
+
+        elif event_type == "turn_in":
+            pts = [(cx + r, cy - r), (cx + r, cy + r), (cx - r, cy)]
+            draw.polygon(pts, fill=fg)
+
+        elif event_type == "min_speed":
+            outer_r = r
+            inner_r = int(r * 0.45)
+            pts = []
+            for k in range(10):
+                angle = math.radians(-90 + k * 36)
+                rad = outer_r if k % 2 == 0 else inner_r
+                pts.append((cx + rad * math.cos(angle),
+                             cy + rad * math.sin(angle)))
+            draw.polygon(pts, fill=fg)
+
+        elif event_type in ("throttle_on", "throttle_full"):
+            pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
+            draw.polygon(pts, fill=fg)
+
+        elif event_type == "peak_brake":
+            # Background: filled circle r+2
+            if bg:
+                draw.ellipse([cx - r_bg, cy - r_bg, cx + r_bg, cy + r_bg],
+                             fill=bg)
+            # Symbol: small filled circle r//2
+            half = r // 2
+            draw.ellipse([cx - half, cy - half, cx + half, cy + half],
+                         fill=fg)
+
+        elif event_type == "gear_change":
+            # Background: filled hexagon r+2
+            if bg:
+                bg_pts = [(cx + r_bg * math.cos(math.radians(30 + k * 60)),
+                           cy + r_bg * math.sin(math.radians(30 + k * 60)))
+                          for k in range(6)]
+                draw.polygon(bg_pts, fill=bg)
+            # Symbol: hexagon outline r
+            fg_pts = [(cx + r * math.cos(math.radians(30 + k * 60)),
+                       cy + r * math.sin(math.radians(30 + k * 60)))
+                      for k in range(6)]
+            draw.polygon(fg_pts, outline=fg, fill=None, width=2)
+
+        elif event_type == "oversteer_event":
+            # Background: filled triangle apex up r+2
+            if bg:
+                bg_pts = [(cx + r_bg * math.cos(math.radians(-90 + k * 120)),
+                           cy + r_bg * math.sin(math.radians(-90 + k * 120)))
+                          for k in range(3)]
+                draw.polygon(bg_pts, fill=bg)
+            # Symbol: triangle outline r, apex up
+            fg_pts = [(cx + r * math.cos(math.radians(-90 + k * 120)),
+                       cy + r * math.sin(math.radians(-90 + k * 120)))
+                      for k in range(3)]
+            draw.polygon(fg_pts, outline=fg, fill=None, width=2)
+
+        elif event_type == "crest":
+            # Background: rectangle below arc
+            if bg:
+                draw.rectangle([cx - r_bg, cy - 2, cx + r_bg, cy + r_bg],
+                               fill=bg)
+            # Symbol: upper half-circle arc
+            draw.arc([cx - r, cy - r, cx + r, cy + r],
+                     start=180, end=0, fill=fg, width=2)
+
+        return PILPhotoImage(img)
 
 
 class ResolvedEvent(NamedTuple):
@@ -357,25 +489,24 @@ def render_corner_zoom(
                     tags=("zoom_connector",),
                 )
 
-    _bg_col = _symbol_bg_color(canvas)
-    _main_r = EVENT_SYMBOL_SIZE / 2
+    bg = _contrast_color(canvas)
+    canvas._sprite_refs = []
     for rev in resolved:
         style = _EVENT_STYLE.get(rev.event.event_type)
         if style is None:
             continue
-        symbol, color = style
+        _, color = style
 
         tag = f"zev_{id(rev.event)}"
-        if rev.event.event_type in _BG_SYMBOL_TYPES:
-            _draw_symbol_bg(
-                canvas, rev.canvas_x, rev.canvas_y,
-                rev.event.event_type, _bg_col, _main_r,
-                ("zoom_event_bg",),
-            )
-        canvas.create_text(
-            rev.canvas_x, rev.canvas_y, text=symbol, fill=color,
-            font=_ZOOM_MARKER_FONT,
-            tags=("zoom_event", tag),
+        needs_bg = rev.event.event_type in _BG_SYMBOL_TYPES
+        sprite = EventSpriteCache.get(
+            rev.event.event_type, EVENT_SYMBOL_SIZE,
+            color, bg if needs_bg else None, canvas,
+        )
+        canvas._sprite_refs.append(sprite)
+        canvas.create_image(
+            rev.canvas_x, rev.canvas_y, image=sprite,
+            anchor=tk.CENTER, tags=("zoom_event", tag),
         )
 
         tip = rev.event.event_type.replace("_", " ")
@@ -572,24 +703,26 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
         x0, y0, x0 + legend_width, y0 + legend_height,
         fill="#1a1a1a", outline="#444444", tags=("zoom_legend",),
     )
-    _bg_col = _symbol_bg_color(canvas)
-    _leg_r = EVENT_SYMBOL_SIZE * 0.8 / 2
-    for i, (ev_type, symbol, color) in enumerate(items):
+    bg = _contrast_color(canvas)
+    if not hasattr(canvas, '_sprite_refs'):
+        canvas._sprite_refs = []
+    for i, (ev_type, _, color) in enumerate(items):
         ly = y0 + padding_y + i * row_height
-        if ev_type in _BG_SYMBOL_TYPES:
-            scx = x0 + 8 + _leg_r
-            scy = ly + _leg_r
-            _draw_symbol_bg(
-                canvas, scx, scy,
-                ev_type, _bg_col, _leg_r,
-                ("zoom_legend",),
-            )
-        canvas.create_text(
-            x0 + 8, ly, text=symbol, fill=color,
-            font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
+        scx = x0 + 8 + LEGEND_SYMBOL_SIZE // 2
+        scy = ly + row_height // 2
+        needs_bg = ev_type in _BG_SYMBOL_TYPES
+        sprite = EventSpriteCache.get(
+            ev_type, LEGEND_SYMBOL_SIZE,
+            color, bg if needs_bg else None, canvas,
+        )
+        canvas._sprite_refs.append(sprite)
+        canvas.create_image(
+            scx, scy, image=sprite,
+            anchor=tk.CENTER, tags=("zoom_legend",),
         )
         canvas.create_text(
-            x0 + 26, ly, text=ev_type.replace("_", " "), fill="#AAAAAA",
+            x0 + 8 + LEGEND_SYMBOL_SIZE + 4, ly,
+            text=ev_type.replace("_", " "), fill="#AAAAAA",
             font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
         )
 
@@ -597,66 +730,6 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _symbol_bg_color(canvas: tk.Canvas) -> str:
-    """Return #FFFFFF for dark canvas backgrounds, #000000 for light ones.
-
-    Uses ``winfo_rgb`` so that named colours ('black', 'gray10', …) are
-    resolved correctly to their true RGB values.
-    """
-    try:
-        r16, g16, b16 = canvas.winfo_rgb(canvas.cget("background"))
-        # winfo_rgb returns values in [0, 65535]
-        lum = (0.299 * r16 + 0.587 * g16 + 0.114 * b16) / 65535.0
-        return "#FFFFFF" if lum < 0.5 else "#000000"
-    except Exception:
-        return "#FFFFFF"
-
-
-def _draw_symbol_bg(
-    canvas: tk.Canvas,
-    cx: float,
-    cy: float,
-    ev_type: str,
-    bg_col: str,
-    r: float,
-    tags: tuple,
-) -> None:
-    """Draw a shape-appropriate contrast background for a hollow symbol.
-
-    The background expands *r* by 2 px on every edge (absolute, not relative),
-    guaranteeing correct centering regardless of symbol size.
-
-    Shapes:
-      peak_brake      → filled circle
-      gear_change     → filled flat-top regular hexagon
-      oversteer_event → filled equilateral triangle (apex up, ⚠ style)
-      crest           → thick horizontal line (width=8), matches ⌒ stroke
-    """
-    r_bg = r + 2  # 2 px absolute expansion per side
-    if ev_type == "peak_brake":
-        canvas.create_oval(
-            cx - r_bg, cy - r_bg, cx + r_bg, cy + r_bg,
-            fill=bg_col, outline="", tags=tags,
-        )
-    elif ev_type == "gear_change":
-        pts: list = []
-        for k in range(6):
-            angle = math.radians(30 + k * 60)   # flat-top hexagon, start at 30°
-            pts.extend([cx + r_bg * math.cos(angle), cy + r_bg * math.sin(angle)])
-        canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
-    elif ev_type == "oversteer_event":
-        pts = []
-        for k in range(3):
-            angle = -math.pi / 2 + k * 2 * math.pi / 3   # apex at top
-            pts.extend([cx + r_bg * math.cos(angle), cy + r_bg * math.sin(angle)])
-        canvas.create_polygon(pts, fill=bg_col, outline="", tags=tags)
-    elif ev_type == "crest":
-        canvas.create_line(
-            cx - r_bg, cy, cx + r_bg, cy,
-            fill=bg_col, width=8, tags=tags,
-        )
 
 
 def _build_dt(resampled_df, cols: set, n: int) -> np.ndarray:
