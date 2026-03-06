@@ -191,23 +191,6 @@ class EventSpriteCache:
                        cy + r * math.sin(math.radians(-90 + k * 120)))
                       for k in range(3)]
             draw.polygon(fg_pts, outline=fg, fill=None, width=2)
-            # Exclamation mark centred on triangle centroid (apex up)
-            fg_rgba = _hex_to_rgba(fg_color)
-            center_y = cy + r // 3
-            stroke_top    = center_y - r // 3
-            stroke_bottom = center_y + r // 8
-            draw.rectangle(
-                [cx - max(1, size // 16), stroke_top,
-                 cx + max(1, size // 16), stroke_bottom],
-                fill=fg_rgba,
-            )
-            dot_top = stroke_bottom + max(2, size // 12)
-            dot_bot = dot_top + max(2, size // 12)
-            draw.ellipse(
-                [cx - max(1, size // 16), dot_top,
-                 cx + max(1, size // 16), dot_bot],
-                fill=fg_rgba,
-            )
 
         elif event_type == "understeer_event":
             # Background: filled triangle apex down r+2
@@ -225,23 +208,6 @@ class EventSpriteCache:
                 (cx,     cy + r),
             ]
             draw.polygon(fg_pts, outline=fg, fill=None, width=2)
-            # Exclamation mark centred on triangle centroid (apex down)
-            fg_rgba = _hex_to_rgba(fg_color)
-            center_y = cy - r // 3
-            stroke_top    = center_y - r // 3
-            stroke_bottom = center_y + r // 8
-            draw.rectangle(
-                [cx - max(1, size // 16), stroke_top,
-                 cx + max(1, size // 16), stroke_bottom],
-                fill=fg_rgba,
-            )
-            dot_top = stroke_bottom + max(2, size // 12)
-            dot_bot = dot_top + max(2, size // 12)
-            draw.ellipse(
-                [cx - max(1, size // 16), dot_top,
-                 cx + max(1, size // 16), dot_bot],
-                fill=fg_rgba,
-            )
 
         elif event_type == "crest":
             # Background: rectangle below arc
@@ -740,7 +706,7 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
     if not items:
         return
 
-    row_height = 18
+    row_height = max(LEGEND_SYMBOL_SIZE + 4, 20)
     padding_y = 6
     labels = [_EVENT_LABELS.get(ev_type, ev_type.replace("_", " ")) for ev_type, _, _ in items]
     try:
@@ -750,9 +716,10 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
     except Exception:
         max_text_width = max(len(label) for label in labels) * 7
 
-    symbol_col_width = EVENT_SYMBOL_SIZE + 6
-    text_col_width = max_text_width + 4
-    legend_width = symbol_col_width + text_col_width
+    padding_x = 8
+    symbol_col_width = LEGEND_SYMBOL_SIZE + 6
+    text_col_width = max_text_width
+    legend_width = padding_x + symbol_col_width + text_col_width + padding_x
     legend_height = len(items) * row_height + padding_y * 2
 
     x0 = width - legend_width - 10
@@ -765,9 +732,10 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
     bg = _contrast_color(canvas)
     if not hasattr(canvas, '_sprite_refs'):
         canvas._sprite_refs = []
+    text_x = x0 + padding_x + symbol_col_width
     for i, (ev_type, _, color) in enumerate(items):
         ly = y0 + padding_y + i * row_height
-        scx = x0 + 8 + LEGEND_SYMBOL_SIZE // 2
+        scx = x0 + padding_x + LEGEND_SYMBOL_SIZE // 2
         scy = ly + row_height // 2
         needs_bg = ev_type in _BG_SYMBOL_TYPES
         sprite = EventSpriteCache.get(
@@ -780,7 +748,7 @@ def _zoom_draw_legend(canvas: tk.Canvas, event_types: set, width: int, height: i
             anchor=tk.CENTER, tags=("zoom_legend",),
         )
         canvas.create_text(
-            x0 + 8 + LEGEND_SYMBOL_SIZE + 4, ly,
+            text_x, ly,
             text=_EVENT_LABELS.get(ev_type, ev_type.replace("_", " ")), fill="#AAAAAA",
             font=_ZOOM_LEGEND_FONT, anchor="nw", tags=("zoom_legend",),
         )
