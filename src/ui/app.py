@@ -1930,7 +1930,8 @@ class CoachingView(ttk.Frame):
             self._browser_widget.set_message(f"Analyzed: Run {int(run_id):04d} Lap {int(lap_no_raw):04d}")
             try:
                 vm = LapViewModel.load(Path(session_path), int(run_id), int(lap_no_raw))
-                self._detail_view.load_lap(vm)
+                is_purple = node.id in self._browser_widget.best_ids
+                self._detail_view.load_lap(vm, is_purple=is_purple)
             except Exception as exc:
                 _LOG.warning("CoachingDetailView load_lap failed: %s", exc)
         else:

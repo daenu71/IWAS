@@ -73,7 +73,7 @@ class CoachingDetailView(ttk.Frame):
     # Public API
     # ------------------------------------------------------------------
 
-    def load_lap(self, vm: Optional[LapViewModel]) -> None:
+    def load_lap(self, vm: Optional[LapViewModel], *, is_purple: bool = False) -> None:
         """Load *vm* and refresh all sub-widgets.
 
         Passing ``None`` is equivalent to calling ``clear()``.
@@ -82,7 +82,7 @@ class CoachingDetailView(ttk.Frame):
         if vm is None:
             self.clear()
             return
-        self._update_header(vm)
+        self._update_header(vm, is_purple=is_purple)
         self._redraw_trackmap()
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -227,7 +227,7 @@ class CoachingDetailView(ttk.Frame):
     # Header helpers
     # ------------------------------------------------------------------
 
-    def _update_header(self, vm: LapViewModel) -> None:
+    def _update_header(self, vm: LapViewModel, *, is_purple: bool = False) -> None:
         meta = vm.meta
         if meta is None:
             self._set_header_empty()
@@ -235,10 +235,11 @@ class CoachingDetailView(ttk.Frame):
         self._lbl_track.configure(text=meta.track or "—")
         self._lbl_car.configure(text=meta.car or "—")
         self._lbl_lap.configure(text=f"Lap {meta.lap_no}")
+        time_color = "#9C27B0" if is_purple else ""
         if meta.lap_time is not None:
-            self._lbl_time.configure(text=_format_laptime(meta.lap_time))
+            self._lbl_time.configure(text=_format_laptime(meta.lap_time), foreground=time_color)
         else:
-            self._lbl_time.configure(text="—:—.—")
+            self._lbl_time.configure(text="—:—.—", foreground=time_color)
 
     def _set_header_empty(self) -> None:
         self._lbl_track.configure(text="—")

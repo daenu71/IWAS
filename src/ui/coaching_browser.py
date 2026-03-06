@@ -472,6 +472,11 @@ class CoachingBrowser(ttk.Frame):
         else:
             self._btn_delete.state(["disabled"])
 
+    @property
+    def best_ids(self) -> frozenset[str]:
+        """Return the set of node IDs currently highlighted in purple."""
+        return frozenset(self._best_text.keys())
+
     def find_lap_node_id(self, session_dir: str, run_id: int, lap_no: int) -> str | None:
         """Sucht den Node-ID für die angegebene Lap. Gibt None zurück, wenn nicht gefunden."""
         index = self._index
