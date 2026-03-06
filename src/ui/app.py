@@ -5918,14 +5918,16 @@ def main() -> None:
 
     root.protocol("WM_DELETE_WINDOW", _on_app_close)
 
-    show_view(DEFAULT_VIEW_LABEL)
+    # Gespeicherten Tab VOR dem ersten show_view laden, damit show_view ihn nicht überschreibt
     try:
         _saved_ui_state = persistence.load_coaching_ui_state()
-        _saved_tab = _saved_ui_state.get("active_tab", "")
-        if _saved_tab and _saved_tab in VIEW_REGISTRY and _saved_tab != DEFAULT_VIEW_LABEL:
-            show_view(_saved_tab)
+        _startup_tab = str(_saved_ui_state.get("active_tab", "")).strip()
+        if not (_startup_tab and _startup_tab in VIEW_REGISTRY):
+            _startup_tab = DEFAULT_VIEW_LABEL
     except Exception:
-        pass
+        _startup_tab = DEFAULT_VIEW_LABEL
+
+    show_view(_startup_tab)
     try:
         _sync_irsdk_recorder_service_from_settings()
     except Exception:
