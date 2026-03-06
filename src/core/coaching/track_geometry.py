@@ -18,7 +18,7 @@ render_trackmap(canvas, xy, corners, selected_corner_id, width, height, ...)
 from __future__ import annotations
 
 import tkinter as tk
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional
 
 import numpy as np
 
@@ -46,6 +46,7 @@ _ZOOM_LINE_WIDTH = 3
 _ZOOM_MARKER_FONT = ("Arial", 17)
 _ZOOM_LEGEND_FONT = ("Arial", 7)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
+EVENT_SYMBOL_SIZE = 18   # px; event symbol size used for collision detection
 
 _EVENT_STYLE: dict = {
     "brake_start":     ("▼", "#CC2222"),
@@ -58,6 +59,15 @@ _EVENT_STYLE: dict = {
     "oversteer_event": ("⚠", "#FF44FF"),
     "crest":           ("⌒", "#00DDFF"),
 }
+
+
+class ResolvedEvent(NamedTuple):
+    """An event with its resolved canvas position and connector anchor."""
+    event: object
+    canvas_x: float
+    canvas_y: float
+    connector_start_x: float   # projection on lap line; equals canvas_x when no offset
+    connector_start_y: float
 
 
 # ---------------------------------------------------------------------------
@@ -328,36 +338,40 @@ def render_corner_zoom(
     drawn_types: set = set()
     event_map: dict = {}  # tag -> tooltip text
 
-    for ev in (events or []):
-        style = _EVENT_STYLE.get(ev.event_type)
+    resolved = _resolve_event_collisions(events, seg_ldp, seg_canvas, lo_eff, hi_eff)
+
+    # Connector lines drawn first so they appear behind symbols
+    for rev in resolved:
+        if rev.connector_start_x != rev.canvas_x or rev.connector_start_y != rev.canvas_y:
+            style = _EVENT_STYLE.get(rev.event.event_type)
+            if style is not None:
+                _, color = style
+                canvas.create_line(
+                    rev.connector_start_x, rev.connector_start_y,
+                    rev.canvas_x, rev.canvas_y,
+                    fill=color, width=1,
+                    tags=("zoom_connector",),
+                )
+
+    for rev in resolved:
+        style = _EVENT_STYLE.get(rev.event.event_type)
         if style is None:
             continue
         symbol, color = style
 
-        # Skip events outside the padded window
-        if not (lo_eff <= ev.lapdist_pct <= hi_eff):
-            continue
-
-        try:
-            ex, ey = _zoom_project_event(
-                ev.lapdist_pct, seg_ldp, seg_canvas,
-            )
-        except Exception:
-            continue
-
-        tag = f"zev_{id(ev)}"
+        tag = f"zev_{id(rev.event)}"
         canvas.create_text(
-            ex, ey, text=symbol, fill=color,
+            rev.canvas_x, rev.canvas_y, text=symbol, fill=color,
             font=_ZOOM_MARKER_FONT,
             tags=("zoom_event", tag),
         )
 
-        tip = ev.event_type.replace("_", " ")
-        if ev.value is not None:
-            tip += f"\n{ev.value}"
+        tip = rev.event.event_type.replace("_", " ")
+        if rev.event.value is not None:
+            tip += f"\n{rev.event.value}"
 
         event_map[tag] = tip
-        drawn_types.add(ev.event_type)
+        drawn_types.add(rev.event.event_type)
 
     # Single motion handler instead of per-item tag_bind (avoids tooltip-loop freeze)
     canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
@@ -370,6 +384,88 @@ def render_corner_zoom(
 # ---------------------------------------------------------------------------
 # Corner-Zoom private helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_event_collisions(
+    events,
+    seg_ldp: Optional[np.ndarray],
+    seg_canvas: np.ndarray,
+    lo_eff: float,
+    hi_eff: float,
+) -> list:
+    """Return a list of ``ResolvedEvent`` with collision-resolved canvas positions.
+
+    Events whose projected positions are within ``EVENT_SYMBOL_SIZE`` pixels of
+    each other are grouped.  Within each group index-0 stays on the lap line;
+    subsequent events are offset orthogonally (alternating right/left, growing
+    magnitude) with a connector line anchor stored in ``connector_start_*``.
+    """
+    # Collect valid events with their projected canvas positions
+    valid: list = []
+    for ev in (events or []):
+        if _EVENT_STYLE.get(ev.event_type) is None:
+            continue
+        if not (lo_eff <= ev.lapdist_pct <= hi_eff):
+            continue
+        try:
+            ex, ey = _zoom_project_event(ev.lapdist_pct, seg_ldp, seg_canvas)
+        except Exception:
+            continue
+        valid.append((ev, ex, ey))
+
+    if not valid:
+        return []
+
+    # Sort by lapdist_pct so nearby positions cluster together
+    valid.sort(key=lambda t: t[0].lapdist_pct)
+
+    # Greedy grouping: events within EVENT_SYMBOL_SIZE canvas distance of the
+    # first event in a group belong to that collision group.
+    groups: list = []
+    for ev, ex, ey in valid:
+        placed = False
+        for group in groups:
+            gx, gy = group[0][1], group[0][2]
+            if ((ex - gx) ** 2 + (ey - gy) ** 2) ** 0.5 < EVENT_SYMBOL_SIZE:
+                group.append((ev, ex, ey))
+                placed = True
+                break
+        if not placed:
+            groups.append([(ev, ex, ey)])
+
+    n_seg = len(seg_canvas)
+    resolved: list = []
+
+    for group in groups:
+        for idx, (ev, ex, ey) in enumerate(group):
+            if idx == 0:
+                resolved.append(ResolvedEvent(ev, ex, ey, ex, ey))
+                continue
+
+            # Tangent vector at the event's projection point on seg_canvas
+            dists = np.hypot(seg_canvas[:, 0] - ex, seg_canvas[:, 1] - ey)
+            seg_idx = int(np.argmin(dists))
+            prev_i = max(0, seg_idx - 1)
+            next_i = min(n_seg - 1, seg_idx + 1)
+            tx = float(seg_canvas[next_i, 0] - seg_canvas[prev_i, 0])
+            ty = float(seg_canvas[next_i, 1] - seg_canvas[prev_i, 1])
+            length = (tx ** 2 + ty ** 2) ** 0.5 or 1.0
+            tx /= length
+            ty /= length
+
+            # Alternating sides with growing magnitude:
+            # idx=1 → right 2×, idx=2 → left 2×, idx=3 → right 4×, …
+            magnitude = ((idx + 1) // 2) * 2 * EVENT_SYMBOL_SIZE
+            if idx % 2 == 1:   # right: orthogonal(-ty, tx)
+                ox, oy = -ty, tx
+            else:              # left:  orthogonal(+ty, -tx)
+                ox, oy = ty, -tx
+
+            new_x = ex + ox * magnitude
+            new_y = ey + oy * magnitude
+            resolved.append(ResolvedEvent(ev, new_x, new_y, ex, ey))
+
+    return resolved
 
 
 def _zoom_project_event(
