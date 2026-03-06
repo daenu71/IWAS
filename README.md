@@ -73,12 +73,13 @@ Notes:
 
 - `src/app_entry.py` starts the GUI by default.
 - Internal render mode is triggered by the UI using `--ui-json`.
+- Dependency policy: pinned versions in `requirements.txt`.
 
 ## Build Windows EXE (PyInstaller)
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m pip install pyinstaller
+.venv\Scripts\python.exe -m pip install pyinstaller==6.19.0
 .venv\Scripts\python.exe -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
 ```
 

@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PyInstallerVersion = "6.19.0"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $FfmpegBin = Join-Path $RepoRoot "third_party\ffmpeg\lgpl_shared\bin"
@@ -41,7 +42,7 @@ try {
     }
 
     & $PythonExe -m pip install -r requirements.txt
-    & $PythonExe -m pip install pyinstaller
+    & $PythonExe -m pip install "pyinstaller==$PyInstallerVersion"
     & $PythonExe -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
 } finally {
     Pop-Location
