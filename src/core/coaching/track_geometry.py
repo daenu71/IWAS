@@ -52,6 +52,12 @@ _ZOOM_TOOLTIP_FONT = ("Arial", 8)
 EVENT_SYMBOL_SIZE = 20   # px; event symbol size used for collision detection
 LEGEND_SYMBOL_SIZE = EVENT_SYMBOL_SIZE  # px; legend symbol size
 
+_FIT_LEGEND_WIDTH = 160
+_FIT_PADDING_LEFT = 10
+_FIT_PADDING_RIGHT = 10
+_FIT_PADDING_TOP = 40
+_FIT_PADDING_BOTTOM = 10
+
 _EVENT_STYLE: dict = {
     "brake_start":     ("▼", "#CC2222"),
     "peak_brake":      ("●", "#770000"),
@@ -73,6 +79,22 @@ _EVENT_LABELS: dict = {
     "oversteer_event":  "oversteer",
     "understeer_event": "understeer",
 }
+
+
+class _FitContext(NamedTuple):
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+    x_range: float
+    y_range: float
+    usable_width: float
+    usable_height: float
+    scale: float
+    offset_x: float
+    offset_y: float
+    draw_width: float
+    draw_height: float
 
 
 # ---------------------------------------------------------------------------
@@ -334,11 +356,14 @@ def render_trackmap(
         clicks a corner segment.
     """
     canvas.delete("all")
+    canvas._fit_context = None
 
     if xy is None or len(xy) < 2:
         return
 
-    coords = _transform_zoom(xy, width, height, zoom, offset)  # (N, 2) pixel coords
+    fit_context = _legend_aware_fit_context(xy, width, height)
+    canvas._fit_context = fit_context
+    coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)  # (N, 2) pixel coords
     closed_flat = _closed_flat(coords)       # flat list, first == last
 
     # 1 – Base track line (grey)
@@ -438,6 +463,7 @@ def render_corner_zoom(
         ``corner.start_lapdist_pct`` / ``end_lapdist_pct`` when ``None``.
     """
     canvas.delete("all")
+    canvas._fit_context = None
     if xy is None or len(xy) < 2:
         return
 
@@ -491,7 +517,9 @@ def render_corner_zoom(
     ])
 
     # Canvas mapping with zoom/offset (Y flipped, shared transform with TrackMap)
-    seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset)
+    fit_context = _legend_aware_fit_context(seg_norm, width, height)
+    canvas._fit_context = fit_context
+    seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset, fit_context=fit_context)
 
     # -- Road band (future: road_geometry support) --------------------------
     # road_geometry rendering intentionally omitted until type is defined.
@@ -823,23 +851,66 @@ def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return np.column_stack([xn, yn])
 
 
+def _legend_aware_fit_context(
+    xy: np.ndarray,
+    width: int,
+    height: int,
+    legend_width: int = _FIT_LEGEND_WIDTH,
+    padding_left: int = _FIT_PADDING_LEFT,
+    padding_right: int = _FIT_PADDING_RIGHT,
+    padding_top: int = _FIT_PADDING_TOP,
+    padding_bottom: int = _FIT_PADDING_BOTTOM,
+) -> _FitContext:
+    """Return the shared fit context for TrackMap / Corner-Zoom rendering."""
+    if xy is None or len(xy) == 0:
+        x_min = y_min = x_max = y_max = 0.0
+        x_range = y_range = 1.0
+    else:
+        x_min = float(np.min(xy[:, 0]))
+        y_min = float(np.min(xy[:, 1]))
+        x_max = float(np.max(xy[:, 0]))
+        y_max = float(np.max(xy[:, 1]))
+        x_range = x_max - x_min or 1.0
+        y_range = y_max - y_min or 1.0
+
+    usable_width = max(width - padding_left - legend_width - padding_right, 1.0)
+    usable_height = max(height - padding_top - padding_bottom, 1.0)
+    scale = min(usable_width / (x_range or 1.0), usable_height / (y_range or 1.0))
+    offset_x = padding_left + (usable_width - x_range * scale) / 2.0
+    offset_y = padding_top + (usable_height - y_range * scale) / 2.0
+    draw_width = x_range * scale
+    draw_height = y_range * scale
+    return _FitContext(
+        x_min=x_min,
+        y_min=y_min,
+        x_max=x_max,
+        y_max=y_max,
+        x_range=x_range,
+        y_range=y_range,
+        usable_width=usable_width,
+        usable_height=usable_height,
+        scale=scale,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        draw_width=draw_width,
+        draw_height=draw_height,
+    )
+
+
 def _transform_zoom(
     xy: np.ndarray, width: int, height: int,
     zoom: float, offset: tuple,
+    fit_context: Optional[_FitContext] = None,
 ) -> np.ndarray:
-    """Map normalised [0, 1] coords to canvas pixels with zoom and offset.
+    """Map coords to canvas pixels using the shared legend-aware fit context."""
+    if xy is None or len(xy) == 0:
+        return np.empty((0, 2), dtype=np.float64)
 
-    At zoom=1.0 and offset=(0.0, 0.0) the result matches the same 20 px
-    padding used for the interactive TrackMap.  Y-axis is flipped so that
-    mathematical positive-Y maps upward on screen.
-    """
-    pad = 20
-    B_w = (width - 2 * pad) * zoom
-    B_h = (height - 2 * pad) * zoom
-    origin_x = pad + offset[0] * width + (width - 2 * pad) * (1 - zoom) / 2
-    origin_y = pad + offset[1] * height + (height - 2 * pad) * (1 - zoom) / 2
-    px = origin_x + xy[:, 0] * B_w
-    py = origin_y + (1.0 - xy[:, 1]) * B_h   # flip Y
+    fit = fit_context or _legend_aware_fit_context(xy, width, height)
+    origin_x = fit.offset_x + offset[0] * width + fit.draw_width * (1.0 - zoom) / 2.0
+    origin_y = fit.offset_y + offset[1] * height + fit.draw_height * (1.0 - zoom) / 2.0
+    px = origin_x + (xy[:, 0] - fit.x_min) * fit.scale * zoom
+    py = origin_y + (fit.y_max - xy[:, 1]) * fit.scale * zoom
     return np.column_stack([px, py])
 
 

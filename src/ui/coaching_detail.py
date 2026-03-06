@@ -295,18 +295,18 @@ class CoachingDetailView(ttk.Frame):
         canvas = self._trackmap_canvas
         w = canvas.winfo_width()
         h = canvas.winfo_height()
-        pad = 20
-        B_w = w - 2 * pad
-        B_h = h - 2 * pad
+        fit = getattr(canvas, "_fit_context", None)
+        if fit is None:
+            return
 
-        origin_x = pad + self._map_offset[0] * w + B_w * (1 - old_zoom) / 2
-        origin_y = pad + self._map_offset[1] * h + B_h * (1 - old_zoom) / 2
+        origin_x = fit.offset_x + self._map_offset[0] * w + fit.draw_width * (1 - old_zoom) / 2
+        origin_y = fit.offset_y + self._map_offset[1] * h + fit.draw_height * (1 - old_zoom) / 2
 
         new_origin_x = event.x - (event.x - origin_x) * (new_zoom / old_zoom)
         new_origin_y = event.y - (event.y - origin_y) * (new_zoom / old_zoom)
 
-        new_offset_x = (new_origin_x - pad - B_w * (1 - new_zoom) / 2) / w
-        new_offset_y = (new_origin_y - pad - B_h * (1 - new_zoom) / 2) / h
+        new_offset_x = (new_origin_x - fit.offset_x - fit.draw_width * (1 - new_zoom) / 2) / w
+        new_offset_y = (new_origin_y - fit.offset_y - fit.draw_height * (1 - new_zoom) / 2) / h
 
         self._map_zoom = new_zoom
         self._map_offset = (new_offset_x, new_offset_y)
@@ -358,18 +358,18 @@ class CoachingDetailView(ttk.Frame):
         canvas = self._zoom_canvas
         w = canvas.winfo_width()
         h = canvas.winfo_height()
-        pad = 20
-        B_w = w - 2 * pad
-        B_h = h - 2 * pad
+        fit = getattr(canvas, "_fit_context", None)
+        if fit is None:
+            return
 
-        origin_x = pad + self._corner_offset[0] * w + B_w * (1 - old_zoom) / 2
-        origin_y = pad + self._corner_offset[1] * h + B_h * (1 - old_zoom) / 2
+        origin_x = fit.offset_x + self._corner_offset[0] * w + fit.draw_width * (1 - old_zoom) / 2
+        origin_y = fit.offset_y + self._corner_offset[1] * h + fit.draw_height * (1 - old_zoom) / 2
 
         new_origin_x = event.x - (event.x - origin_x) * (new_zoom / old_zoom)
         new_origin_y = event.y - (event.y - origin_y) * (new_zoom / old_zoom)
 
-        new_offset_x = (new_origin_x - pad - B_w * (1 - new_zoom) / 2) / w
-        new_offset_y = (new_origin_y - pad - B_h * (1 - new_zoom) / 2) / h
+        new_offset_x = (new_origin_x - fit.offset_x - fit.draw_width * (1 - new_zoom) / 2) / w
+        new_offset_y = (new_origin_y - fit.offset_y - fit.draw_height * (1 - new_zoom) / 2) / h
 
         self._corner_zoom = new_zoom
         self._corner_offset = (new_offset_x, new_offset_y)
