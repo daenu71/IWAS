@@ -229,6 +229,28 @@ class RecorderService:
                         self._sleep_interruptible(1.0)
                         continue
                     self._debug_log_line("connect_ok")
+                    with self._lock:
+                        _rs_session_dir = self._session_dir
+                        _rs_session_type = self._session_type
+                        _rs_run_detector_type = type(self._run_detector).__name__ if self._run_detector else None
+                        _rs_session_meta_written = self._session_meta_written
+                        _rs_session_finalized = self._session_finalized_marked
+                        _rs_active_run_id = self._active_run_id
+                    _LOG.info(
+                        "[RECONNECT-STATE] session_dir=%s session_type=%s run_detector=%s "
+                        "session_meta_written=%s session_finalized=%s active_run_id=%s",
+                        _rs_session_dir,
+                        _rs_session_type,
+                        _rs_run_detector_type,
+                        _rs_session_meta_written,
+                        _rs_session_finalized,
+                        _rs_active_run_id,
+                    )
+                    self._debug_log_line(
+                        f"[RECONNECT-STATE] session_dir={_rs_session_dir} session_type={_rs_session_type} "
+                        f"run_detector={_rs_run_detector_type} session_meta_written={_rs_session_meta_written} "
+                        f"session_finalized={_rs_session_finalized} active_run_id={_rs_active_run_id}"
+                    )
                     self._initialize_channels()
                     self._try_write_session_info_yaml()
                     next_tick = time.monotonic()
@@ -1125,8 +1147,27 @@ class RecorderService:
             updates[key] = value
         if not updates:
             return
+        _uid_mismatch_existing: Any = None
+        _uid_mismatch_new: Any = None
         with self._lock:
+            if "SessionUniqueID" in updates:
+                _existing_uid = self._session_identity_fields.get("SessionUniqueID")
+                _new_uid = updates["SessionUniqueID"]
+                if _existing_uid is not None and str(_existing_uid) != str(_new_uid):
+                    _uid_mismatch_existing = _existing_uid
+                    _uid_mismatch_new = _new_uid
             self._session_identity_fields.update(updates)
+        if _uid_mismatch_existing is not None:
+            _LOG.warning(
+                "[SESSION-ID-MISMATCH] SessionUniqueID hat sich geändert: alt=%s neu=%s – "
+                "kein Session-Reset implementiert!",
+                _uid_mismatch_existing,
+                _uid_mismatch_new,
+            )
+            self._debug_log_line(
+                f"[SESSION-ID-MISMATCH] SessionUniqueID geändert alt={_uid_mismatch_existing} "
+                f"neu={_uid_mismatch_new} kein_reset"
+            )
 
     def _maybe_rename_session_dir_from_identity(self) -> None:
         """Implement maybe rename session dir from identity logic."""
@@ -1752,6 +1793,16 @@ class RecorderService:
                         current,
                         normalized,
                     )
+                _LOG.info(
+                    "[SESSION-GUARD] run_detector bereits gesetzt (session_type=%s), "
+                    "neuer session_type=%s wird ignoriert",
+                    current,
+                    normalized,
+                )
+                self._debug_log_line(
+                    f"[SESSION-GUARD] run_detector bereits gesetzt session_type={current} "
+                    f"neuer_session_type={normalized} ignoriert"
+                )
                 return
             self._session_type = normalized
             self._run_detector = RunDetector(normalized)
