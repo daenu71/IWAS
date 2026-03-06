@@ -51,6 +51,35 @@ def _write_session_meta(session_dir: Path) -> None:
     )
 
 
+def _write_session_meta_without_environment(session_dir: Path) -> None:
+    meta = {
+        "TrackDisplayName": "Spa-Francorchamps",
+        "TrackConfigName": "Full",
+        "CarScreenName": "Dallara Formula 3",
+    }
+    (session_dir / "session_meta.json").write_text(
+        json.dumps(meta), encoding="utf-8"
+    )
+
+
+def _write_session_info_yaml(session_dir: Path) -> None:
+    (session_dir / "session_info.yaml").write_text(
+        """
+WeekendInfo:
+  TrackSurfaceTemp: 27.5 C
+  TrackAirTemp: 19.2 C
+  TrackRelativeHumidity: 46 %
+  TrackFogLevel: 0 %
+  TrackWindVel: 1.8 m/s
+  TrackWindDir: 3.14159265359 rad
+  TrackSkies: Partly Cloudy
+  TrackWeatherType: Dynamic
+  TrackAirPressure: 1009.1 hPa
+""".strip(),
+        encoding="utf-8",
+    )
+
+
 def _write_lap_meta(session_dir: Path, run_id: int, lap_no: int) -> None:
     meta = {
         "lap_time": 132.456,
@@ -324,3 +353,26 @@ def test_load_missing_meta_no_crash(tmp_path: Path) -> None:
     assert vm.corners == []
     assert vm.events == {}
     assert vm.features == {}
+
+
+def test_load_meta_falls_back_to_session_info_environment(tmp_path: Path) -> None:
+    session_dir = _make_session_dir(tmp_path)
+    _write_session_meta_without_environment(session_dir)
+    _write_session_info_yaml(session_dir)
+    _write_lap_meta(session_dir, run_id=1, lap_no=1)
+    lap_dir = _make_lap_dir(session_dir, lap_no=1)
+    _write_resampled(lap_dir)
+
+    vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
+
+    assert vm.meta is not None
+    assert vm.meta.environment is not None
+    assert vm.meta.environment["track_temp_c"] == pytest.approx(27.5)
+    assert vm.meta.environment["air_temp_c"] == pytest.approx(19.2)
+    assert vm.meta.environment["humidity_pct"] == pytest.approx(46.0)
+    assert vm.meta.environment["fog_pct"] == pytest.approx(0.0)
+    assert vm.meta.environment["wind_speed_ms"] == pytest.approx(1.8)
+    assert vm.meta.environment["wind_dir_deg"] == pytest.approx(180.0)
+    assert vm.meta.environment["skies"] == "Partly Cloudy"
+    assert vm.meta.environment["weather_type"] == "Dynamic"
+    assert vm.meta.environment["air_pressure_hpa"] == pytest.approx(1009.1)

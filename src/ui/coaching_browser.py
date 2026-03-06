@@ -730,14 +730,14 @@ class CoachingBrowser(ttk.Frame):
         self._environment_hover_after_id = None
 
     def _tooltip_environment_for_iid(self, iid: str | None) -> dict[str, Any] | None:
-        """Return environment data for lap rows that should show a tooltip."""
+        """Return environment data for any visible row that has it."""
         if not iid:
             return None
         index = self._index
         if index is None:
             return None
         node = index.nodes_by_id.get(iid)
-        if node is None or node.kind != "lap":
+        if node is None:
             return None
         return _normalize_environment(node.summary.environment)
 

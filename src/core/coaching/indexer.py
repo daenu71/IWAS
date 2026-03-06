@@ -14,6 +14,7 @@ from typing import Any
 from core.coaching.lap_segmenter import LapSegmenter
 from core.coaching.lap_metrics import RunLapMetrics, compute_run_lap_metrics
 from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZED_FILENAME
+from core.irsdk.sessioninfo_parser import resolve_session_environment
 
 
 _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
@@ -234,6 +235,13 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     parsed_name = _parse_session_folder_name(session_dir.name)
     session_meta_path = session_dir / "session_meta.json"
     session_meta = _read_json_dict(session_meta_path)
+    session_environment = resolve_session_environment(
+        session_meta,
+        session_info_yaml=_read_text_file(session_dir / "session_info.yaml"),
+    )
+    if session_environment is not None:
+        session_meta = dict(session_meta)
+        session_meta["environment"] = session_environment
     has_active_lock = (session_dir / ACTIVE_SESSION_LOCK_FILENAME).exists()
     has_finalized_marker = (session_dir / SESSION_FINALIZED_FILENAME).exists()
 
@@ -500,6 +508,16 @@ def _read_json_dict(path: Path | None) -> dict[str, Any]:
     except Exception:
         return {}
     return {}
+
+
+def _read_text_file(path: Path | None) -> str | None:
+    """Read text file content or return None when unavailable."""
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
 
 
 def _compute_run_summary(

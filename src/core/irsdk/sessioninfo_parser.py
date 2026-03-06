@@ -66,23 +66,67 @@ def extract_session_meta(
         if raw_session_type is not None:
             meta["session_type_raw"] = str(raw_session_type)
             meta["SessionType"] = normalize_session_type(raw_session_type)
-        environment = _extract_environment(
-            {
-                "TrackTemp": _regex_extract_scalar(text, "TrackTemp"),
-                "AirTemp": _regex_extract_scalar(text, "AirTemp"),
-                "Humidity": _regex_extract_scalar(text, "Humidity"),
-                "Fog": _regex_extract_scalar(text, "Fog"),
-                "WindSpeed": _regex_extract_scalar(text, "WindSpeed"),
-                "WindDir": _regex_extract_scalar(text, "WindDir"),
-                "Skies": _regex_extract_scalar(text, "Skies"),
-                "WeatherType": _regex_extract_scalar(text, "WeatherType"),
-                "AirPressure": _regex_extract_scalar(text, "AirPressure"),
-            }
-        )
+        environment = extract_environment_from_session_info(text)
         if environment is not None:
             meta["environment"] = environment
 
     return _with_timestamps(meta, recorder_start_ts=recorder_start_ts, session_info_saved_ts=session_info_saved_ts)
+
+
+def resolve_session_environment(
+    session_meta: dict[str, Any] | None,
+    *,
+    session_info_yaml: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve environment data from recorded meta with a YAML fallback."""
+    meta = session_meta if isinstance(session_meta, dict) else {}
+    environment = _normalize_environment_dict(meta.get("environment"))
+    if environment is not None:
+        return environment
+
+    environment = _extract_environment(meta)
+    if environment is not None:
+        return environment
+
+    if session_info_yaml:
+        return extract_environment_from_session_info(session_info_yaml)
+    return None
+
+
+def extract_environment_from_session_info(session_info_yaml: str) -> dict[str, Any] | None:
+    """Extract only the environment block from SessionInfo YAML text."""
+    text = str(session_info_yaml or "")
+    if not text.strip():
+        return None
+    parsed = _safe_yaml_parse(text)
+    if isinstance(parsed, dict):
+        return _extract_environment(_as_dict(parsed.get("WeekendInfo")))
+    return _extract_environment(
+        {
+            "TrackTemp": _regex_extract_scalar(text, "TrackTemp"),
+            "TrackSurfaceTemp": _regex_extract_scalar(text, "TrackSurfaceTemp"),
+            "AirTemp": _regex_extract_scalar(text, "AirTemp"),
+            "TrackAirTemp": _regex_extract_scalar(text, "TrackAirTemp"),
+            "WeatherTemp": _regex_extract_scalar(text, "WeatherTemp"),
+            "Humidity": _regex_extract_scalar(text, "Humidity"),
+            "TrackRelativeHumidity": _regex_extract_scalar(text, "TrackRelativeHumidity"),
+            "RelativeHumidity": _regex_extract_scalar(text, "RelativeHumidity"),
+            "Fog": _regex_extract_scalar(text, "Fog"),
+            "TrackFogLevel": _regex_extract_scalar(text, "TrackFogLevel"),
+            "FogLevel": _regex_extract_scalar(text, "FogLevel"),
+            "WindSpeed": _regex_extract_scalar(text, "WindSpeed"),
+            "TrackWindVel": _regex_extract_scalar(text, "TrackWindVel"),
+            "WindDir": _regex_extract_scalar(text, "WindDir"),
+            "TrackWindDir": _regex_extract_scalar(text, "TrackWindDir"),
+            "WindDirection": _regex_extract_scalar(text, "WindDirection"),
+            "Skies": _regex_extract_scalar(text, "Skies"),
+            "TrackSkies": _regex_extract_scalar(text, "TrackSkies"),
+            "WeatherType": _regex_extract_scalar(text, "WeatherType"),
+            "TrackWeatherType": _regex_extract_scalar(text, "TrackWeatherType"),
+            "AirPressure": _regex_extract_scalar(text, "AirPressure"),
+            "TrackAirPressure": _regex_extract_scalar(text, "TrackAirPressure"),
+        }
+    )
 
 
 def normalize_session_type(raw_session_type: Any) -> str:
@@ -209,16 +253,64 @@ def _regex_extract_scalar(text: str, key: str) -> str | None:
 
 def _extract_environment(weekend_info: dict[str, Any]) -> dict[str, Any] | None:
     """Extract environment metadata from WeekendInfo."""
+    weekend_options = _as_dict(weekend_info.get("WeekendOptions"))
     environment = {
-        "track_temp_c": _coerce_optional_float(weekend_info.get("TrackTemp")),
-        "air_temp_c": _coerce_optional_float(weekend_info.get("AirTemp")),
-        "humidity_pct": _coerce_optional_float(weekend_info.get("Humidity")),
-        "fog_pct": _coerce_optional_float(weekend_info.get("Fog")),
-        "wind_speed_ms": _coerce_optional_float(weekend_info.get("WindSpeed")),
-        "wind_dir_deg": _coerce_optional_float(weekend_info.get("WindDir")),
-        "skies": _coerce_optional_str(weekend_info.get("Skies")),
-        "weather_type": _coerce_optional_str(weekend_info.get("WeatherType")),
-        "air_pressure_hpa": _coerce_optional_float(weekend_info.get("AirPressure")),
+        "track_temp_c": _coerce_temperature_c(
+            _coalesce(
+                weekend_info.get("TrackTemp"),
+                weekend_info.get("TrackSurfaceTemp"),
+                weekend_options.get("WeatherTemp"),
+            )
+        ),
+        "air_temp_c": _coerce_temperature_c(
+            _coalesce(
+                weekend_info.get("AirTemp"),
+                weekend_info.get("TrackAirTemp"),
+                weekend_options.get("WeatherTemp"),
+            )
+        ),
+        "humidity_pct": _coerce_percentage(
+            _coalesce(
+                weekend_info.get("Humidity"),
+                weekend_info.get("TrackRelativeHumidity"),
+                weekend_options.get("RelativeHumidity"),
+            )
+        ),
+        "fog_pct": _coerce_percentage(
+            _coalesce(
+                weekend_info.get("Fog"),
+                weekend_info.get("TrackFogLevel"),
+                weekend_options.get("FogLevel"),
+            )
+        ),
+        "wind_speed_ms": _coerce_speed_ms(
+            _coalesce(
+                weekend_info.get("WindSpeed"),
+                weekend_info.get("TrackWindVel"),
+                weekend_options.get("WindSpeed"),
+            )
+        ),
+        "wind_dir_deg": _coerce_direction_deg(
+            _coalesce(
+                weekend_info.get("WindDir"),
+                weekend_info.get("TrackWindDir"),
+                weekend_options.get("WindDirection"),
+            )
+        ),
+        "skies": _coerce_optional_str(_coalesce(weekend_info.get("Skies"), weekend_info.get("TrackSkies"), weekend_options.get("Skies"))),
+        "weather_type": _coerce_optional_str(
+            _coalesce(
+                weekend_info.get("WeatherType"),
+                weekend_info.get("TrackWeatherType"),
+                weekend_options.get("WeatherType"),
+            )
+        ),
+        "air_pressure_hpa": _coerce_pressure_hpa(
+            _coalesce(
+                weekend_info.get("AirPressure"),
+                weekend_info.get("TrackAirPressure"),
+            )
+        ),
     }
     if any(value is not None for value in environment.values()):
         return environment
@@ -238,7 +330,8 @@ def _coerce_optional_float(value: Any) -> float | None:
     try:
         return float(value)
     except Exception:
-        return None
+        parsed, _unit = _parse_number_and_unit(value)
+        return parsed
 
 
 def _coerce_optional_str(value: Any) -> str | None:
@@ -258,6 +351,128 @@ def _coalesce(*values: Any) -> Any:
             continue
         return value
     return None
+
+
+def _normalize_environment_dict(value: Any) -> dict[str, Any] | None:
+    """Return a shallow-copied environment dict or None."""
+    if not isinstance(value, dict):
+        return None
+    copied = dict(value)
+    return copied or None
+
+
+def _coerce_temperature_c(value: Any) -> float | None:
+    number, unit = _parse_number_and_unit(value)
+    if number is None:
+        return None
+    normalized_unit = unit.replace("°", "")
+    if normalized_unit in {"", "c", "deg c"}:
+        return number
+    if normalized_unit in {"f", "deg f"}:
+        return (number - 32.0) * (5.0 / 9.0)
+    if normalized_unit in {"k", "deg k"}:
+        return number - 273.15
+    return number
+
+
+def _coerce_percentage(value: Any) -> float | None:
+    number, _unit = _parse_number_and_unit(value)
+    return number
+
+
+def _coerce_speed_ms(value: Any) -> float | None:
+    number, unit = _parse_number_and_unit(value)
+    if number is None:
+        return None
+    if unit in {"", "m/s", "ms", "meter/s", "meters/s"}:
+        return number
+    if unit in {"km/h", "kph", "kmh"}:
+        return number / 3.6
+    if unit in {"mph"}:
+        return number * 0.44704
+    if unit in {"kt", "kts", "kn", "knot", "knots"}:
+        return number * 0.514444
+    return number
+
+
+def _coerce_direction_deg(value: Any) -> float | None:
+    text = _coerce_optional_str(value)
+    if text is None:
+        return None
+    cardinal = _cardinal_direction_deg(text)
+    if cardinal is not None:
+        return cardinal
+    number, unit = _parse_number_and_unit(text)
+    if number is None:
+        return None
+    normalized_unit = unit.replace("°", "")
+    if normalized_unit in {"", "deg", "degree", "degrees"}:
+        return number % 360.0
+    if normalized_unit in {"rad", "radian", "radians"}:
+        return (number * 180.0 / 3.141592653589793) % 360.0
+    return number % 360.0
+
+
+def _coerce_pressure_hpa(value: Any) -> float | None:
+    number, unit = _parse_number_and_unit(value)
+    if number is None:
+        return None
+    if unit in {"", "hpa", "mbar", "mb"}:
+        return number
+    if unit in {"kpa"}:
+        return number * 10.0
+    if unit in {"bar"}:
+        return number * 1000.0
+    if unit in {"hg", "inhg"}:
+        return number * 33.8638866667
+    if unit in {"psi"}:
+        return number * 68.9475729
+    return number
+
+
+def _parse_number_and_unit(value: Any) -> tuple[float | None, str]:
+    """Extract a leading numeric value and normalized unit suffix."""
+    if value is None:
+        return None, ""
+    if isinstance(value, bool):
+        return None, ""
+    if isinstance(value, (int, float)):
+        return float(value), ""
+    text = str(value).strip()
+    if not text:
+        return None, ""
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        return None, text.lower()
+    try:
+        number = float(match.group(0))
+    except Exception:
+        return None, ""
+    unit = text[match.end():].strip().lower()
+    return number, unit
+
+
+def _cardinal_direction_deg(value: str) -> float | None:
+    """Convert a compass direction like NE or SSW into degrees."""
+    lookup = {
+        "n": 0.0,
+        "nne": 22.5,
+        "ne": 45.0,
+        "ene": 67.5,
+        "e": 90.0,
+        "ese": 112.5,
+        "se": 135.0,
+        "sse": 157.5,
+        "s": 180.0,
+        "ssw": 202.5,
+        "sw": 225.0,
+        "wsw": 247.5,
+        "w": 270.0,
+        "wnw": 292.5,
+        "nw": 315.0,
+        "nnw": 337.5,
+    }
+    return lookup.get(str(value or "").strip().lower())
 
 
 def _set_if_present(target: dict[str, Any], key: str, value: Any) -> None:

@@ -26,6 +26,8 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 import numpy as np
 import pyarrow.parquet as pq
 
+from core.irsdk.sessioninfo_parser import resolve_session_environment
+
 from .corner_map import load_corner_map
 from .storage import sanitize_name
 
@@ -182,7 +184,10 @@ def _resolve_lap_dir(session_dir: Path, run_id: int, lap_no: int) -> Path:
 def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
     """Build LapMeta from session_meta.json and lap-level meta files."""
     session_meta = _read_json(session_dir / "session_meta.json")
-    environment = _normalize_environment(session_meta.get("environment"))
+    environment = resolve_session_environment(
+        session_meta,
+        session_info_yaml=_read_text(session_dir / "session_info.yaml"),
+    )
 
     track = (
         _str_or(session_meta.get("TrackDisplayName"))
@@ -698,6 +703,13 @@ def _normalize_environment(value: Any) -> dict[str, Any] | None:
         return None
     copied = dict(value)
     return copied or None
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
 
 
 def _float_or(value: Any) -> float | None:

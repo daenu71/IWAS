@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -12,6 +15,7 @@ from core.coaching.indexer import (  # noqa: E402
     _RunScan,
     _SessionScan,
     _build_session_event_node,
+    _scan_session_dir_uncached,
 )
 
 
@@ -133,3 +137,46 @@ def test_run_environment_overrides_session_environment(tmp_path: Path) -> None:
     assert session_node.summary.environment == session_environment
     assert run_node.summary.environment == run_environment
     assert lap_node.summary.environment == run_environment
+
+
+def test_scan_session_dir_resolves_environment_from_session_info_yaml(tmp_path: Path) -> None:
+    session_dir = tmp_path / "2026-03-06__100000__Spa__F3__Practice__s1"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps(
+            {
+                "TrackDisplayName": "Spa-Francorchamps",
+                "CarScreenName": "Dallara Formula 3",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (session_dir / "session_info.yaml").write_text(
+        """
+WeekendInfo:
+  TrackSurfaceTemp: 31.5 C
+  TrackAirTemp: 20.0 C
+  TrackRelativeHumidity: 48 %
+  TrackFogLevel: 1 %
+  TrackWindVel: 1.5 m/s
+  TrackWindDir: 1.57079632679 rad
+  TrackSkies: Mostly Cloudy
+  TrackWeatherType: Dynamic
+  TrackAirPressure: 1008.4 hPa
+""".strip(),
+        encoding="utf-8",
+    )
+
+    scanned = _scan_session_dir_uncached(session_dir, children=list(session_dir.iterdir()))
+
+    assert scanned is not None
+    environment = scanned.session_meta["environment"]
+    assert environment["track_temp_c"] == pytest.approx(31.5)
+    assert environment["air_temp_c"] == pytest.approx(20.0)
+    assert environment["humidity_pct"] == pytest.approx(48.0)
+    assert environment["fog_pct"] == pytest.approx(1.0)
+    assert environment["wind_speed_ms"] == pytest.approx(1.5)
+    assert environment["wind_dir_deg"] == pytest.approx(90.0)
+    assert environment["skies"] == "Mostly Cloudy"
+    assert environment["weather_type"] == "Dynamic"
+    assert environment["air_pressure_hpa"] == pytest.approx(1008.4)
