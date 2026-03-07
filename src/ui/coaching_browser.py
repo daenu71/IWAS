@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
@@ -622,6 +622,7 @@ class CoachingBrowser(ttk.Frame):
         self._index: CoachingIndex | None = None
         self._filter_index: FilterIndex | None = None
         self._active_filter: FilterState | None = None
+        self._filtered_nodes_by_id: dict[str, CoachingTreeNode] | None = None
         self._expanded_ids: set[str] = set()
         self._message_var = tk.StringVar(value="")
         self._stats_var = tk.StringVar(value="No sessions loaded.")
@@ -765,13 +766,13 @@ class CoachingBrowser(ttk.Frame):
 
     def selected_node(self) -> CoachingTreeNode | None:
         """Implement selected node logic."""
-        index = self._index
-        if index is None:
-            return None
+        lookup = self._filtered_nodes_by_id or (
+            self._index.nodes_by_id if self._index is not None else {}
+        )
         item_id = self._selected_id()
         if not item_id:
             return None
-        return index.nodes_by_id.get(item_id)
+        return lookup.get(item_id)
 
     def _rebuild_tree(self, *, selected_id: str | None) -> None:
         """Implement rebuild tree logic."""
@@ -783,10 +784,27 @@ class CoachingBrowser(ttk.Frame):
         self.tree.delete(*self.tree.get_children(""))
         index = self._index
         if index is None:
+            self._filtered_nodes_by_id = None
             self._stats_var.set("No sessions loaded.")
             self._update_action_buttons()
             return
-        for node in index.tracks:
+        filter_active = self._active_filter is not None and not self._active_filter.is_empty()
+        tracks = index.tracks
+        if filter_active and self._active_filter is not None:
+            tracks = _apply_filter(tracks, self._active_filter)
+            filtered_nodes_by_id: dict[str, CoachingTreeNode] = {}
+
+            def _register_filtered(node: CoachingTreeNode) -> None:
+                filtered_nodes_by_id[node.id] = node
+                for child in node.children:
+                    _register_filtered(child)
+
+            for track in tracks:
+                _register_filtered(track)
+            self._filtered_nodes_by_id = filtered_nodes_by_id
+        else:
+            self._filtered_nodes_by_id = None
+        for node in tracks:
             self._insert_node("", node)
         best_ids = _compute_best_ids(index)
         self._build_best_text(index, best_ids)
@@ -795,9 +813,35 @@ class CoachingBrowser(ttk.Frame):
             self.tree.selection_set(selected_id)
             self.tree.focus(selected_id)
             self.tree.see(selected_id)
-        self._stats_var.set(
-            f"Sessions: {index.session_count}  Runs: {index.run_count}  Laps: {index.lap_count}"
-        )
+        if filter_active:
+            visible_sessions = sum(
+                len(car.children)
+                for track in tracks
+                for car in track.children
+            )
+            visible_runs = sum(
+                len(event.children)
+                for track in tracks
+                for car in track.children
+                for event in car.children
+            )
+            visible_laps = sum(
+                len(run.children)
+                for track in tracks
+                for car in track.children
+                for event in car.children
+                for run in event.children
+            )
+            self._stats_var.set(
+                f"Sessions: {visible_sessions}  "
+                f"Runs: {visible_runs}  "
+                f"Laps: {visible_laps}  "
+                f"(gefiltert)"
+            )
+        else:
+            self._stats_var.set(
+                f"Sessions: {index.session_count}  Runs: {index.run_count}  Laps: {index.lap_count}"
+            )
         self._update_action_buttons()
         self._schedule_overlay_refresh(10)
 
@@ -1045,8 +1089,9 @@ class CoachingBrowser(ttk.Frame):
         index = self._index
         if index is None:
             return
+        lookup = self._filtered_nodes_by_id or index.nodes_by_id
         for iid in self._all_tree_iids():
-            node = index.nodes_by_id.get(iid)
+            node = lookup.get(iid)
             if node is None or node.kind not in ("lap", "run"):
                 continue
             if node.kind == "lap":
@@ -1232,7 +1277,8 @@ class CoachingBrowser(ttk.Frame):
         index = self._index
         if index is None:
             return None
-        node = index.nodes_by_id.get(iid)
+        lookup = self._filtered_nodes_by_id or index.nodes_by_id
+        node = lookup.get(iid)
         if node is None:
             return None
         return _normalize_environment(node.summary.environment)
@@ -1344,6 +1390,122 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
     return result
 
 
+def _range_matches(
+    value: Any,
+    from_: float | None,
+    to_: float | None,
+) -> bool:
+    """True wenn value im Bereich [from_, to_] liegt."""
+    if from_ is None and to_ is None:
+        return True
+    if value is None:
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    if from_ is not None and v < from_:
+        return False
+    if to_ is not None and v > to_:
+        return False
+    return True
+
+
+def _filter_node_children(
+    node: CoachingTreeNode,
+    filtered_children: list[CoachingTreeNode],
+) -> CoachingTreeNode:
+    """Return a shallow node copy with filtered children."""
+    return replace(node, children=filtered_children)
+
+
+def _event_matches(node: CoachingTreeNode, f: FilterState) -> bool:
+    """Return True when an event node satisfies all active event groups."""
+    meta = node.meta if isinstance(node.meta, dict) else {}
+    if f.environments:
+        env = str(meta.get("environment") or "")
+        if env not in f.environments:
+            return False
+    ts = node.summary.last_driven_ts
+    if f.date_from is not None and (ts is None or ts < f.date_from):
+        return False
+    if f.date_to is not None and (ts is None or ts > f.date_to):
+        return False
+    cond = meta.get("session_conditions") or {}
+    if not isinstance(cond, dict):
+        cond = {}
+    if not _range_matches(cond.get("track_temp_c"), f.track_temp_from, f.track_temp_to):
+        return False
+    if not _range_matches(cond.get("air_temp_c"), f.air_temp_from, f.air_temp_to):
+        return False
+    if not _range_matches(cond.get("humidity_pct"), f.humidity_from, f.humidity_to):
+        return False
+    if not _range_matches(cond.get("wind_speed_ms"), f.wind_speed_from, f.wind_speed_to):
+        return False
+    if not _range_matches(cond.get("air_pressure_hpa"), f.air_pressure_from, f.air_pressure_to):
+        return False
+    if f.skies:
+        sky = str(cond.get("skies") or "")
+        if sky not in f.skies:
+            return False
+    if f.weather_types:
+        wt = str(cond.get("weather_type") or "")
+        if wt not in f.weather_types:
+            return False
+    return True
+
+
+def _apply_filter(
+    tracks: list[CoachingTreeNode],
+    f: FilterState,
+) -> list[CoachingTreeNode]:
+    """Filtert die Track-Node-Liste anhand des FilterState."""
+    filtered_tracks: list[CoachingTreeNode] = []
+    session_types = {value.lower() for value in f.session_types}
+    lap_statuses = set(f.lap_statuses)
+
+    for track_node in tracks:
+        if f.tracks and track_node.label not in f.tracks:
+            continue
+        filtered_cars: list[CoachingTreeNode] = []
+        for car_node in track_node.children:
+            if f.cars and car_node.label not in f.cars:
+                continue
+            filtered_events: list[CoachingTreeNode] = []
+            for event_node in car_node.children:
+                if not _event_matches(event_node, f):
+                    continue
+                filtered_runs: list[CoachingTreeNode] = []
+                for run_node in event_node.children:
+                    run_meta = run_node.meta if isinstance(run_node.meta, dict) else {}
+                    if session_types:
+                        session_type = str(run_meta.get("session_type") or "").lower()
+                        if session_type not in session_types:
+                            continue
+                    if f.drivers:
+                        driver = str(run_meta.get("driver") or "").strip()
+                        if driver and driver not in f.drivers:
+                            continue
+                    if lap_statuses:
+                        filtered_laps = [
+                            lap_node
+                            for lap_node in run_node.children
+                            if _lap_status_text(lap_node) in lap_statuses
+                        ]
+                        if not filtered_laps:
+                            continue
+                    else:
+                        filtered_laps = list(run_node.children)
+                    filtered_runs.append(_filter_node_children(run_node, filtered_laps))
+                if filtered_runs:
+                    filtered_events.append(_filter_node_children(event_node, filtered_runs))
+            if filtered_events:
+                filtered_cars.append(_filter_node_children(car_node, filtered_events))
+        if filtered_cars:
+            filtered_tracks.append(_filter_node_children(track_node, filtered_cars))
+    return filtered_tracks
+
+
 def _build_filter_index(index: CoachingIndex) -> FilterIndex:
     """Traversiert den CoachingIndex und baut den FilterIndex auf."""
     tracks: set[str] = set()
@@ -1387,7 +1549,7 @@ def _build_filter_index(index: CoachingIndex) -> FilterIndex:
                     _collect_filter_string(session_types, run_node.meta.get("session_type"))
                     _collect_filter_string(drivers, run_node.meta.get("driver") or event_node.meta.get("driver"))
                     for lap_node in run_node.children:
-                        lap_statuses.add(_lap_status(lap_node.summary, lap_summary=_node_lap_summary(lap_node)) or "OK")
+                        lap_statuses.add(_lap_status_text(lap_node))
 
     return FilterIndex(
         tracks=_sorted_filter_strings(tracks),
@@ -1508,10 +1670,14 @@ def _format_lap_col(node: CoachingTreeNode) -> str:
     """Lap-Spalte: Summe der Laps (Track/Car/Session/Run) oder Status (Lap)."""
     summary = node.summary
     if node.kind == "lap":
-        lap_summary = _node_lap_summary(node)
-        return _lap_status(summary, lap_summary=lap_summary) or "OK"
+        return _lap_status_text(node)
     total = int(summary.laps_total_display) if summary.laps_total_display is not None else int(summary.laps or 0)
     return str(total)
+
+
+def _lap_status_text(node: CoachingTreeNode) -> str:
+    """Return the displayable lap status text for one lap node."""
+    return _lap_status(node.summary, lap_summary=_node_lap_summary(node)) or "OK"
 
 
 def _lap_status(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str | None:
