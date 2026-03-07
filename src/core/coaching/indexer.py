@@ -872,6 +872,7 @@ def _build_lap_node(
     session_id_str = _stable_path_id(session.session_dir)
     lap_no = _coerce_optional_int(segment.get("lap_no"))
     lap_incomplete = _segment_lap_incomplete(segment)
+    lap_pit_out = _segment_lap_pit_out(segment)
     lap_offtrack = _segment_lap_offtrack(segment)
     is_current = lap_incomplete or str(segment.get("reason") or "").lower().startswith("current_incomplete")
     if is_current and lap_no is not None:
@@ -895,11 +896,13 @@ def _build_lap_node(
     )
     lap_meta = dict(segment)
     lap_meta["lap_incomplete"] = lap_incomplete
+    lap_meta["lap_pit_out"] = lap_pit_out
     lap_meta["lap_offtrack"] = lap_offtrack
     lap_meta["lap_summary"] = _build_normalized_lap_summary(
         segment=segment,
         lap_time_s=duration,
         lap_incomplete=lap_incomplete,
+        lap_pit_out=lap_pit_out,
         lap_offtrack=lap_offtrack,
         lap_valid=lap_valid,
     )
@@ -966,8 +969,9 @@ def _summary_with_environment(
 
 # Coaching Browser lap validity semantics:
 # - lap_incomplete: lap is not a fully committed lap for browser/best-time purposes.
+# - lap_pit_out: lap started on pit road and is excluded from best-time purposes.
 # - lap_offtrack: lap had at least one offtrack sample.
-# - best(valid): only laps with lap_incomplete=False and lap_offtrack=False.
+# - best(valid): only laps with lap_incomplete=False, lap_pit_out=False and lap_offtrack=False.
 def _segment_lap_incomplete(segment: dict[str, Any]) -> bool:
     """Implement segment lap incomplete logic."""
     lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
@@ -997,10 +1001,22 @@ def _segment_lap_offtrack(segment: dict[str, Any]) -> bool:
     return is_valid is False
 
 
+def _segment_lap_pit_out(segment: dict[str, Any]) -> bool:
+    """Return whether the lap starts on pit road and should be treated as pit-out."""
+    explicit = _coerce_optional_bool(segment.get("lap_pit_out"))
+    if explicit is not None:
+        return explicit
+    on_pit_road_start = _coerce_optional_bool(segment.get("on_pit_road_start"))
+    if on_pit_road_start is not None:
+        return bool(on_pit_road_start)
+    return False
+
+
 def _segment_lap_valid(segment: dict[str, Any]) -> bool:
     """Implement segment lap valid logic."""
     explicit = _coerce_optional_bool(segment.get("valid_lap"))
     lap_incomplete = _segment_lap_incomplete(segment)
+    lap_pit_out = _segment_lap_pit_out(segment)
     lap_offtrack = _segment_lap_offtrack(segment)
     incident_delta = _coerce_optional_int(segment.get("incident_delta"))
     if incident_delta is None or incident_delta < 0:
@@ -1008,10 +1024,11 @@ def _segment_lap_valid(segment: dict[str, Any]) -> bool:
     lap_no = _coerce_optional_int(segment.get("lap_no"))
     passes_sanity = _segment_passes_sanity(segment)
     if explicit is None:
-        explicit = not lap_incomplete and not lap_offtrack and incident_delta == 0
+        explicit = not lap_incomplete and not lap_pit_out and not lap_offtrack and incident_delta == 0
     return bool(
         explicit
         and not lap_incomplete
+        and not lap_pit_out
         and not lap_offtrack
         and incident_delta == 0
         and passes_sanity
@@ -1150,6 +1167,14 @@ def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_seg
             segment["incident_min"] = int(incident_min)
         if incident_max is not None:
             segment["incident_max"] = int(incident_max)
+        on_pit_road_start = _coerce_optional_bool(slice_pit[0]) if slice_pit else None
+        if on_pit_road_start is not None:
+            segment["on_pit_road_start"] = bool(on_pit_road_start)
+        lap_pit_out = _coerce_optional_bool(segment.get("lap_pit_out"))
+        if lap_pit_out is None:
+            lap_pit_out = on_pit_road_start
+        if lap_pit_out is not None:
+            segment["lap_pit_out"] = bool(lap_pit_out)
 
         lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
         if lap_complete is None:
@@ -1163,9 +1188,11 @@ def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_seg
         segment["lap_complete"] = bool(lap_complete)
         segment["is_complete"] = bool(lap_complete)
         segment["lap_incomplete"] = not bool(lap_complete)
+        lap_pit_out = _segment_lap_pit_out(segment)
         valid_lap = bool(
             bool(lap_complete)
             and _segment_passes_sanity(segment)
+            and not bool(lap_pit_out)
             and not bool(offtrack_surface)
             and int(incident_delta) == 0
             and _coerce_optional_int(segment.get("lap_no")) != 0
@@ -1565,16 +1592,20 @@ def _build_normalized_lap_summary(
     segment: dict[str, Any],
     lap_time_s: float | None,
     lap_incomplete: bool,
+    lap_pit_out: bool,
     lap_offtrack: bool,
     lap_valid: bool,
 ) -> dict[str, Any]:
     """Build and return normalized lap summary."""
     lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
+    segment_lap_pit_out = _coerce_optional_bool(segment.get("lap_pit_out"))
     offtrack_surface = _coerce_optional_bool(segment.get("offtrack_surface"))
     incident_delta = _coerce_optional_int(segment.get("incident_delta"))
     valid_lap = _coerce_optional_bool(segment.get("valid_lap"))
     if lap_complete is None:
         lap_complete = not bool(lap_incomplete)
+    if segment_lap_pit_out is None:
+        segment_lap_pit_out = bool(lap_pit_out)
     if offtrack_surface is None:
         offtrack_surface = bool(lap_offtrack)
     if incident_delta is None:
@@ -1583,10 +1614,12 @@ def _build_normalized_lap_summary(
         valid_lap = bool(lap_valid)
     if lap_incomplete:
         lap_complete = False
+    if lap_incomplete or bool(segment_lap_pit_out):
         valid_lap = False
     return {
         "lap_time_s": lap_time_s,
         "lap_complete": bool(lap_complete),
+        "lap_pit_out": bool(segment_lap_pit_out),
         "offtrack_surface": bool(offtrack_surface),
         "incident_delta": int(incident_delta),
         "valid_lap": bool(valid_lap),

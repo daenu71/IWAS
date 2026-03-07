@@ -823,7 +823,7 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
       L2 – one car node per track (fastest within track)
       L3 – one session node per car (fastest within car)
       L4 – one run node per car (fastest across ALL sessions of that car)
-      L5 – one lap node per car (fastest valid lap — not incomplete, not offtrack)
+      L5 – one lap node per car (fastest valid lap — not incomplete, not pit-out, not offtrack)
     """
     result: set[str] = set()
 
@@ -854,7 +854,7 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
             if bid:
                 result.add(bid)
 
-            # Level 5: fastest valid lap (not incomplete, not offtrack)
+            # Level 5: fastest valid lap (not incomplete, not pit-out, not offtrack)
             bid = _find_best_id(all_laps)
             if bid:
                 result.add(bid)
@@ -932,11 +932,7 @@ def _format_lap_col(node: CoachingTreeNode) -> str:
     summary = node.summary
     if node.kind == "lap":
         lap_summary = _node_lap_summary(node)
-        if _lap_is_incomplete(summary, lap_summary=lap_summary):
-            return "incomplete"
-        if _lap_is_offtrack(summary, lap_summary=lap_summary):
-            return "offtrack"
-        return "OK"
+        return _lap_status(summary, lap_summary=lap_summary) or "OK"
     total = int(summary.laps_total_display) if summary.laps_total_display is not None else int(summary.laps or 0)
     return str(total)
 
@@ -945,6 +941,8 @@ def _lap_status(summary: NodeSummary, *, lap_summary: dict[str, object]) -> str 
     """Implement lap status logic."""
     if _lap_is_incomplete(summary, lap_summary=lap_summary):
         return "incomplete"
+    if _lap_is_pit_out(lap_summary):
+        return "Pit (out)"
     if _lap_is_offtrack(summary, lap_summary=lap_summary):
         return "offtrack"
     return None
@@ -990,13 +988,22 @@ def _lap_is_offtrack(summary: NodeSummary, *, lap_summary: dict[str, object]) ->
     return False
 
 
+def _lap_is_pit_out(lap_summary: dict[str, object]) -> bool:
+    """Return whether the lap should be displayed as pit-out."""
+    explicit = _coerce_optional_bool(lap_summary.get("lap_pit_out"))
+    return bool(explicit) if explicit is not None else False
+
+
 def _lap_is_valid_for_best(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
     """Return whether the lap may participate in best-time highlighting."""
     explicit = _coerce_optional_bool(lap_summary.get("valid_lap"))
-    if explicit is not None:
-        return bool(explicit)
-    return not _lap_is_incomplete(summary, lap_summary=lap_summary) and not _lap_is_offtrack(
-        summary, lap_summary=lap_summary
+    if explicit is None:
+        explicit = True
+    return (
+        bool(explicit)
+        and not _lap_is_incomplete(summary, lap_summary=lap_summary)
+        and not _lap_is_pit_out(lap_summary)
+        and not _lap_is_offtrack(summary, lap_summary=lap_summary)
     )
 
 
