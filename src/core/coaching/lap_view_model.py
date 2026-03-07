@@ -19,7 +19,7 @@ import json
 import math
 from dataclasses import dataclass, field, replace as _dataclass_replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
@@ -30,6 +30,9 @@ from core.irsdk.sessioninfo_parser import resolve_session_environment
 
 from .corner_map import load_corner_map
 from .storage import sanitize_name
+
+if TYPE_CHECKING:
+    from .track_geometry import TrackRoadGeometry
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,7 @@ class LapViewModel:
         self.track_xy: np.ndarray = np.empty((0, 2), dtype=np.float64)
         self.lap_dist_pct: np.ndarray = np.empty(0, dtype=np.float64)
         self.corners: list[CornerInfo] = []
+        self.track_road_geometry: TrackRoadGeometry | None = None
         self.events: dict[int, list[Event]] = {}
         self.corner_events: dict[int, list[Event]] = {}
         self.features: dict[int, dict[str, Any]] = {}
@@ -131,6 +135,7 @@ class LapViewModel:
         vm.track_length_m = _load_track_length_m(session_dir)
         print(f"[LVM-DEBUG] track_length_m resolved: {vm.track_length_m!r}")
         vm.corners = _load_corners(session_dir, vm.track_length_m)
+        vm.track_road_geometry = _load_track_road_geometry(session_dir)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
         vm.corner_events = _load_corner_events(analysis_dir / "corner_events.json")
         vm.features = _load_features(analysis_dir / "corner_features.parquet")
@@ -367,29 +372,12 @@ def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 def _load_corners(session_dir: Path, track_length_m: float | None) -> list[CornerInfo]:
     """Load corners from corner_map_v1.json and apply runtime padding."""
-    session_meta = _read_json(session_dir / "session_meta.json")
-    parts = session_dir.name.split("__")
-
-    track_name = (
-        _str_or(session_meta.get("TrackDisplayName"))
-        or _str_or(session_meta.get("TrackName"))
-        or (parts[2] if len(parts) >= 6 else None)
-        or "unknown_track"
-    )
-    config_name = (
-        _str_or(session_meta.get("TrackConfigName"))
-        or _str_or(session_meta.get("TrackConfig"))
-        or "unknown_config"
-    )
-    car_class = _str_or(session_meta.get("CarClassShortName")) or "unknown_class"
-    track_key = (
-        f"{sanitize_name(track_name)}"
-        f"__{sanitize_name(config_name)}"
-        f"__{sanitize_name(car_class)}"
-    )
-
-    coaching_root = session_dir.parent
-    corner_map = load_corner_map(storage_root=coaching_root, track_key=track_key)
+    coaching_root = _coaching_storage_root(session_dir)
+    corner_map = None
+    for track_key in _track_key_candidates(session_dir):
+        corner_map = load_corner_map(storage_root=coaching_root, track_key=track_key)
+        if corner_map is not None:
+            break
     if corner_map is None:
         return []
 
@@ -634,6 +622,103 @@ def _load_track_length_m(session_dir: Path) -> float | None:
     except Exception as exc:
         print(f"[LVM-DEBUG] session_info.yaml Lesefehler: {exc}")
         return None
+
+
+def _load_track_road_geometry(session_dir: Path) -> "TrackRoadGeometry | None":
+    """Load track_road_geometry.json when present, else return None."""
+    storage_root = _coaching_storage_root(session_dir)
+    for track_key in _track_key_candidates(session_dir):
+        for path in _track_road_geometry_paths(storage_root, track_key):
+            payload = _read_json(path)
+            geometry = _coerce_track_road_geometry(payload, fallback_track_key=track_key)
+            if geometry is not None:
+                return geometry
+    return None
+
+
+def _coaching_storage_root(session_dir: Path) -> Path:
+    return session_dir.parent
+
+
+def _track_key_candidates(session_dir: Path) -> list[str]:
+    """Return the primary coaching track key plus a legacy extractor fallback."""
+    session_meta = _read_json(session_dir / "session_meta.json")
+    parts = session_dir.name.split("__")
+
+    track_name = (
+        _str_or(session_meta.get("TrackDisplayName"))
+        or _str_or(session_meta.get("TrackName"))
+        or (parts[2] if len(parts) >= 6 else None)
+        or "unknown_track"
+    )
+    config_name = (
+        _str_or(session_meta.get("TrackConfigName"))
+        or _str_or(session_meta.get("TrackConfig"))
+        or "unknown_config"
+    )
+    car_class = _str_or(session_meta.get("CarClassShortName")) or "unknown_class"
+
+    primary = (
+        f"{sanitize_name(track_name)}"
+        f"__{sanitize_name(config_name)}"
+        f"__{sanitize_name(car_class)}"
+    )
+    legacy = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
+
+    candidates = [primary]
+    if legacy not in candidates:
+        candidates.append(legacy)
+    return candidates
+
+
+def _track_road_geometry_paths(storage_root: Path, track_key: str) -> list[Path]:
+    raw_path = storage_root / "track_geometries" / track_key / "track_road_geometry.json"
+    sanitized_path = (
+        storage_root / "track_geometries" / sanitize_name(track_key) / "track_road_geometry.json"
+    )
+    paths = [raw_path]
+    if sanitized_path != raw_path:
+        paths.append(sanitized_path)
+    return paths
+
+
+def _coerce_track_road_geometry(
+    payload: dict[str, Any],
+    *,
+    fallback_track_key: str,
+) -> "TrackRoadGeometry | None":
+    if not payload:
+        return None
+
+    center_line = _coerce_xy_points(payload.get("center_line"))
+    left_edge = _coerce_xy_points(payload.get("left_edge"))
+    right_edge = _coerce_xy_points(payload.get("right_edge"))
+    if center_line is None or left_edge is None or right_edge is None:
+        return None
+
+    track_key = _str_or(payload.get("track_key")) or fallback_track_key
+    return {
+        "track_key": track_key,
+        "center_line": center_line,
+        "left_edge": left_edge,
+        "right_edge": right_edge,
+    }
+
+
+def _coerce_xy_points(value: Any) -> list[list[float]] | None:
+    if not isinstance(value, list) or len(value) < 2:
+        return None
+
+    points: list[list[float]] = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return None
+        x = _float_or(item[0])
+        y = _float_or(item[1])
+        if x is None or y is None:
+            return None
+        points.append([x, y])
+    return points
 
 
 def _parse_track_length_m_str(raw) -> float | None:

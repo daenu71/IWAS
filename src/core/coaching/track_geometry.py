@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
-from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional, TypedDict
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -38,6 +38,9 @@ _TRACK_COLOR = "#555555"
 _TRACK_WIDTH = 1
 _LAP_WIDTH = 2
 _SEG_WIDTH = 7           # corner-segment highlight width (px)
+_ROAD_FILL_COLOR = "#2A2A2A"
+_ROAD_EDGE_COLOR = "#121212"
+_ROAD_EDGE_WIDTH = 2
 _CORNER_COLOR = "#FFD700"   # default corner colour
 _SELECTED_COLOR = "#FFFFFF" # selected corner colour
 _LABEL_FONT = ("Arial", 12, "bold")
@@ -221,6 +224,13 @@ class _FitContext(NamedTuple):
     offset_y: float
     draw_width: float
     draw_height: float
+
+
+class TrackRoadGeometry(TypedDict):
+    track_key: str
+    center_line: list[list[float]]
+    left_edge: list[list[float]]
+    right_edge: list[list[float]]
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +461,7 @@ def render_trackmap(
     selected_corner_id: Optional[int],
     width: int,
     height: int,
+    road_geometry: Optional[TrackRoadGeometry] = None,
     lap_color: str = "#E53935",
     lap_dist_pct: Optional[np.ndarray] = None,
     on_corner_selected: Optional[Callable[[int], None]] = None,
@@ -472,6 +483,9 @@ def render_trackmap(
         If not ``None``, that corner is drawn with a highlighted colour.
     width, height:
         Current pixel dimensions of *canvas*.
+    road_geometry:
+        Optional road-band geometry for the same track. When present, a dark
+        road surface is rendered underneath the existing lap overlays.
     lap_color:
         Colour of the lap line drawn on top of the grey track line.
     lap_dist_pct:
@@ -493,11 +507,19 @@ def render_trackmap(
     coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)  # (N, 2) pixel coords
     closed_flat = _closed_flat(coords)       # flat list, first == last
 
-    # 1 – Base track line (grey)
+    # 1 – Optional road band
+    road_arrays = _road_geometry_arrays(road_geometry)
+    if road_arrays is not None:
+        _, left_edge, right_edge = road_arrays
+        left_canvas = _transform_zoom(left_edge, width, height, zoom, offset, fit_context=fit_context)
+        right_canvas = _transform_zoom(right_edge, width, height, zoom, offset, fit_context=fit_context)
+        _draw_road_band(canvas, left_canvas, right_canvas, smooth=False, prefix="trackmap")
+
+    # 2 – Base track line (grey)
     canvas.create_line(closed_flat, fill=_TRACK_COLOR, width=_TRACK_WIDTH,
                        smooth=False, tags=("track",))
 
-    # 2 – Corner segments (underneath the lap line)
+    # 3 – Corner segments (underneath the lap line)
     for corner in corners:
         indices = _corner_indices(corner, lap_dist_pct, len(xy))
         if len(indices) < 2:
@@ -539,7 +561,7 @@ def render_trackmap(
             tags=(f"label_{corner.corner_id}",),
         )
 
-    # 3 – Lap line (primary colour, on top)
+    # 4 – Lap line (primary colour, on top)
     canvas.create_line(closed_flat, fill=lap_color, width=_LAP_WIDTH,
                        smooth=False, tags=("lapline",))
 
@@ -580,7 +602,9 @@ def render_corner_zoom(
     width, height:
         Current pixel dimensions of *canvas*.
     road_geometry:
-        Reserved for future ``TrackRoadGeometry``; ignored when ``None``.
+        Optional road-band geometry for the same track. When present, the
+        zoomed segment is rendered beneath the lap line using the same canvas
+        transform as the race line.
     lap_dist_pct:
         (N,) array paired with *xy*.  Required for accurate event
         projection; falls back to proportional mapping when ``None``.
@@ -650,8 +674,15 @@ def render_corner_zoom(
     seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset, fit_context=fit_context)
     speed_units = _read_speed_units()
 
-    # -- Road band (future: road_geometry support) --------------------------
-    # road_geometry rendering intentionally omitted until type is defined.
+    # -- Road band ----------------------------------------------------------
+    road_segment = _road_geometry_segment(road_geometry, lo_eff, hi_eff)
+    if road_segment is not None:
+        _, left_seg, right_seg = road_segment
+        left_norm = _normalise_segment_points(left_seg, x_min, y_min, seg_scale)
+        right_norm = _normalise_segment_points(right_seg, x_min, y_min, seg_scale)
+        left_canvas = _transform_zoom(left_norm, width, height, zoom, offset, fit_context=fit_context)
+        right_canvas = _transform_zoom(right_norm, width, height, zoom, offset, fit_context=fit_context)
+        _draw_road_band(canvas, left_canvas, right_canvas, smooth=True, prefix="zoom")
 
     # -- Lap line -----------------------------------------------------------
     flat = seg_canvas.flatten().tolist()
@@ -1075,6 +1106,124 @@ def _closed_flat(coords: np.ndarray) -> list:
         flat.append(x)
         flat.append(y)
     return flat
+
+
+def _road_geometry_arrays(
+    road_geometry: Optional[TrackRoadGeometry],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    if not isinstance(road_geometry, dict):
+        return None
+
+    center_line = _coerce_xy_array(road_geometry.get("center_line"))
+    left_edge = _coerce_xy_array(road_geometry.get("left_edge"))
+    right_edge = _coerce_xy_array(road_geometry.get("right_edge"))
+    if center_line is None or left_edge is None or right_edge is None:
+        return None
+
+    n = min(len(center_line), len(left_edge), len(right_edge))
+    if n < 2:
+        return None
+    return center_line[:n], left_edge[:n], right_edge[:n]
+
+
+def _coerce_xy_array(value: object) -> np.ndarray | None:
+    if not isinstance(value, list) or len(value) < 2:
+        return None
+    try:
+        arr = np.asarray(value, dtype=np.float64)
+    except Exception:
+        return None
+    if arr.ndim != 2 or arr.shape[1] != 2 or len(arr) < 2:
+        return None
+    if not np.all(np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _draw_road_band(
+    canvas: tk.Canvas,
+    left_edge: np.ndarray,
+    right_edge: np.ndarray,
+    *,
+    smooth: bool,
+    prefix: str,
+) -> None:
+    if len(left_edge) < 2 or len(right_edge) < 2:
+        return
+
+    polygon = np.vstack([left_edge, right_edge[::-1]])
+    canvas.create_polygon(
+        polygon.flatten().tolist(),
+        fill=_ROAD_FILL_COLOR,
+        outline="",
+        tags=(f"{prefix}_road_band",),
+    )
+    canvas.create_line(
+        left_edge.flatten().tolist(),
+        fill=_ROAD_EDGE_COLOR,
+        width=_ROAD_EDGE_WIDTH,
+        smooth=smooth,
+        tags=(f"{prefix}_road_edge", f"{prefix}_road_edge_left"),
+    )
+    canvas.create_line(
+        right_edge.flatten().tolist(),
+        fill=_ROAD_EDGE_COLOR,
+        width=_ROAD_EDGE_WIDTH,
+        smooth=smooth,
+        tags=(f"{prefix}_road_edge", f"{prefix}_road_edge_right"),
+    )
+
+
+def _road_geometry_segment(
+    road_geometry: Optional[TrackRoadGeometry],
+    lo_eff: float,
+    hi_eff: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    road_arrays = _road_geometry_arrays(road_geometry)
+    if road_arrays is None:
+        return None
+
+    center_line, left_edge, right_edge = road_arrays
+    indices = _pct_slice_indices(lo_eff, hi_eff, len(center_line))
+    if len(indices) < 2:
+        return None
+    return center_line[indices], left_edge[indices], right_edge[indices]
+
+
+def _pct_slice_indices(lo_eff: float, hi_eff: float, n: int) -> np.ndarray:
+    if n < 2:
+        return np.array([], dtype=int)
+
+    lap_pct = np.linspace(0.0, 1.0, n)
+    if lo_eff <= hi_eff:
+        mask = (lap_pct >= lo_eff) & (lap_pct <= hi_eff)
+    else:
+        mask = (lap_pct >= lo_eff) | (lap_pct <= hi_eff)
+    indices = np.where(mask)[0]
+    if len(indices) >= 2:
+        return indices
+
+    start_i = max(0, min(n - 1, int(lo_eff * (n - 1))))
+    end_i = max(0, min(n - 1, int(hi_eff * (n - 1))))
+    if lo_eff <= hi_eff:
+        if end_i < start_i:
+            return np.array([], dtype=int)
+        return np.arange(start_i, end_i + 1)
+    return np.concatenate([np.arange(start_i, n), np.arange(0, end_i + 1)])
+
+
+def _normalise_segment_points(
+    points: np.ndarray,
+    x_min: float,
+    y_min: float,
+    seg_scale: float,
+) -> np.ndarray:
+    if len(points) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.column_stack([
+        (points[:, 0] - x_min) / seg_scale,
+        (points[:, 1] - y_min) / seg_scale,
+    ])
 
 
 def _corner_indices(corner, lap_dist_pct: Optional[np.ndarray],

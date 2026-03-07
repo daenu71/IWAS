@@ -1,0 +1,167 @@
+"""Targeted tests for road-geometry rendering in track_geometry.py."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from core.coaching.lap_view_model import CornerInfo  # noqa: E402
+from core.coaching.track_geometry import render_corner_zoom, render_trackmap  # noqa: E402
+
+
+class FakeCanvas:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, tuple, dict]] = []
+        self.bindings: list[tuple[str, str]] = []
+        self._fit_context = None
+        self._sprite_refs = []
+
+    def delete(self, *args) -> None:
+        self.items.append(("delete", args, {}))
+
+    def create_line(self, *args, **kwargs) -> int:
+        self.items.append(("line", args, kwargs))
+        return len(self.items)
+
+    def create_polygon(self, *args, **kwargs) -> int:
+        self.items.append(("polygon", args, kwargs))
+        return len(self.items)
+
+    def create_oval(self, *args, **kwargs) -> int:
+        self.items.append(("oval", args, kwargs))
+        return len(self.items)
+
+    def create_text(self, *args, **kwargs) -> int:
+        self.items.append(("text", args, kwargs))
+        return len(self.items)
+
+    def create_image(self, *args, **kwargs) -> int:
+        self.items.append(("image", args, kwargs))
+        return len(self.items)
+
+    def tag_bind(self, tag, event, _callback) -> None:
+        self.bindings.append((str(tag), str(event)))
+
+    def bind(self, event, _callback) -> None:
+        self.bindings.append(("canvas", str(event)))
+
+    def cget(self, key: str) -> str:
+        if key == "background":
+            return "#000000"
+        return ""
+
+    def winfo_rgb(self, color: str) -> tuple[int, int, int]:
+        if color == "#000000":
+            return (0, 0, 0)
+        return (65535, 65535, 65535)
+
+
+def _sample_xy() -> np.ndarray:
+    return np.array(
+        [
+            [0.10, 0.50],
+            [0.30, 0.65],
+            [0.50, 0.72],
+            [0.70, 0.65],
+            [0.90, 0.50],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _sample_road_geometry() -> dict[str, object]:
+    xy = _sample_xy()
+    return {
+        "track_key": "TestTrack__Full__unknown_class",
+        "center_line": xy.tolist(),
+        "left_edge": (xy + np.array([0.0, 0.05])).tolist(),
+        "right_edge": (xy - np.array([0.0, 0.05])).tolist(),
+    }
+
+
+def test_render_trackmap_with_road_geometry_draws_extra_canvas_items() -> None:
+    xy = _sample_xy()
+    lap_dist_pct = np.linspace(0.0, 1.0, len(xy))
+    corner = CornerInfo(
+        corner_id=1,
+        start_lapdist_pct=0.20,
+        end_lapdist_pct=0.80,
+        corner_type="sweeper",
+    )
+
+    canvas_without_road = FakeCanvas()
+    render_trackmap(
+        canvas=canvas_without_road,
+        xy=xy,
+        corners=[corner],
+        selected_corner_id=1,
+        width=320,
+        height=240,
+        lap_dist_pct=lap_dist_pct,
+    )
+
+    canvas_with_road = FakeCanvas()
+    render_trackmap(
+        canvas=canvas_with_road,
+        xy=xy,
+        corners=[corner],
+        selected_corner_id=1,
+        width=320,
+        height=240,
+        road_geometry=_sample_road_geometry(),
+        lap_dist_pct=lap_dist_pct,
+    )
+
+    assert any(
+        item_type == "polygon" and "trackmap_road_band" in kwargs.get("tags", ())
+        for item_type, _args, kwargs in canvas_with_road.items
+    )
+    assert len(canvas_with_road.items) > len(canvas_without_road.items)
+
+
+def test_render_corner_zoom_with_road_geometry_draws_extra_canvas_items() -> None:
+    xy = _sample_xy()
+    lap_dist_pct = np.linspace(0.0, 1.0, len(xy))
+    corner = CornerInfo(
+        corner_id=1,
+        start_lapdist_pct=0.20,
+        end_lapdist_pct=0.80,
+        corner_type="sweeper",
+    )
+
+    canvas_without_road = FakeCanvas()
+    render_corner_zoom(
+        canvas=canvas_without_road,
+        xy=xy,
+        corner=corner,
+        events=[],
+        width=320,
+        height=240,
+        lap_dist_pct=lap_dist_pct,
+        lo=0.20,
+        hi=0.80,
+    )
+
+    canvas_with_road = FakeCanvas()
+    render_corner_zoom(
+        canvas=canvas_with_road,
+        xy=xy,
+        corner=corner,
+        events=[],
+        width=320,
+        height=240,
+        road_geometry=_sample_road_geometry(),
+        lap_dist_pct=lap_dist_pct,
+        lo=0.20,
+        hi=0.80,
+    )
+
+    assert any(
+        item_type == "polygon" and "zoom_road_band" in kwargs.get("tags", ())
+        for item_type, _args, kwargs in canvas_with_road.items
+    )
+    assert len(canvas_with_road.items) > len(canvas_without_road.items)
