@@ -51,6 +51,9 @@ def extract_session_meta(
         environment = _extract_environment(weekend_info)
         if environment is not None:
             meta["environment"] = environment
+        session_conditions = _extract_session_conditions(weekend_info)
+        if session_conditions:
+            meta["session_conditions"] = session_conditions
     else:
         regex_key_map = {
             "DriverName": ("DriverName", "UserName"),
@@ -69,6 +72,32 @@ def extract_session_meta(
         environment = extract_environment_from_session_info(text)
         if environment is not None:
             meta["environment"] = environment
+        session_conditions = _extract_session_conditions(
+            {
+                "TrackSurfaceTemp": _regex_extract_scalar(text, "TrackSurfaceTemp"),
+                "TrackTemp": _regex_extract_scalar(text, "TrackTemp"),
+                "AirTemp": _regex_extract_scalar(text, "AirTemp"),
+                "TrackAirTemp": _regex_extract_scalar(text, "TrackAirTemp"),
+                "AirPressure": _regex_extract_scalar(text, "AirPressure"),
+                "TrackAirPressure": _regex_extract_scalar(text, "TrackAirPressure"),
+                "RelativeHumidity": _regex_extract_scalar(text, "RelativeHumidity"),
+                "TrackRelativeHumidity": _regex_extract_scalar(text, "TrackRelativeHumidity"),
+                "Humidity": _regex_extract_scalar(text, "Humidity"),
+                "WindVel": _regex_extract_scalar(text, "WindVel"),
+                "TrackWindVel": _regex_extract_scalar(text, "TrackWindVel"),
+                "WindSpeed": _regex_extract_scalar(text, "WindSpeed"),
+                "WindDir": _regex_extract_scalar(text, "WindDir"),
+                "TrackWindDir": _regex_extract_scalar(text, "TrackWindDir"),
+                "WindDirection": _regex_extract_scalar(text, "WindDirection"),
+                "Skies": _regex_extract_scalar(text, "Skies"),
+                "TrackSkies": _regex_extract_scalar(text, "TrackSkies"),
+                "WeatherDeclaredWet": _regex_extract_scalar(text, "WeatherDeclaredWet"),
+                "WeatherType": _regex_extract_scalar(text, "WeatherType"),
+                "TrackWeatherType": _regex_extract_scalar(text, "TrackWeatherType"),
+            }
+        )
+        if session_conditions:
+            meta["session_conditions"] = session_conditions
 
     return _with_timestamps(meta, recorder_start_ts=recorder_start_ts, session_info_saved_ts=session_info_saved_ts)
 
@@ -317,6 +346,28 @@ def _extract_environment(weekend_info: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _extract_session_conditions(weekend_info: dict[str, Any]) -> dict[str, Any]:
+    """Extract filterable session-condition fields from WeekendInfo."""
+    conditions = {
+        "track_temp_c": _coerce_temperature_c(_coalesce(weekend_info.get("TrackSurfaceTemp"), weekend_info.get("TrackTemp"))),
+        "air_temp_c": _coerce_temperature_c(_coalesce(weekend_info.get("AirTemp"), weekend_info.get("TrackAirTemp"))),
+        "air_pressure_hpa": _coerce_pressure_hpa(_coalesce(weekend_info.get("AirPressure"), weekend_info.get("TrackAirPressure"))),
+        "humidity_pct": _coerce_percentage(
+            _coalesce(
+                weekend_info.get("RelativeHumidity"),
+                weekend_info.get("TrackRelativeHumidity"),
+                weekend_info.get("Humidity"),
+            )
+        ),
+        "wind_speed_ms": _coerce_speed_ms(_coalesce(weekend_info.get("WindVel"), weekend_info.get("TrackWindVel"), weekend_info.get("WindSpeed"))),
+        "wind_dir_deg": _coerce_direction_deg(_coalesce(weekend_info.get("WindDir"), weekend_info.get("TrackWindDir"), weekend_info.get("WindDirection"))),
+        "skies": _coerce_optional_str(_coalesce(weekend_info.get("Skies"), weekend_info.get("TrackSkies"))),
+        "weather_wet": _coerce_optional_bool(weekend_info.get("WeatherDeclaredWet")),
+        "weather_type": _coerce_optional_str(_coalesce(weekend_info.get("WeatherType"), weekend_info.get("TrackWeatherType"))),
+    }
+    return {key: value for key, value in conditions.items() if value is not None}
+
+
 def _coerce_int(value: Any) -> int | None:
     """Coerce int."""
     try:
@@ -340,6 +391,24 @@ def _coerce_optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    """Coerce optional bool."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
 
 
 def _coalesce(*values: Any) -> Any:

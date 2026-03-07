@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
@@ -43,6 +44,31 @@ COACHING_BROWSER_CONTENT_WIDTH_PX = (
     + COACHING_TREE_SCROLLBAR_WIDTH_PX
     + COACHING_TREE_BORDER_PX
 )
+
+
+@dataclass
+class FilterIndex:
+    """Gecachte, filterbare Felder aus dem CoachingIndex."""
+    tracks: list[str]
+    cars: list[str]
+    drivers: list[str]
+    environments: list[str]
+    session_types: list[str]
+    lap_statuses: list[str]
+    date_min: float | None
+    date_max: float | None
+    track_temp_min: float | None
+    track_temp_max: float | None
+    air_temp_min: float | None
+    air_temp_max: float | None
+    humidity_min: float | None
+    humidity_max: float | None
+    wind_speed_min: float | None
+    wind_speed_max: float | None
+    air_pressure_min: float | None
+    air_pressure_max: float | None
+    skies_values: list[str]
+    weather_types: list[str]
 
 
 class _EnvironmentTooltip:
@@ -180,6 +206,7 @@ class CoachingBrowser(ttk.Frame):
         self._on_analyze_run = on_analyze_run
 
         self._index: CoachingIndex | None = None
+        self._filter_index: FilterIndex | None = None
         self._expanded_ids: set[str] = set()
         self._message_var = tk.StringVar(value="")
         self._stats_var = tk.StringVar(value="No sessions loaded.")
@@ -296,6 +323,7 @@ class CoachingBrowser(ttk.Frame):
         self._capture_expanded_state()
         selected_id = self._selected_id()
         self._index = index
+        self._filter_index = _build_filter_index(index) if index is not None else None
         self._rebuild_tree(selected_id=selected_id)
 
     def refresh(self) -> None:
@@ -310,6 +338,7 @@ class CoachingBrowser(ttk.Frame):
                 return
             if new_index is not None:
                 self._index = new_index
+                self._filter_index = _build_filter_index(new_index)
         self._rebuild_tree(selected_id=selected_id)
 
     def set_message(self, message: str) -> None:
@@ -860,6 +889,101 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
                 result.add(bid)
 
     return result
+
+
+def _build_filter_index(index: CoachingIndex) -> FilterIndex:
+    """Traversiert den CoachingIndex und baut den FilterIndex auf."""
+    tracks: set[str] = set()
+    cars: set[str] = set()
+    drivers: set[str] = set()
+    environments: set[str] = set()
+    session_types: set[str] = set()
+    lap_statuses: set[str] = set()
+    skies_values: set[str] = set()
+    weather_types: set[str] = set()
+    date_min: float | None = None
+    date_max: float | None = None
+    numeric_ranges: dict[str, list[float | None]] = {
+        "track_temp_c": [None, None],
+        "air_temp_c": [None, None],
+        "humidity_pct": [None, None],
+        "wind_speed_ms": [None, None],
+        "air_pressure_hpa": [None, None],
+    }
+
+    for track_node in index.tracks:
+        _collect_filter_string(tracks, track_node.label)
+        for car_node in track_node.children:
+            _collect_filter_string(cars, car_node.label)
+            for event_node in car_node.children:
+                _collect_filter_string(environments, event_node.meta.get("environment"))
+                event_ts = _coerce_optional_float(event_node.summary.last_driven_ts)
+                if event_ts is not None:
+                    date_min = event_ts if date_min is None else min(date_min, event_ts)
+                    date_max = event_ts if date_max is None else max(date_max, event_ts)
+                conditions = event_node.meta.get("session_conditions")
+                if isinstance(conditions, dict):
+                    _update_filter_range(numeric_ranges, "track_temp_c", conditions.get("track_temp_c"))
+                    _update_filter_range(numeric_ranges, "air_temp_c", conditions.get("air_temp_c"))
+                    _update_filter_range(numeric_ranges, "humidity_pct", conditions.get("humidity_pct"))
+                    _update_filter_range(numeric_ranges, "wind_speed_ms", conditions.get("wind_speed_ms"))
+                    _update_filter_range(numeric_ranges, "air_pressure_hpa", conditions.get("air_pressure_hpa"))
+                    _collect_filter_string(skies_values, conditions.get("skies"))
+                    _collect_filter_string(weather_types, conditions.get("weather_type"))
+                for run_node in event_node.children:
+                    _collect_filter_string(session_types, run_node.meta.get("session_type"))
+                    _collect_filter_string(drivers, run_node.meta.get("driver") or event_node.meta.get("driver"))
+                    for lap_node in run_node.children:
+                        lap_statuses.add(_lap_status(lap_node.summary, lap_summary=_node_lap_summary(lap_node)) or "OK")
+
+    return FilterIndex(
+        tracks=_sorted_filter_strings(tracks),
+        cars=_sorted_filter_strings(cars),
+        drivers=_sorted_filter_strings(drivers),
+        environments=_sorted_filter_strings(environments),
+        session_types=_sorted_filter_strings(session_types),
+        lap_statuses=_sorted_filter_strings(lap_statuses),
+        date_min=date_min,
+        date_max=date_max,
+        track_temp_min=numeric_ranges["track_temp_c"][0],
+        track_temp_max=numeric_ranges["track_temp_c"][1],
+        air_temp_min=numeric_ranges["air_temp_c"][0],
+        air_temp_max=numeric_ranges["air_temp_c"][1],
+        humidity_min=numeric_ranges["humidity_pct"][0],
+        humidity_max=numeric_ranges["humidity_pct"][1],
+        wind_speed_min=numeric_ranges["wind_speed_ms"][0],
+        wind_speed_max=numeric_ranges["wind_speed_ms"][1],
+        air_pressure_min=numeric_ranges["air_pressure_hpa"][0],
+        air_pressure_max=numeric_ranges["air_pressure_hpa"][1],
+        skies_values=_sorted_filter_strings(skies_values),
+        weather_types=_sorted_filter_strings(weather_types),
+    )
+
+
+def _collect_filter_string(target: set[str], value: object) -> None:
+    """Add a non-empty string value to a filter set."""
+    text = str(value or "").strip()
+    if text:
+        target.add(text)
+
+
+def _sorted_filter_strings(values: set[str]) -> list[str]:
+    """Return case-insensitively sorted filter values."""
+    return sorted(values, key=lambda value: (value.casefold(), value))
+
+
+def _update_filter_range(
+    numeric_ranges: dict[str, list[float | None]],
+    key: str,
+    value: object,
+) -> None:
+    """Update min/max bounds for one numeric filter field."""
+    number = _coerce_optional_float(value)
+    if number is None:
+        return
+    current_min, current_max = numeric_ranges[key]
+    numeric_ranges[key][0] = number if current_min is None else min(current_min, number)
+    numeric_ranges[key][1] = number if current_max is None else max(current_max, number)
 
 
 def _format_summary(node: CoachingTreeNode) -> str:

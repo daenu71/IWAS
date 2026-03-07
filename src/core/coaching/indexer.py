@@ -14,7 +14,7 @@ from typing import Any
 from core.coaching.lap_segmenter import LapSegmenter
 from core.coaching.lap_metrics import RunLapMetrics, compute_run_lap_metrics
 from core.coaching.storage import ACTIVE_SESSION_LOCK_FILENAME, SESSION_FINALIZED_FILENAME
-from core.irsdk.sessioninfo_parser import resolve_session_environment
+from core.irsdk.sessioninfo_parser import extract_session_meta, resolve_session_environment
 
 
 _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
@@ -240,13 +240,26 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     parsed_name = _parse_session_folder_name(session_dir.name)
     session_meta_path = session_dir / "session_meta.json"
     session_meta = _read_json_dict(session_meta_path)
+    session_info_path = session_dir / "session_info.yaml"
+    session_info_yaml = _read_text_file(session_info_path)
     session_environment = resolve_session_environment(
         session_meta,
-        session_info_yaml=_read_text_file(session_dir / "session_info.yaml"),
+        session_info_yaml=session_info_yaml,
     )
-    if session_environment is not None:
+    conditions = session_meta.get("session_conditions")
+    if not isinstance(conditions, dict) or not conditions:
+        conditions = {}
+        if session_info_path.exists():
+            try:
+                extracted = extract_session_meta(session_info_yaml)
+                conditions = extracted.get("session_conditions") or {}
+            except Exception:
+                conditions = {}
+    if session_environment is not None or isinstance(conditions, dict):
         session_meta = dict(session_meta)
+    if session_environment is not None:
         session_meta["environment"] = session_environment
+    session_meta["session_conditions"] = conditions if isinstance(conditions, dict) else {}
     has_active_lock = (session_dir / ACTIVE_SESSION_LOCK_FILENAME).exists()
     has_finalized_marker = (session_dir / SESSION_FINALIZED_FILENAME).exists()
 
@@ -923,9 +936,11 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
             "folder_name": session.folder_name,
             "track": session.track,
             "car": session.car,
+            "driver": ((session.session_meta or {}).get("DriverName") or "").strip(),
             "session_type": session.session_type,
             "session_id": session.session_id,
             "environment": _extract_environment(session.folder_name),
+            "session_conditions": session.session_meta.get("session_conditions") or {},
             "run_count": len(session.runs),
         },
     )
@@ -977,6 +992,7 @@ def _build_run_node(
             "meta_path": str(run.meta_path) if run.meta_path else "",
             "parquet_path": str(run.parquet_path) if run.parquet_path else "",
             "extra_count": len(run.extra_paths),
+            "driver": ((session.session_meta or {}).get("DriverName") or "").strip(),
             "session_type": session.session_type,
             "laps_completed": int(run.summary.laps or 0),
             "laps_including_current": int(
