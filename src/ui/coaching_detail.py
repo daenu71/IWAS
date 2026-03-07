@@ -48,13 +48,16 @@ _CORNER_ZOOM_LEGEND_ITEMS = (
     ("understeer_event", "\u26a0", "#FF8000"),
     ("crest", "\u2312", "#00DDFF"),
 )
-_ENVIRONMENT_LAYOUT = (
-    (("Track", "track_temp_c"), ("Air", "air_temp_c")),
-    (("Humidity", "humidity_pct"), ("Fog", "fog_pct")),
-    (("Wind", "wind_speed_ms"), ("Dir", "wind_dir_deg")),
-    (("Skies", "skies"), ("Weather", "weather_type")),
-    (("Pressure", "air_pressure_hpa"),),
+_ENVIRONMENT_FIELDS = (
+    ("Track", "track_temp_c"),
+    ("Air", "air_temp_c"),
+    ("Hum", "humidity_pct"),
+    ("Fog", "fog_pct"),
+    ("Skies", "skies"),
+    ("Weather", "weather_type"),
+    ("P", "air_pressure_hpa"),
 )
+_OPTIONAL_ENVIRONMENT_FIELDS = {"fog_pct", "weather_type"}
 
 
 def _read_corner_event_padding_m() -> float:
@@ -68,56 +71,100 @@ def _read_corner_event_padding_m() -> float:
         return 50.0
 
 
-class _EnvironmentInfoPanel(ttk.Frame):
-    """Compact environment table for the track map header."""
+class _Tooltip:
+    """Minimal hover tooltip for clipped labels."""
+
+    def __init__(self, widget: tk.Widget, *, should_show=None) -> None:
+        self.widget = widget
+        self._text = ""
+        self._tip: tk.Toplevel | None = None
+        self._should_show = should_show
+        self.widget.bind("<Enter>", self._on_enter, add="+")
+        self.widget.bind("<Leave>", self._on_leave, add="+")
+        self.widget.bind("<Motion>", self._on_motion, add="+")
+        self.widget.bind("<Destroy>", self._on_leave, add="+")
+
+    def set_text(self, text: str) -> None:
+        self._text = text or ""
+        if self._tip is not None and not self._text.strip():
+            self._hide()
+
+    def _on_enter(self, _event=None) -> None:
+        if not self._text.strip():
+            return
+        if self._should_show is not None and not self._should_show():
+            return
+        self._show()
+
+    def _on_leave(self, _event=None) -> None:
+        self._hide()
+
+    def _on_motion(self, event) -> None:
+        if self._tip is None:
+            return
+        self._tip.geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+
+    def _show(self) -> None:
+        if self._tip is not None:
+            return
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        try:
+            self._tip.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        tk.Label(
+            self._tip,
+            text=self._text,
+            justify="left",
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=4,
+            background="#ffffe0",
+        ).pack()
+        self._tip.geometry(
+            f"+{self.widget.winfo_pointerx() + 12}+{self.widget.winfo_pointery() + 12}"
+        )
+
+    def _hide(self) -> None:
+        if self._tip is None:
+            return
+        try:
+            self._tip.destroy()
+        except Exception:
+            pass
+        self._tip = None
+
+
+class _EnvironmentSummary(ttk.Frame):
+    """Single-line environment summary for the track map header."""
 
     def __init__(self, master: tk.Widget, **kw) -> None:
         super().__init__(master, **kw)
-        self._row_frames: list[ttk.Frame] = []
-        self._value_vars: dict[str, tk.StringVar] = {}
-        self._build()
-
-    def _build(self) -> None:
-        for row_index, row_fields in enumerate(_ENVIRONMENT_LAYOUT):
-            row_frame = ttk.Frame(self)
-            row_frame.grid(row=row_index, column=0, sticky="e")
-            self._row_frames.append(row_frame)
-            for pair_index, (label_text, key) in enumerate(row_fields):
-                base_col = pair_index * 4
-                ttk.Label(row_frame, text=f"{label_text}:").grid(
-                    row=0,
-                    column=base_col,
-                    sticky="e",
-                    padx=(0, 3),
-                )
-                value_var = tk.StringVar(master=self, value="")
-                ttk.Label(row_frame, textvariable=value_var).grid(
-                    row=0,
-                    column=base_col + 1,
-                    sticky="w",
-                    padx=(0, 12 if pair_index < len(row_fields) - 1 else 0),
-                )
-                self._value_vars[key] = value_var
+        self.columnconfigure(0, weight=1)
+        self._text_var = tk.StringVar(master=self, value="")
+        self._label = ttk.Label(
+            self,
+            textvariable=self._text_var,
+            anchor="w",
+            justify="left",
+        )
+        self._label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._tooltip = _Tooltip(self._label, should_show=self._is_clipped)
 
     def set_environment(self, environment: dict | None) -> None:
-        normalized = _normalize_environment(environment)
-        any_row_visible = False
-        for row_frame, row_fields in zip(self._row_frames, _ENVIRONMENT_LAYOUT):
-            row_visible = False
-            for _label_text, key in row_fields:
-                text = _format_environment_field(key, normalized.get(key) if normalized else None)
-                self._value_vars[key].set(text)
-                if text:
-                    row_visible = True
-            if row_visible:
-                row_frame.grid()
-                any_row_visible = True
-            else:
-                row_frame.grid_remove()
-        if any_row_visible:
+        summary = _build_environment_summary(environment)
+        self._text_var.set(summary)
+        self._tooltip.set_text(summary)
+        if summary:
             self.grid()
         else:
             self.grid_remove()
+
+    def _is_clipped(self) -> bool:
+        self.update_idletasks()
+        return self._label.winfo_reqwidth() > max(1, self._label.winfo_width())
 
 
 def _normalize_environment(value: object) -> dict[str, object] | None:
@@ -127,22 +174,58 @@ def _normalize_environment(value: object) -> dict[str, object] | None:
     return copied or None
 
 
+def _build_environment_summary(environment: dict | None) -> str:
+    normalized = _normalize_environment(environment)
+    if not normalized:
+        return ""
+
+    parts: list[str] = []
+    for label_text, key in _ENVIRONMENT_FIELDS:
+        value_text = _format_environment_field(key, normalized.get(key))
+        if not value_text and key in _OPTIONAL_ENVIRONMENT_FIELDS:
+            continue
+        if value_text:
+            parts.append(f"{label_text}: {value_text}")
+
+    wind_text = _build_wind_summary(normalized)
+    if wind_text:
+        insert_at = 3 if len(parts) >= 3 else len(parts)
+        parts.insert(insert_at, f"Wind: {wind_text}")
+    elif normalized.get("wind_dir_deg") is not None:
+        dir_text = _format_wind_direction(normalized.get("wind_dir_deg"))
+        if dir_text:
+            insert_at = 3 if len(parts) >= 3 else len(parts)
+            parts.insert(insert_at, f"Dir: {dir_text}")
+
+    return "  ".join(parts)
+
+
 def _format_environment_field(key: str, value: object) -> str:
     if value is None:
         return ""
     if key in {"track_temp_c", "air_temp_c"}:
-        return _format_environment_number(value, suffix=" C", decimals=1)
+        return _format_environment_number(value, suffix="°C", decimals=1)
     if key in {"humidity_pct", "fog_pct"}:
-        return _format_environment_number(value, suffix=" %", decimals=1)
+        return _format_environment_number(value, suffix="%", decimals=1)
     if key == "wind_speed_ms":
         return _format_environment_number(value, suffix=" m/s", decimals=1)
     if key == "wind_dir_deg":
-        degrees = _format_environment_number(value, suffix=" deg", decimals=0)
-        cardinal = _wind_cardinal(value)
-        return f"{degrees} {cardinal}".strip() if degrees else ""
+        return _format_wind_direction(value)
     if key == "air_pressure_hpa":
         return _format_environment_number(value, suffix=" hPa", decimals=1)
     return str(value).strip()
+
+
+def _build_wind_summary(environment: dict[str, object]) -> str:
+    speed_text = _format_environment_field("wind_speed_ms", environment.get("wind_speed_ms"))
+    dir_text = _wind_cardinal(environment.get("wind_dir_deg"))
+    return " ".join(part for part in (speed_text, dir_text) if part)
+
+
+def _format_wind_direction(value: object) -> str:
+    degrees = _format_environment_number(value, suffix="°", decimals=0)
+    cardinal = _wind_cardinal(value)
+    return f"{degrees} {cardinal}".strip() if degrees else cardinal
 
 
 def _format_environment_number(value: object, *, suffix: str, decimals: int) -> str:
@@ -207,7 +290,9 @@ class CoachingDetailView(ttk.Frame):
             self.clear()
             return
         self._update_header(vm, is_purple=is_purple)
-        self._env_panel.set_environment(vm.meta.environment if vm.meta is not None else None)
+        self._conditions_summary.set_environment(
+            vm.meta.environment if vm.meta is not None else None
+        )
         self._redraw_trackmap()
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -217,7 +302,7 @@ class CoachingDetailView(ttk.Frame):
         self._vm = None
         self._selected_corner_id = None
         self._set_header_empty()
-        self._env_panel.set_environment(None)
+        self._conditions_summary.set_environment(None)
         self._trackmap_canvas.delete("all")
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -286,15 +371,21 @@ class CoachingDetailView(ttk.Frame):
 
         trackmap_header = ttk.Frame(trackmap_wrap)
         trackmap_header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        trackmap_header.columnconfigure(0, minsize=90)
         trackmap_header.columnconfigure(1, weight=1)
-        ttk.Label(trackmap_header, text="Track Map", font=("", 10, "bold")).grid(
+        ttk.Label(
+            trackmap_header,
+            text="Track Map",
+            font=("", 10, "bold"),
+            width=10,
+        ).grid(
             row=0,
             column=0,
             sticky="w",
         )
-        self._env_panel = _EnvironmentInfoPanel(trackmap_header)
-        self._env_panel.grid(row=0, column=1, sticky="e")
-        self._env_panel.grid_remove()
+        self._conditions_summary = _EnvironmentSummary(trackmap_header)
+        self._conditions_summary.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self._conditions_summary.grid_remove()
 
         # TrackMap Canvas
         trackmap_lf = ttk.Frame(trackmap_wrap, borderwidth=1, relief="groove")
