@@ -1133,6 +1133,7 @@ class RecorderService:
         allowed = (
             "TrackDisplayName",
             "TrackConfigName",
+            "TrackUsage",
             "CarScreenName",
             "CarClassShortName",
             "SessionType",

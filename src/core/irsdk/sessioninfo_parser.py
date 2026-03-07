@@ -31,6 +31,7 @@ def extract_session_meta(
         _set_if_present(meta, "CarClassShortName", driver.get("CarClassShortName"))
         _set_if_present(meta, "TrackDisplayName", weekend_info.get("TrackDisplayName"))
         _set_if_present(meta, "TrackConfigName", weekend_info.get("TrackConfigName"))
+        _set_if_present(meta, "TrackUsage", weekend_info.get("TrackUsage"))
         _set_if_present(
             meta,
             "SessionUniqueID",
@@ -61,6 +62,7 @@ def extract_session_meta(
             "CarClassShortName": ("CarClassShortName",),
             "TrackDisplayName": ("TrackDisplayName",),
             "TrackConfigName": ("TrackConfigName",),
+            "TrackUsage": ("TrackUsage",),
             "SessionUniqueID": ("SessionUniqueID", "SubSessionID", "SessionID"),
         }
         for meta_key, raw_keys in regex_key_map.items():
@@ -110,7 +112,10 @@ def resolve_session_environment(
     """Resolve environment data from recorded meta with a YAML fallback."""
     meta = session_meta if isinstance(session_meta, dict) else {}
     environment = _normalize_environment_dict(meta.get("environment"))
+    track_usage = _coerce_optional_str(meta.get("TrackUsage"))
     if environment is not None:
+        if track_usage and not _coerce_optional_str(environment.get("track_usage")):
+            environment["track_usage"] = track_usage
         return environment
 
     environment = _extract_environment(meta)
@@ -154,6 +159,7 @@ def extract_environment_from_session_info(session_info_yaml: str) -> dict[str, A
             "TrackWeatherType": _regex_extract_scalar(text, "TrackWeatherType"),
             "AirPressure": _regex_extract_scalar(text, "AirPressure"),
             "TrackAirPressure": _regex_extract_scalar(text, "TrackAirPressure"),
+            "TrackUsage": _regex_extract_scalar(text, "TrackUsage"),
         }
     )
 
@@ -334,6 +340,7 @@ def _extract_environment(weekend_info: dict[str, Any]) -> dict[str, Any] | None:
                 weekend_options.get("WeatherType"),
             )
         ),
+        "track_usage": _coerce_optional_str(weekend_info.get("TrackUsage")),
         "air_pressure_hpa": _coerce_pressure_hpa(
             _coalesce(
                 weekend_info.get("AirPressure"),

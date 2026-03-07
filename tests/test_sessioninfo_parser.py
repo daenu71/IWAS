@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from core.irsdk.sessioninfo_parser import (  # noqa: E402
     extract_environment_from_session_info,
     extract_session_meta,
+    resolve_session_environment,
 )
 
 
@@ -19,6 +20,7 @@ def test_extract_session_meta_includes_environment_dict() -> None:
     yaml_text = """
 WeekendInfo:
   TrackDisplayName: Spa-Francorchamps
+  TrackUsage: Moderate Usage
   TrackTemp: 28.5
   AirTemp: 19.0
   Humidity: 46
@@ -37,6 +39,7 @@ DriverInfo:
 
     meta = extract_session_meta(yaml_text)
 
+    assert meta["TrackUsage"] == "Moderate Usage"
     assert meta["environment"] == {
         "track_temp_c": 28.5,
         "air_temp_c": 19.0,
@@ -46,6 +49,7 @@ DriverInfo:
         "wind_dir_deg": 135.0,
         "skies": "Partly Cloudy",
         "weather_type": "Dynamic",
+        "track_usage": "Moderate Usage",
         "air_pressure_hpa": 1014.2,
     }
 
@@ -78,6 +82,7 @@ DriverInfo:
 def test_extract_environment_supports_modern_weekendinfo_keys_and_units() -> None:
     yaml_text = """
 WeekendInfo:
+  TrackUsage: High Usage
   TrackSurfaceTemp: 39.81 C
   TrackAirTemp: 25.56 C
   TrackRelativeHumidity: 45 %
@@ -106,4 +111,19 @@ WeekendInfo:
     assert environment["wind_dir_deg"] == pytest.approx(0.0)
     assert environment["skies"] == "Partly Cloudy"
     assert environment["weather_type"] == "Static"
+    assert environment["track_usage"] == "High Usage"
     assert environment["air_pressure_hpa"] == pytest.approx(1012.2066093347631)
+
+
+def test_resolve_session_environment_merges_top_level_track_usage() -> None:
+    environment = resolve_session_environment(
+        {
+            "TrackUsage": "Low Usage",
+            "environment": {"air_pressure_hpa": 1010.5},
+        }
+    )
+
+    assert environment == {
+        "air_pressure_hpa": 1010.5,
+        "track_usage": "Low Usage",
+    }

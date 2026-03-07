@@ -8,11 +8,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, NodeSummary  # noqa: E402
-from ui.coaching_browser import CoachingBrowser  # noqa: E402
+from ui.coaching_browser import (  # noqa: E402
+    CoachingBrowser,
+    _ENVIRONMENT_LAYOUT,
+    _format_environment_field,
+)
 
 
 def test_tooltip_environment_is_available_for_session_run_and_lap_rows() -> None:
-    environment = {"track_temp_c": 26.0, "weather_type": "Static"}
+    environment = {"track_temp_c": 26.0, "weather_type": "Static", "track_usage": "High Usage"}
     session_node = CoachingTreeNode(
         id="session",
         kind="event",
@@ -47,3 +51,8 @@ def test_tooltip_environment_is_available_for_session_run_and_lap_rows() -> None
     assert browser._tooltip_environment_for_iid("run") == environment
     assert browser._tooltip_environment_for_iid("lap") == environment
     assert browser._tooltip_environment_for_iid("missing") is None
+
+
+def test_environment_tooltip_layout_and_formatting_include_track_usage() -> None:
+    assert any(key == "track_usage" for row in _ENVIRONMENT_LAYOUT for _label, key in row)
+    assert _format_environment_field("track_usage", "Low Usage") == "Low Usage"

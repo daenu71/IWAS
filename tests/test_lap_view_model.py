@@ -39,11 +39,13 @@ def _write_session_meta(session_dir: Path) -> None:
         "TrackDisplayName": "Spa-Francorchamps",
         "TrackConfigName": "Full",
         "CarScreenName": "Dallara Formula 3",
+        "TrackUsage": "Low Usage",
         "environment": {
             "track_temp_c": 27.5,
             "air_temp_c": 19.2,
             "humidity_pct": 46.0,
             "weather_type": "Dynamic",
+            "track_usage": "Low Usage",
         },
     }
     (session_dir / "session_meta.json").write_text(
@@ -240,7 +242,9 @@ def test_load_full_artefact_set(tmp_path: Path) -> None:
         "air_temp_c": 19.2,
         "humidity_pct": 46.0,
         "weather_type": "Dynamic",
+        "track_usage": "Low Usage",
     }
+    assert vm.meta.track_usage == "Low Usage"
 
     # geometry
     assert vm.lap_dist_pct.shape == (_N,)

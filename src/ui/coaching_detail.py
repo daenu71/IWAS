@@ -153,10 +153,11 @@ class _EnvironmentSummary(ttk.Frame):
         self._label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._tooltip = _Tooltip(self._label, should_show=self._is_clipped)
 
-    def set_environment(self, environment: dict | None) -> None:
-        summary = _build_environment_summary(environment)
+    def set_environment(self, environment: dict | None, *, track_usage: str | None = None) -> None:
+        summary = _build_environment_summary(environment, track_usage=track_usage)
+        tooltip_summary = _build_environment_summary(environment, track_usage=track_usage, compact_track_usage=False)
         self._text_var.set(summary)
-        self._tooltip.set_text(summary)
+        self._tooltip.set_text(tooltip_summary)
         if summary:
             self.grid()
         else:
@@ -174,9 +175,17 @@ def _normalize_environment(value: object) -> dict[str, object] | None:
     return copied or None
 
 
-def _build_environment_summary(environment: dict | None) -> str:
+def _build_environment_summary(
+    environment: dict | None,
+    *,
+    track_usage: str | None = None,
+    compact_track_usage: bool = True,
+) -> str:
     normalized = _normalize_environment(environment)
     if not normalized:
+        normalized = {}
+
+    if not normalized and not str(track_usage or "").strip():
         return ""
 
     parts: list[str] = []
@@ -196,6 +205,11 @@ def _build_environment_summary(environment: dict | None) -> str:
         if dir_text:
             insert_at = 3 if len(parts) >= 3 else len(parts)
             parts.insert(insert_at, f"Dir: {dir_text}")
+
+    usage_value = track_usage if str(track_usage or "").strip() else normalized.get("track_usage")
+    usage_text = _format_track_usage(usage_value, compact=compact_track_usage)
+    if usage_text:
+        parts.append(f"Usage: {usage_text}")
 
     return "  ".join(parts)
 
@@ -238,6 +252,16 @@ def _format_environment_number(value: object, *, suffix: str, decimals: int) -> 
     else:
         text = f"{number:.{decimals}f}".rstrip("0").rstrip(".")
     return f"{text}{suffix}"
+
+
+def _format_track_usage(value: object, *, compact: bool) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not compact:
+        return text
+    compact_text = text.removesuffix(" Usage").strip()
+    return compact_text or text
 
 
 def _wind_cardinal(value: object) -> str:
@@ -291,7 +315,8 @@ class CoachingDetailView(ttk.Frame):
             return
         self._update_header(vm, is_purple=is_purple)
         self._conditions_summary.set_environment(
-            vm.meta.environment if vm.meta is not None else None
+            vm.meta.environment if vm.meta is not None else None,
+            track_usage=(vm.meta.track_usage if vm.meta is not None else None),
         )
         self._redraw_trackmap()
         self._clear_corner_zoom()
@@ -302,7 +327,7 @@ class CoachingDetailView(ttk.Frame):
         self._vm = None
         self._selected_corner_id = None
         self._set_header_empty()
-        self._conditions_summary.set_environment(None)
+        self._conditions_summary.set_environment(None, track_usage=None)
         self._trackmap_canvas.delete("all")
         self._clear_corner_zoom()
         self._update_scorecard(None)

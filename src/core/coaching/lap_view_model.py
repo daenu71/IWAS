@@ -47,6 +47,7 @@ class LapMeta:
     lap_time: float | None
     valid: bool
     environment: dict[str, Any] | None = None
+    track_usage: str | None = None
 
 
 @dataclass
@@ -200,6 +201,9 @@ def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
         or _str_or(session_meta.get("CarClassShortName"))
         or "unknown_car"
     )
+    track_usage = _str_or(session_meta.get("TrackUsage"))
+    if track_usage is None and isinstance(environment, dict):
+        track_usage = _str_or(environment.get("track_usage"))
 
     lap_meta = _read_lap_meta(session_dir, run_id, lap_no)
     lap_time = _float_or(
@@ -228,6 +232,7 @@ def _load_meta(session_dir: Path, run_id: int, lap_no: int) -> LapMeta:
         lap_time=lap_time,
         valid=valid,
         environment=environment,
+        track_usage=track_usage,
     )
 
 

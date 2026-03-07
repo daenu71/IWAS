@@ -25,6 +25,7 @@ _ENVIRONMENT_LAYOUT = (
     (("Wind", "wind_speed_ms"), ("Dir", "wind_dir_deg")),
     (("Skies", "skies"), ("Weather", "weather_type")),
     (("Pressure", "air_pressure_hpa"),),
+    (("Track Usage", "track_usage"),),
 )
 
 COACHING_TREE_COLUMN_WIDTHS: dict[str, int] = {
