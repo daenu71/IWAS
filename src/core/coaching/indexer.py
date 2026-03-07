@@ -21,8 +21,13 @@ _RUN_META_RE = re.compile(r"^run_(\d{4})_meta\.json$", re.IGNORECASE)
 _RUN_PARQUET_RE = re.compile(r"^run_(\d{4})\.parquet$", re.IGNORECASE)
 _RUN_LAP_META_WITH_RUN_RE = re.compile(r"^run_(\d+)_lap_(\d+)_meta\.json$", re.IGNORECASE)
 _LAP_META_RE = re.compile(r"^lap_(\d+)_meta\.json$", re.IGNORECASE)
+_DEBUG_RUN_START_RE = re.compile(
+    r"run_event\s+type=RUN_START\s+run_id=(\d+)\s+reason=([^\s]+)(?:\s+session_type=[^\s]+)?(?:\s+ts=([^\s]+))?",
+    re.IGNORECASE,
+)
 _LOG = logging.getLogger(__name__)
 _DEBUG_SAMPLES_FILENAME = "debug_samples.jsonl"
+_DEBUG_RECORDER_LOG_FILENAME = "debug_recorder.log"
 _MIN_VALID_LAP_TIME_S = 30.0
 _MIN_VALID_LAP_SAMPLES = 60
 
@@ -299,11 +304,21 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     runs: list[_RunScan] = []
     sample_hz = _coerce_optional_float(session_meta.get("sample_hz"))
     session_last_ts = _best_effort_last_driven_ts(session_dir, parsed_name.folder_ts)
+    debug_run_start_map: dict[int, dict[str, Any]] | None = None
 
     for run_id in known_run_ids:
         meta_path = run_meta_map.get(run_id)
         parquet_path = run_parquet_map.get(run_id)
         run_meta = _read_json_dict(meta_path) if meta_path is not None else {}
+        if not str(run_meta.get("run_start_reason") or "").strip() or _coerce_optional_float(run_meta.get("run_start_ts")) is None:
+            if debug_run_start_map is None:
+                debug_run_start_map = _read_debug_run_start_map(session_dir)
+            _backfill_run_start_metadata_from_debug_log(
+                run_dir=session_dir,
+                run_id=run_id,
+                run_meta=run_meta,
+                debug_run_start_map=debug_run_start_map,
+            )
         run_metrics = compute_run_lap_metrics(
             parquet_path=parquet_path,
             run_meta=run_meta,
@@ -326,6 +341,12 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
             run_dir=session_dir,
             lap_segments=lap_segments,
             lap_meta_paths=lap_meta_paths,
+        )
+        _apply_run_start_metadata_to_segments(
+            run_dir=session_dir,
+            run_id=run_id,
+            run_meta=run_meta,
+            lap_segments=lap_segments,
         )
         _refresh_segment_validity_from_parquet(parquet_path=parquet_path, lap_segments=lap_segments)
         _enforce_unique_lap_numbers(lap_segments)
@@ -526,6 +547,113 @@ def _read_text_file(path: Path | None) -> str | None:
         return path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None
+
+
+def _read_debug_run_start_map(session_dir: Path) -> dict[int, dict[str, Any]]:
+    """Read RUN_START reason/ts entries from debug_recorder.log."""
+    path = session_dir / _DEBUG_RECORDER_LOG_FILENAME
+    if not path.exists():
+        return {}
+    result: dict[int, dict[str, Any]] = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                match = _DEBUG_RUN_START_RE.search(str(line or ""))
+                if match is None:
+                    continue
+                try:
+                    run_id = int(match.group(1))
+                except Exception:
+                    continue
+                reason = str(match.group(2) or "").strip()
+                if not reason:
+                    continue
+                payload: dict[str, Any] = {"reason": reason}
+                ts = _coerce_optional_float(match.group(3))
+                if ts is not None:
+                    payload["ts"] = float(ts)
+                result[run_id] = payload
+    except Exception:
+        return {}
+    return result
+
+
+def _backfill_run_start_metadata_from_debug_log(
+    *,
+    run_dir: Path,
+    run_id: int,
+    run_meta: dict[str, Any],
+    debug_run_start_map: dict[int, dict[str, Any]],
+) -> None:
+    """Backfill run_start_reason/run_start_ts from debug_recorder.log when missing."""
+    if not isinstance(run_meta, dict):
+        return
+    entry = debug_run_start_map.get(run_id)
+    if not isinstance(entry, dict):
+        return
+    existing_reason = str(run_meta.get("run_start_reason") or "").strip()
+    existing_ts = _coerce_optional_float(run_meta.get("run_start_ts"))
+    restored_reason = str(entry.get("reason") or "").strip()
+    restored_ts = _coerce_optional_float(entry.get("ts"))
+    changed = False
+    if not existing_reason and restored_reason:
+        run_meta["run_start_reason"] = restored_reason
+        run_meta["run_start_reason_source"] = _DEBUG_RECORDER_LOG_FILENAME
+        changed = True
+    if existing_ts is None and restored_ts is not None:
+        run_meta["run_start_ts"] = float(restored_ts)
+        run_meta["run_start_ts_source"] = _DEBUG_RECORDER_LOG_FILENAME
+        changed = True
+    if changed and _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+        _LOG.debug(
+            "coaching.indexer run=%s/%04d run_start_reconstructed source=%s reason=%s ts=%s",
+            run_dir.name,
+            run_id,
+            _DEBUG_RECORDER_LOG_FILENAME,
+            run_meta.get("run_start_reason"),
+            run_meta.get("run_start_ts"),
+        )
+
+
+def _apply_run_start_metadata_to_segments(
+    *,
+    run_dir: Path,
+    run_id: int,
+    run_meta: dict[str, Any],
+    lap_segments: list[dict[str, Any]],
+) -> None:
+    """Apply run-level start metadata to lap segments."""
+    if not lap_segments:
+        return
+    run_start_reason = str(run_meta.get("run_start_reason") or "").strip()
+    run_start_ts = _coerce_optional_float(run_meta.get("run_start_ts"))
+    if not run_start_reason and run_start_ts is None:
+        return
+    for segment in lap_segments:
+        if not isinstance(segment, dict):
+            continue
+        if run_start_reason:
+            segment["run_start_reason"] = run_start_reason
+        if run_start_ts is not None and "run_start_ts" not in segment:
+            segment["run_start_ts"] = float(run_start_ts)
+    if run_start_reason.lower() != "pit_exit":
+        return
+    first_idx = _first_actual_lap_segment_index(lap_segments)
+    if first_idx is None:
+        return
+    first_segment = lap_segments[first_idx]
+    if not isinstance(first_segment, dict):
+        return
+    first_segment["lap_pit_out"] = True
+    if _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+        _LOG.debug(
+            "coaching.indexer run=%s/%04d lap_idx=%s lap_no=%s lap_pit_out=True source=run_start_reason reason=%s",
+            run_dir.name,
+            run_id,
+            first_idx,
+            first_segment.get("lap_no"),
+            run_start_reason,
+        )
 
 
 def _compute_run_summary(
@@ -1036,6 +1164,26 @@ def _segment_lap_valid(segment: dict[str, Any]) -> bool:
     )
 
 
+def _first_actual_lap_segment_index(lap_segments: list[dict[str, Any]]) -> int | None:
+    """Return the first segment that contains observed run data."""
+    fallback_idx: int | None = None
+    for idx, segment in enumerate(lap_segments):
+        if not isinstance(segment, dict):
+            continue
+        if fallback_idx is None:
+            fallback_idx = idx
+        sample_count = _segment_sample_count(segment)
+        if sample_count is not None and sample_count > 0:
+            return idx
+        for key in ("start_sample", "end_sample", "start_idx", "end_idx"):
+            if _coerce_optional_int(segment.get(key)) is not None:
+                return idx
+        for key in ("start_ts", "end_ts"):
+            if _coerce_optional_float(segment.get(key)) is not None:
+                return idx
+    return fallback_idx
+
+
 def _segment_is_fragment(segment: dict[str, Any]) -> bool:
     """Implement segment is fragment logic."""
     duration = _lap_duration_seconds(segment)
@@ -1175,6 +1323,12 @@ def _refresh_segment_validity_from_parquet(*, parquet_path: Path | None, lap_seg
             lap_pit_out = on_pit_road_start
         if lap_pit_out is not None:
             segment["lap_pit_out"] = bool(lap_pit_out)
+            if bool(lap_pit_out) and bool(on_pit_road_start) and _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
+                _LOG.debug(
+                    "coaching.indexer lap_pit_out=True source=on_pit_road_start lap_no=%s lap_index=%s",
+                    segment.get("lap_no"),
+                    segment.get("lap_index"),
+                )
 
         lap_complete = _coerce_optional_bool(segment.get("lap_complete"))
         if lap_complete is None:

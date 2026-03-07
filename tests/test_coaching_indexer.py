@@ -14,6 +14,7 @@ from core.coaching.indexer import (  # noqa: E402
     NodeSummary,
     _RunScan,
     _SessionScan,
+    _apply_run_start_metadata_to_segments,
     _build_session_event_node,
     _scan_session_dir_uncached,
 )
@@ -180,3 +181,103 @@ WeekendInfo:
     assert environment["skies"] == "Mostly Cloudy"
     assert environment["weather_type"] == "Dynamic"
     assert environment["air_pressure_hpa"] == pytest.approx(1008.4)
+
+
+def test_scan_session_dir_reconstructs_pit_exit_start_from_debug_log(tmp_path: Path) -> None:
+    session_dir = tmp_path / "2026-03-07__122531__Misano__Lambo__practice__Offline-Testing"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(json.dumps({}), encoding="utf-8")
+    (session_dir / "debug_recorder.log").write_text(
+        "2026-03-07 12:25:59 run_event type=RUN_START run_id=1 reason=pit_exit session_type=practice ts=12056.546\n",
+        encoding="utf-8",
+    )
+    (session_dir / "run_0001_meta.json").write_text(
+        json.dumps(
+            {
+                "run_id": 1,
+                "lap_segments": [
+                    {
+                        "lap_index": 0,
+                        "lap_no": 1,
+                        "start_sample": 0,
+                        "end_sample": 119,
+                        "start_ts": 12056.546,
+                        "end_ts": 12136.546,
+                        "duration_s": 80.0,
+                        "sample_count": 120,
+                        "lap_complete": True,
+                        "is_complete": True,
+                        "lap_incomplete": False,
+                        "lap_offtrack": False,
+                        "valid_lap": True,
+                        "is_valid": True,
+                        "reason": "counter_change",
+                    },
+                    {
+                        "lap_index": 1,
+                        "lap_no": 2,
+                        "start_sample": 120,
+                        "end_sample": 259,
+                        "start_ts": 12136.546,
+                        "end_ts": 12226.546,
+                        "duration_s": 90.0,
+                        "sample_count": 140,
+                        "lap_complete": True,
+                        "is_complete": True,
+                        "lap_incomplete": False,
+                        "lap_offtrack": False,
+                        "valid_lap": True,
+                        "is_valid": True,
+                        "reason": "counter_change",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scanned = _scan_session_dir_uncached(session_dir, children=list(session_dir.iterdir()))
+
+    assert scanned is not None
+    run = scanned.runs[0]
+    assert run.meta["run_start_reason"] == "pit_exit"
+    assert run.meta["run_start_reason_source"] == "debug_recorder.log"
+    assert run.lap_segments[0]["lap_pit_out"] is True
+    assert run.summary.fastest_lap_s == pytest.approx(90.0)
+
+
+def test_apply_run_start_metadata_marks_first_observed_lap_not_placeholder() -> None:
+    lap_segments = [
+        {
+            "lap_index": 0,
+            "lap_no": 4,
+            "sample_count": 0,
+            "lap_complete": True,
+            "is_complete": True,
+            "lap_incomplete": False,
+            "reason": "debug_samples_counter_backfill",
+        },
+        {
+            "lap_index": 1,
+            "lap_no": 5,
+            "start_sample": 0,
+            "end_sample": 99,
+            "start_ts": 10.0,
+            "end_ts": 90.0,
+            "sample_count": 100,
+            "lap_complete": True,
+            "is_complete": True,
+            "lap_incomplete": False,
+            "reason": "counter_change",
+        },
+    ]
+
+    _apply_run_start_metadata_to_segments(
+        run_dir=Path("C:/tmp/session"),
+        run_id=1,
+        run_meta={"run_start_reason": "pit_exit", "run_start_ts": 10.0},
+        lap_segments=lap_segments,
+    )
+
+    assert lap_segments[0].get("lap_pit_out") is None
+    assert lap_segments[1]["lap_pit_out"] is True

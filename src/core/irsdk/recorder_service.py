@@ -1374,11 +1374,12 @@ class RecorderService:
                     f"run_parquet_write_disabled run_id={active_run_id} error={type(exc).__name__}:{exc}"
                 )
 
-    def _start_run_storage(self, run_id: int) -> None:
+    def _start_run_storage(self, run_id: int, *, start_reason: str | None = None, start_ts: float | None = None) -> None:
         """Start run storage."""
         session_dir = self._ensure_session_dir()
         if session_dir is None:
             return
+        start_reason_text = str(start_reason or "").strip()
         with self._lock:
             recorded_channels = list(self._recorded_channels)
             dtype_decisions = dict(self._dtype_decisions)
@@ -1391,6 +1392,10 @@ class RecorderService:
                 "recorded_channels": recorded_channels,
                 "dtype_decisions": dtype_decisions,
             }
+            if start_reason_text:
+                self._active_run_meta["run_start_reason"] = start_reason_text
+            if start_ts is not None:
+                self._active_run_meta["run_start_ts"] = float(start_ts)
             self._active_lap_segmenter = LapSegmenter()
             self._active_lap_segmenter.reset(run_id=run_id)
             self._active_run_last_sample_index = None
@@ -1899,7 +1904,7 @@ class RecorderService:
             self._run_events.append(stored_event)
 
         if event_type == "RUN_START":
-            self._start_run_storage(active_run_id)
+            self._start_run_storage(active_run_id, start_reason=reason, start_ts=self._coerce_optional_float(ts))
         elif event_type == "RUN_END":
             self._finalize_run(active_run_id, reason=reason)
 
