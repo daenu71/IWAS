@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -69,6 +69,420 @@ class FilterIndex:
     air_pressure_max: float | None
     skies_values: list[str]
     weather_types: list[str]
+
+
+@dataclass
+class FilterState:
+    """Aktiver Filter-Zustand. None-Felder = keine Einschränkung."""
+
+    tracks: list[str] = field(default_factory=list)
+    cars: list[str] = field(default_factory=list)
+    drivers: list[str] = field(default_factory=list)
+    environments: list[str] = field(default_factory=list)
+    session_types: list[str] = field(default_factory=list)
+    lap_statuses: list[str] = field(default_factory=list)
+    skies: list[str] = field(default_factory=list)
+    weather_types: list[str] = field(default_factory=list)
+    date_from: float | None = None
+    date_to: float | None = None
+    track_temp_from: float | None = None
+    track_temp_to: float | None = None
+    air_temp_from: float | None = None
+    air_temp_to: float | None = None
+    humidity_from: float | None = None
+    humidity_to: float | None = None
+    wind_speed_from: float | None = None
+    wind_speed_to: float | None = None
+    air_pressure_from: float | None = None
+    air_pressure_to: float | None = None
+
+    def is_empty(self) -> bool:
+        """True wenn kein Filter aktiv ist."""
+        return (
+            not self.tracks and not self.cars and not self.drivers
+            and not self.environments and not self.session_types
+            and not self.lap_statuses and not self.skies and not self.weather_types
+            and self.date_from is None and self.date_to is None
+            and self.track_temp_from is None and self.track_temp_to is None
+            and self.air_temp_from is None and self.air_temp_to is None
+            and self.humidity_from is None and self.humidity_to is None
+            and self.wind_speed_from is None and self.wind_speed_to is None
+            and self.air_pressure_from is None and self.air_pressure_to is None
+        )
+
+
+class FilterDialog(tk.Toplevel):
+    """Modales Filter-Popup fuer den Coaching Browser."""
+
+    _CATEGORY_FIELDS: tuple[tuple[str, str], ...] = (
+        ("tracks", "Strecke"),
+        ("cars", "Auto"),
+        ("drivers", "Fahrer"),
+        ("environments", "Umgebung / Event-Typ"),
+        ("session_types", "Session-Typ"),
+        ("lap_statuses", "Lap-Status"),
+    )
+    _RANGE_FIELDS: tuple[tuple[str, str, str, str, str], ...] = (
+        ("track_temp", "Streckentemperatur", "track_temp_min", "track_temp_max", "°C"),
+        ("air_temp", "Lufttemperatur", "air_temp_min", "air_temp_max", "°C"),
+        ("humidity", "Luftfeuchtigkeit", "humidity_min", "humidity_max", "%"),
+        ("wind_speed", "Windgeschwindigkeit", "wind_speed_min", "wind_speed_max", "m/s"),
+        ("air_pressure", "Luftdruck", "air_pressure_min", "air_pressure_max", "hPa"),
+    )
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        filter_index: FilterIndex,
+        current: FilterState | None,
+    ) -> None:
+        super().__init__(parent)
+        self.title("Filter")
+        self.resizable(False, False)
+        self.transient(parent.winfo_toplevel())
+        self.result: FilterState | None = None
+        self._filter_index = filter_index
+        self._current = current or FilterState()
+        self._checkbox_vars: dict[str, dict[str, tk.BooleanVar]] = {}
+        self._visible_range_fields: set[str] = set()
+        self._error_var = tk.StringVar(value="")
+        self._date_from_var = tk.StringVar(value=self._format_date_value(self._current.date_from))
+        self._date_to_var = tk.StringVar(value=self._format_date_value(self._current.date_to))
+        self._range_vars: dict[str, tuple[tk.StringVar, tk.StringVar, str]] = {
+            "track_temp": (
+                tk.StringVar(value=self._format_number_value(self._current.track_temp_from)),
+                tk.StringVar(value=self._format_number_value(self._current.track_temp_to)),
+                "Streckentemperatur",
+            ),
+            "air_temp": (
+                tk.StringVar(value=self._format_number_value(self._current.air_temp_from)),
+                tk.StringVar(value=self._format_number_value(self._current.air_temp_to)),
+                "Lufttemperatur",
+            ),
+            "humidity": (
+                tk.StringVar(value=self._format_number_value(self._current.humidity_from)),
+                tk.StringVar(value=self._format_number_value(self._current.humidity_to)),
+                "Luftfeuchtigkeit",
+            ),
+            "wind_speed": (
+                tk.StringVar(value=self._format_number_value(self._current.wind_speed_from)),
+                tk.StringVar(value=self._format_number_value(self._current.wind_speed_to)),
+                "Windgeschwindigkeit",
+            ),
+            "air_pressure": (
+                tk.StringVar(value=self._format_number_value(self._current.air_pressure_from)),
+                tk.StringVar(value=self._format_number_value(self._current.air_pressure_to)),
+                "Luftdruck",
+            ),
+        }
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        content_wrap = ttk.Frame(self, padding=(12, 12, 12, 0))
+        content_wrap.grid(row=0, column=0, sticky="nsew")
+        content_wrap.columnconfigure(0, weight=1)
+        content_wrap.rowconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(
+            content_wrap,
+            highlightthickness=0,
+            borderwidth=0,
+            width=488,
+            height=560,
+        )
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(content_wrap, orient="vertical", command=self._canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+
+        self._scroll_frame = ttk.Frame(self._canvas)
+        self._scroll_frame.columnconfigure(0, weight=1)
+        self._canvas_window = self._canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
+        self._scroll_frame.bind("<Configure>", self._on_scroll_frame_configure, add="+")
+        self._canvas.bind("<Configure>", self._on_canvas_configure, add="+")
+        self._canvas.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        self._scroll_frame.bind("<MouseWheel>", self._on_mousewheel, add="+")
+
+        footer = ttk.Frame(self, padding=12)
+        footer.grid(row=1, column=0, sticky="ew")
+        footer.columnconfigure(1, weight=1)
+        ttk.Button(footer, text="Reset", command=self._on_reset).grid(row=0, column=0, sticky="w")
+        buttons = ttk.Frame(footer)
+        buttons.grid(row=0, column=2, sticky="e")
+        ttk.Button(buttons, text="Abbrechen", command=self._on_cancel).grid(row=0, column=0, sticky="e")
+        ttk.Button(buttons, text="Anwenden", command=self._on_apply).grid(
+            row=0,
+            column=1,
+            sticky="e",
+            padx=(6, 0),
+        )
+
+        self._build_sections()
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.bind("<Escape>", lambda _event: self._on_cancel(), add="+")
+        self.update_idletasks()
+        self._position_over_parent(parent)
+        self.grab_set()
+        self.wait_window(self)
+
+    def _build_sections(self) -> None:
+        """Build all filter UI sections."""
+        row = 0
+        for field_name, title in self._CATEGORY_FIELDS:
+            values = list(getattr(self._filter_index, field_name))
+            selected = list(getattr(self._current, field_name))
+            if not values:
+                continue
+            frame = ttk.LabelFrame(self._scroll_frame, text=title, padding=(10, 8))
+            frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+            frame.columnconfigure(0, weight=1)
+            self._build_checkbox_grid(frame, field_name, values, selected)
+            row += 1
+
+        date_frame = ttk.LabelFrame(self._scroll_frame, text="Datum", padding=(10, 8))
+        date_frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        date_frame.columnconfigure(1, weight=1)
+        date_frame.columnconfigure(4, weight=1)
+        ttk.Label(date_frame, text="Von").grid(row=0, column=0, sticky="w")
+        ttk.Entry(date_frame, textvariable=self._date_from_var, width=14).grid(row=0, column=1, sticky="w")
+        ttk.Label(date_frame, text="Bis").grid(row=0, column=3, sticky="w", padx=(16, 0))
+        ttk.Entry(date_frame, textvariable=self._date_to_var, width=14).grid(row=0, column=4, sticky="w")
+        if self._filter_index.date_min is not None or self._filter_index.date_max is not None:
+            ttk.Label(
+                date_frame,
+                text=(
+                    f"Verfuegbar: {self._format_date_value(self._filter_index.date_min) or '-'}"
+                    f" bis {self._format_date_value(self._filter_index.date_max) or '-'}"
+                ),
+            ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        tk.Label(
+            date_frame,
+            textvariable=self._error_var,
+            fg="#b91c1c",
+            anchor="w",
+            justify="left",
+        ).grid(row=2, column=0, columnspan=5, sticky="ew", pady=(4, 0))
+        row += 1
+
+        for field_name, title, min_attr, max_attr, unit in self._RANGE_FIELDS:
+            minimum = getattr(self._filter_index, min_attr)
+            maximum = getattr(self._filter_index, max_attr)
+            if minimum is None and maximum is None:
+                continue
+            frame = ttk.LabelFrame(self._scroll_frame, text=title, padding=(10, 8))
+            frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+            self._build_range_section(frame, field_name, unit, minimum, maximum)
+            self._visible_range_fields.add(field_name)
+            row += 1
+
+        if self._filter_index.skies_values or self._filter_index.weather_types:
+            weather_frame = ttk.LabelFrame(self._scroll_frame, text="Himmel / Wetter", padding=(10, 8))
+            weather_frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+            weather_frame.columnconfigure(0, weight=1)
+            weather_row = 0
+            if self._filter_index.skies_values:
+                ttk.Label(weather_frame, text="Himmel").grid(row=weather_row, column=0, sticky="w", pady=(0, 4))
+                weather_row += 1
+                inner = ttk.Frame(weather_frame)
+                inner.grid(row=weather_row, column=0, sticky="ew", pady=(0, 8))
+                inner.columnconfigure(0, weight=1)
+                self._build_checkbox_grid(inner, "skies", self._filter_index.skies_values, self._current.skies)
+                weather_row += 1
+            if self._filter_index.weather_types:
+                ttk.Label(weather_frame, text="Wetter").grid(row=weather_row, column=0, sticky="w", pady=(0, 4))
+                weather_row += 1
+                inner = ttk.Frame(weather_frame)
+                inner.grid(row=weather_row, column=0, sticky="ew")
+                inner.columnconfigure(0, weight=1)
+                self._build_checkbox_grid(
+                    inner,
+                    "weather_types",
+                    self._filter_index.weather_types,
+                    self._current.weather_types,
+                )
+
+    def _build_checkbox_grid(
+        self,
+        parent: ttk.Frame | ttk.LabelFrame,
+        field_name: str,
+        values: list[str],
+        selected: list[str],
+    ) -> None:
+        """Render a checkbox grid for one categorical filter group."""
+        selected_values = set(selected)
+        self._checkbox_vars[field_name] = {}
+        grid = ttk.Frame(parent)
+        grid.grid(row=0, column=0, sticky="ew")
+        column_count = 1 if len(values) <= 6 else 2 if len(values) <= 12 else 3
+        rows_per_column = (len(values) + column_count - 1) // column_count
+        for column in range(column_count):
+            grid.columnconfigure(column, weight=1)
+        for index, value in enumerate(values):
+            row = index % rows_per_column
+            column = index // rows_per_column
+            var = tk.BooleanVar(value=value in selected_values)
+            ttk.Checkbutton(grid, text=value, variable=var).grid(
+                row=row,
+                column=column,
+                sticky="w",
+                padx=(0, 12),
+                pady=2,
+            )
+            self._checkbox_vars[field_name][value] = var
+
+    def _build_range_section(
+        self,
+        parent: ttk.LabelFrame,
+        field_name: str,
+        unit: str,
+        minimum: float | None,
+        maximum: float | None,
+    ) -> None:
+        """Render one numeric range section."""
+        from_var, to_var, _label = self._range_vars[field_name]
+        ttk.Label(parent, text="Von").grid(row=0, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=from_var, width=12).grid(row=0, column=1, sticky="w")
+        ttk.Label(parent, text=unit).grid(row=0, column=2, sticky="w", padx=(4, 10))
+        ttk.Label(parent, text="Bis").grid(row=0, column=3, sticky="w")
+        ttk.Entry(parent, textvariable=to_var, width=12).grid(row=0, column=4, sticky="w")
+        ttk.Label(parent, text=unit).grid(row=0, column=5, sticky="w", padx=(4, 0))
+        ttk.Label(
+            parent,
+            text=(
+                f"Verfuegbar: {self._format_number_value(minimum) or '-'}"
+                f" bis {self._format_number_value(maximum) or '-'} {unit}"
+            ),
+        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(6, 0))
+
+    def _selected_values(self, field_name: str) -> list[str]:
+        """Return all selected checkbox values for the given field."""
+        return [
+            value
+            for value, var in self._checkbox_vars.get(field_name, {}).items()
+            if var.get()
+        ]
+
+    def _on_apply(self) -> None:
+        """Collect filter values and close the dialog if valid."""
+        self._error_var.set("")
+        try:
+            result = FilterState(
+                tracks=self._selected_values("tracks"),
+                cars=self._selected_values("cars"),
+                drivers=self._selected_values("drivers"),
+                environments=self._selected_values("environments"),
+                session_types=self._selected_values("session_types"),
+                lap_statuses=self._selected_values("lap_statuses"),
+                skies=self._selected_values("skies"),
+                weather_types=self._selected_values("weather_types"),
+                date_from=self._parse_date_value("Von", self._date_from_var.get()),
+                date_to=self._parse_date_value("Bis", self._date_to_var.get(), end_of_day=True),
+            )
+            if result.date_from is not None and result.date_to is not None and result.date_from > result.date_to:
+                raise ValueError("Datum: 'Von' darf nicht nach 'Bis' liegen.")
+            for field_name, _title, _min_attr, _max_attr, _unit in self._RANGE_FIELDS:
+                if field_name not in self._visible_range_fields:
+                    continue
+                from_var, to_var, label = self._range_vars[field_name]
+                range_from = self._parse_number_value(f"{label} von", from_var.get())
+                range_to = self._parse_number_value(f"{label} bis", to_var.get())
+                if range_from is not None and range_to is not None and range_from > range_to:
+                    raise ValueError(f"{label}: 'Von' darf nicht groesser als 'Bis' sein.")
+                setattr(result, f"{field_name}_from", range_from)
+                setattr(result, f"{field_name}_to", range_to)
+        except ValueError as exc:
+            self._error_var.set(str(exc))
+            return
+        self.result = result
+        self._close()
+
+    def _on_reset(self) -> None:
+        """Reset all filters and close the dialog."""
+        self.result = FilterState()
+        self._close()
+
+    def _on_cancel(self) -> None:
+        """Close without applying changes."""
+        self.result = None
+        self._close()
+
+    def _close(self) -> None:
+        """Release the modal grab and destroy the dialog."""
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+    def _on_scroll_frame_configure(self, _event=None) -> None:
+        """Update the canvas scrollregion when inner content changes."""
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event) -> None:
+        """Keep the scrollable frame width in sync with the canvas width."""
+        self._canvas.itemconfigure(self._canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event) -> str:
+        """Scroll the filter body with the mouse wheel on Windows."""
+        if event.delta:
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        return "break"
+
+    def _position_over_parent(self, parent: tk.Widget) -> None:
+        """Center the dialog over its parent window."""
+        width = 520
+        height = min(680, max(420, self.winfo_reqheight()))
+        parent_root = parent.winfo_toplevel()
+        parent_root.update_idletasks()
+        x = parent_root.winfo_rootx() + max(0, (parent_root.winfo_width() - width) // 2)
+        y = parent_root.winfo_rooty() + max(0, (parent_root.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    @staticmethod
+    def _format_date_value(timestamp: float | None) -> str:
+        """Convert a timestamp into a YYYY-MM-DD string."""
+        if timestamp is None:
+            return ""
+        try:
+            return datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _format_number_value(value: float | None) -> str:
+        """Convert an optional float into a compact entry string."""
+        if value is None:
+            return ""
+        try:
+            return f"{float(value):g}"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _parse_date_value(label: str, raw_value: str, *, end_of_day: bool = False) -> float | None:
+        """Parse an optional YYYY-MM-DD string into a Unix timestamp."""
+        text = raw_value.strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(f"{label}: Bitte YYYY-MM-DD eingeben.") from exc
+        if end_of_day:
+            return (parsed + timedelta(days=1)).timestamp() - 0.001
+        return parsed.timestamp()
+
+    @staticmethod
+    def _parse_number_value(label: str, raw_value: str) -> float | None:
+        """Parse an optional numeric entry value."""
+        text = raw_value.strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise ValueError(f"{label}: Bitte eine Zahl eingeben.") from exc
 
 
 class _EnvironmentTooltip:
@@ -207,6 +621,7 @@ class CoachingBrowser(ttk.Frame):
 
         self._index: CoachingIndex | None = None
         self._filter_index: FilterIndex | None = None
+        self._active_filter: FilterState | None = None
         self._expanded_ids: set[str] = set()
         self._message_var = tk.StringVar(value="")
         self._stats_var = tk.StringVar(value="No sessions loaded.")
@@ -224,9 +639,11 @@ class CoachingBrowser(ttk.Frame):
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        top.columnconfigure(1, weight=1)
+        top.columnconfigure(2, weight=1)
         ttk.Button(top, text="Refresh", command=self.refresh).grid(row=0, column=0, sticky="w")
-        ttk.Label(top, textvariable=self._stats_var).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._filter_btn = ttk.Button(top, text="⊽ Filter", command=self._open_filter_dialog)
+        self._filter_btn.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        ttk.Label(top, textvariable=self._stats_var).grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         tree_wrap = ttk.Frame(self)
         tree_wrap.grid(row=1, column=0, sticky="nsew")
@@ -316,6 +733,7 @@ class CoachingBrowser(ttk.Frame):
         self.tree.bind("<Leave>", self._on_tree_leave_for_environment, add="+")
         self.tree.bind("<ButtonPress-1>", lambda _e: self._on_tree_leave_for_environment(), add="+")
         self._cache_overlay_style()
+        self._update_filter_badge()
         self._update_action_buttons()
 
     def set_index(self, index: CoachingIndex | None) -> None:
@@ -382,6 +800,41 @@ class CoachingBrowser(ttk.Frame):
         )
         self._update_action_buttons()
         self._schedule_overlay_refresh(10)
+
+    def _open_filter_dialog(self) -> None:
+        """Open the modal filter dialog and rebuild the tree after applying."""
+        if self._filter_index is None:
+            return
+        dialog = FilterDialog(self, self._filter_index, self._active_filter)
+        if dialog.result is None:
+            return
+        self._active_filter = dialog.result if not dialog.result.is_empty() else None
+        self._update_filter_badge()
+        self._rebuild_tree(selected_id=self._selected_id())
+
+    def _update_filter_badge(self) -> None:
+        """Update the filter button caption with the number of active groups."""
+        active = self._active_filter
+        if active is None or active.is_empty():
+            self._filter_btn.config(text="⊽ Filter")
+            return
+        count = sum([
+            bool(active.tracks),
+            bool(active.cars),
+            bool(active.drivers),
+            bool(active.environments),
+            bool(active.session_types),
+            bool(active.lap_statuses),
+            bool(active.skies),
+            bool(active.weather_types),
+            active.date_from is not None or active.date_to is not None,
+            active.track_temp_from is not None or active.track_temp_to is not None,
+            active.air_temp_from is not None or active.air_temp_to is not None,
+            active.humidity_from is not None or active.humidity_to is not None,
+            active.wind_speed_from is not None or active.wind_speed_to is not None,
+            active.air_pressure_from is not None or active.air_pressure_to is not None,
+        ])
+        self._filter_btn.config(text=f"⊽ Filter ({count})")
 
     def _insert_node(self, parent_iid: str, node: CoachingTreeNode) -> None:
         """Implement insert node logic."""
