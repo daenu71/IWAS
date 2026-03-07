@@ -364,7 +364,17 @@ class CoachingBrowser(ttk.Frame):
             _format_last_driven(node.summary.last_driven_ts),
         )
         self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids))
-        for child in node.children:
+        children = node.children
+        if node.kind == "event":
+            children = sorted(
+                node.children,
+                key=lambda child: (
+                    child.run_id is None,
+                    child.run_id if child.run_id is not None else 0,
+                    child.label,
+                ),
+            )
+        for child in children:
             self._insert_node(node.id, child)
 
     def _capture_expanded_state(self) -> None:
