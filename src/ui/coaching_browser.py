@@ -130,6 +130,14 @@ class FilterDialog(tk.Toplevel):
         ("air_pressure", "Luftdruck", "air_pressure_min", "air_pressure_max", "hPa"),
     )
 
+    _COMPACT_RANGE_ROWS: tuple[tuple[str, str, str, str, str], ...] = (
+        ("Streckentemp.", "track_temp", "track_temp_min", "track_temp_max", "°C"),
+        ("Lufttemp.", "air_temp", "air_temp_min", "air_temp_max", "°C"),
+        ("Luftfeucht.", "humidity", "humidity_min", "humidity_max", "%"),
+        ("Wind", "wind_speed", "wind_speed_min", "wind_speed_max", "m/s"),
+        ("Luftdruck", "air_pressure", "air_pressure_min", "air_pressure_max", "hPa"),
+    )
+
     def __init__(
         self,
         parent: tk.Widget,
@@ -147,6 +155,7 @@ class FilterDialog(tk.Toplevel):
         self._checkbox_vars: dict[str, dict[str, tk.BooleanVar]] = {}
         self._visible_range_fields: set[str] = set()
         self._error_var = tk.StringVar(value="")
+        self._mousewheel_bound = False
         self._date_from_var = tk.StringVar(value=self._format_date_value(self._current.date_from))
         self._date_to_var = tk.StringVar(value=self._format_date_value(self._current.date_to))
         self._range_vars: dict[str, tuple[tk.StringVar, tk.StringVar, str]] = {
@@ -202,8 +211,9 @@ class FilterDialog(tk.Toplevel):
         self._canvas_window = self._canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
         self._scroll_frame.bind("<Configure>", self._on_scroll_frame_configure, add="+")
         self._canvas.bind("<Configure>", self._on_canvas_configure, add="+")
-        self._canvas.bind("<MouseWheel>", self._on_mousewheel, add="+")
-        self._scroll_frame.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        self._mousewheel_bound = True
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
         footer = ttk.Frame(self, padding=12)
         footer.grid(row=1, column=0, sticky="ew")
@@ -228,6 +238,16 @@ class FilterDialog(tk.Toplevel):
     def _build_sections(self) -> None:
         """Build all filter UI sections."""
         row = 0
+        hint = tk.Label(
+            self._scroll_frame,
+            text="Mehrfachauswahl innerhalb einer Gruppe: OR  ·  Zwischen Gruppen: AND",
+            font=("TkDefaultFont", 8),
+            fg="#888888",
+            anchor="w",
+            justify="left",
+        )
+        hint.grid(row=row, column=0, sticky="ew", padx=8, pady=(4, 8))
+        row += 1
         for field_name, title in self._CATEGORY_FIELDS:
             values = list(getattr(self._filter_index, field_name))
             selected = list(getattr(self._current, field_name))
@@ -264,15 +284,7 @@ class FilterDialog(tk.Toplevel):
         ).grid(row=2, column=0, columnspan=5, sticky="ew", pady=(4, 0))
         row += 1
 
-        for field_name, title, min_attr, max_attr, unit in self._RANGE_FIELDS:
-            minimum = getattr(self._filter_index, min_attr)
-            maximum = getattr(self._filter_index, max_attr)
-            if minimum is None and maximum is None:
-                continue
-            frame = ttk.LabelFrame(self._scroll_frame, text=title, padding=(10, 8))
-            frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
-            self._build_range_section(frame, field_name, unit, minimum, maximum)
-            self._visible_range_fields.add(field_name)
+        if self._build_compact_range_section(row):
             row += 1
 
         if self._filter_index.skies_values or self._filter_index.weather_types:
@@ -285,16 +297,19 @@ class FilterDialog(tk.Toplevel):
                 weather_row += 1
                 inner = ttk.Frame(weather_frame)
                 inner.grid(row=weather_row, column=0, sticky="ew", pady=(0, 8))
-                inner.columnconfigure(0, weight=1)
-                self._build_checkbox_grid(inner, "skies", self._filter_index.skies_values, self._current.skies)
+                self._build_two_column_checkbox_grid(
+                    inner,
+                    "skies",
+                    self._filter_index.skies_values,
+                    self._current.skies,
+                )
                 weather_row += 1
             if self._filter_index.weather_types:
                 ttk.Label(weather_frame, text="Wetter").grid(row=weather_row, column=0, sticky="w", pady=(0, 4))
                 weather_row += 1
                 inner = ttk.Frame(weather_frame)
                 inner.grid(row=weather_row, column=0, sticky="ew")
-                inner.columnconfigure(0, weight=1)
-                self._build_checkbox_grid(
+                self._build_two_column_checkbox_grid(
                     inner,
                     "weather_types",
                     self._filter_index.weather_types,
@@ -330,29 +345,91 @@ class FilterDialog(tk.Toplevel):
             )
             self._checkbox_vars[field_name][value] = var
 
-    def _build_range_section(
+    def _build_compact_range_section(self, row: int) -> bool:
+        """Render the compact environment range grid."""
+        visible_rows: list[tuple[str, str, float | None, float | None, str]] = []
+        for label, field_name, min_attr, max_attr, unit in self._COMPACT_RANGE_ROWS:
+            minimum = getattr(self._filter_index, min_attr)
+            maximum = getattr(self._filter_index, max_attr)
+            if minimum is None and maximum is None:
+                continue
+            visible_rows.append((label, field_name, minimum, maximum, unit))
+            self._visible_range_fields.add(field_name)
+
+        if not visible_rows:
+            return False
+
+        frame = ttk.LabelFrame(self._scroll_frame, text="Session Conditions", padding=(10, 8))
+        frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        for column in range(7):
+            frame.columnconfigure(column, weight=0)
+
+        for row_index, (label, field_name, minimum, maximum, unit) in enumerate(visible_rows):
+            from_var, to_var, _field_label = self._range_vars[field_name]
+            tk.Label(frame, text=label, width=12, anchor="w").grid(
+                row=row_index,
+                column=0,
+                sticky="w",
+                padx=(0, 6),
+                pady=2,
+            )
+            tk.Label(frame, text="Von:", anchor="w").grid(row=row_index, column=1, sticky="w", pady=2)
+            tk.Entry(frame, textvariable=from_var, width=6).grid(
+                row=row_index,
+                column=2,
+                sticky="w",
+                padx=(0, 8),
+                pady=2,
+            )
+            tk.Label(frame, text="Bis:", anchor="w").grid(row=row_index, column=3, sticky="w", pady=2)
+            tk.Entry(frame, textvariable=to_var, width=6).grid(
+                row=row_index,
+                column=4,
+                sticky="w",
+                padx=(0, 8),
+                pady=2,
+            )
+            tk.Label(frame, text=unit, anchor="w").grid(
+                row=row_index,
+                column=5,
+                sticky="w",
+                padx=(0, 8),
+                pady=2,
+            )
+            if minimum is not None and maximum is not None:
+                tk.Label(
+                    frame,
+                    text=f"({minimum:.0f}–{maximum:.0f})",
+                    font=("TkDefaultFont", 8),
+                    fg="#888888",
+                    anchor="w",
+                ).grid(row=row_index, column=6, sticky="w", pady=2)
+        return True
+
+    def _build_two_column_checkbox_grid(
         self,
-        parent: ttk.LabelFrame,
+        parent: ttk.Frame,
         field_name: str,
-        unit: str,
-        minimum: float | None,
-        maximum: float | None,
+        values: list[str],
+        selected: list[str],
     ) -> None:
-        """Render one numeric range section."""
-        from_var, to_var, _label = self._range_vars[field_name]
-        ttk.Label(parent, text="Von").grid(row=0, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=from_var, width=12).grid(row=0, column=1, sticky="w")
-        ttk.Label(parent, text=unit).grid(row=0, column=2, sticky="w", padx=(4, 10))
-        ttk.Label(parent, text="Bis").grid(row=0, column=3, sticky="w")
-        ttk.Entry(parent, textvariable=to_var, width=12).grid(row=0, column=4, sticky="w")
-        ttk.Label(parent, text=unit).grid(row=0, column=5, sticky="w", padx=(4, 0))
-        ttk.Label(
-            parent,
-            text=(
-                f"Verfuegbar: {self._format_number_value(minimum) or '-'}"
-                f" bis {self._format_number_value(maximum) or '-'} {unit}"
-            ),
-        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        """Render a compact two-column checkbox grid for one field."""
+        selected_values = set(selected)
+        self._checkbox_vars[field_name] = {}
+        for column in range(2):
+            parent.columnconfigure(column, weight=1)
+        for index, value in enumerate(values):
+            row = index // 2
+            column = index % 2
+            var = tk.BooleanVar(value=value in selected_values)
+            tk.Checkbutton(parent, text=value, variable=var, anchor="w").grid(
+                row=row,
+                column=column,
+                sticky="w",
+                padx=4,
+                pady=2,
+            )
+            self._checkbox_vars[field_name][value] = var
 
     def _selected_values(self, field_name: str) -> list[str]:
         """Return all selected checkbox values for the given field."""
@@ -423,14 +500,23 @@ class FilterDialog(tk.Toplevel):
 
     def _on_mousewheel(self, event) -> str:
         """Scroll the filter body with the mouse wheel on Windows."""
+        if event.widget is not None and event.widget.winfo_toplevel() is not self:
+            return ""
         if event.delta:
             self._canvas.yview_scroll(int(-event.delta / 120), "units")
         return "break"
 
+    def _on_destroy(self, event) -> None:
+        """Remove global mouse wheel bindings when the dialog closes."""
+        if event.widget is self and self._mousewheel_bound:
+            self.unbind_all("<MouseWheel>")
+            self._mousewheel_bound = False
+
     def _position_over_parent(self, parent: tk.Widget) -> None:
         """Center the dialog over its parent window."""
         width = 520
-        height = min(680, max(420, self.winfo_reqheight()))
+        max_height = max(420, self.winfo_screenheight() - 120)
+        height = min(max_height, max(420, self.winfo_reqheight()))
         parent_root = parent.winfo_toplevel()
         parent_root.update_idletasks()
         x = parent_root.winfo_rootx() + max(0, (parent_root.winfo_width() - width) // 2)
