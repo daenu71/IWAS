@@ -6,6 +6,7 @@ Repo `.venv` (recommended):
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .venv\Scripts\python.exe -m pip install pyinstaller==6.19.0
 .venv\Scripts\python.exe -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
 ```
@@ -14,6 +15,7 @@ Generic `python`:
 
 ```powershell
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python -m pip install pyinstaller==6.19.0
 python -m PyInstaller packaging\iWAS_onefolder.spec --clean --noconfirm --distpath dist --workpath build\pyinstaller
 ```
