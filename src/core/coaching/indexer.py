@@ -438,6 +438,14 @@ def _parse_session_folder_name(folder_name: str) -> _ParsedFolderName:
     )
 
 
+def _extract_environment(folder_name: str) -> str:
+    """Extract environment label from a session folder name."""
+    parts = str(folder_name or "").split("__")
+    if len(parts) >= 6:
+        return parts[-1] or "Unknown"
+    return "Unknown"
+
+
 def _parse_lap_meta_filename(filename: str) -> tuple[int | None, int] | None:
     """Parse lap meta filename."""
     name = str(filename or "")
@@ -789,6 +797,7 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
             "car": session.car,
             "session_type": session.session_type,
             "session_id": session.session_id,
+            "environment": _extract_environment(session.folder_name),
             "run_count": len(session.runs),
         },
     )
@@ -840,6 +849,7 @@ def _build_run_node(
             "meta_path": str(run.meta_path) if run.meta_path else "",
             "parquet_path": str(run.parquet_path) if run.parquet_path else "",
             "extra_count": len(run.extra_paths),
+            "session_type": session.session_type,
             "laps_completed": int(run.summary.laps or 0),
             "laps_including_current": int(
                 run.summary.laps_total_display if run.summary.laps_total_display is not None else (run.summary.laps or 0)

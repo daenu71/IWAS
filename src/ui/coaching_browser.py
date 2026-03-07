@@ -358,7 +358,7 @@ class CoachingBrowser(ttk.Frame):
         """Implement insert node logic."""
         values = (
             "",  # analyze — button placed as overlay
-            node.kind,
+            _type_col_value(node),
             _format_time_col(node),
             _format_lap_col(node),
             _format_last_driven(node.summary.last_driven_ts),
@@ -905,6 +905,17 @@ def _format_time_col(node: CoachingTreeNode) -> str:
     if summary.fastest_lap_s is not None:
         return _format_lap_seconds(summary.fastest_lap_s)
     return "na"
+
+
+def _type_col_value(node: CoachingTreeNode) -> str:
+    """Return the display value for the tree Type column."""
+    if node.kind == "event":
+        environment = str(node.meta.get("environment") or "").strip()
+        return environment if environment else "event"
+    if node.kind == "run":
+        session_type = str(node.meta.get("session_type") or "").strip()
+        return session_type.capitalize() if session_type else "run"
+    return node.kind
 
 
 def _format_lap_col(node: CoachingTreeNode) -> str:
