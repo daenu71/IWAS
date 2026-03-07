@@ -25,13 +25,14 @@ def extract_session_meta(
         driver_info = _as_dict(parsed.get("DriverInfo"))
         session_info = _as_dict(parsed.get("SessionInfo"))
         driver = _select_driver(driver_info)
+        track_usage = _extract_track_usage(parsed, weekend_info, session_info)
 
         _set_if_present(meta, "DriverName", _coalesce(driver.get("UserName"), driver.get("DriverName"), driver.get("UserNameAbbrev")))
         _set_if_present(meta, "CarScreenName", _coalesce(driver.get("CarScreenName"), driver.get("CarPath")))
         _set_if_present(meta, "CarClassShortName", driver.get("CarClassShortName"))
         _set_if_present(meta, "TrackDisplayName", weekend_info.get("TrackDisplayName"))
         _set_if_present(meta, "TrackConfigName", weekend_info.get("TrackConfigName"))
-        _set_if_present(meta, "TrackUsage", weekend_info.get("TrackUsage"))
+        _set_if_present(meta, "TrackUsage", track_usage)
         _set_if_present(
             meta,
             "SessionUniqueID",
@@ -62,11 +63,20 @@ def extract_session_meta(
             "CarClassShortName": ("CarClassShortName",),
             "TrackDisplayName": ("TrackDisplayName",),
             "TrackConfigName": ("TrackConfigName",),
-            "TrackUsage": ("TrackUsage",),
             "SessionUniqueID": ("SessionUniqueID", "SubSessionID", "SessionID"),
         }
         for meta_key, raw_keys in regex_key_map.items():
             _set_if_present(meta, meta_key, _coalesce(*(_regex_extract_scalar(text, raw_key) for raw_key in raw_keys)))
+        _set_if_present(
+            meta,
+            "TrackUsage",
+            _normalize_track_usage(
+                _coalesce(
+                    _regex_extract_scalar(text, "TrackUsage"),
+                    _regex_extract_scalar(text, "SessionTrackRubberState"),
+                )
+            ),
+        )
         raw_session_type = _coalesce(_regex_extract_scalar(text, "SessionType"), _regex_extract_scalar(text, "EventType"))
         if raw_session_type is not None:
             meta["session_type_raw"] = str(raw_session_type)
@@ -112,7 +122,11 @@ def resolve_session_environment(
     """Resolve environment data from recorded meta with a YAML fallback."""
     meta = session_meta if isinstance(session_meta, dict) else {}
     environment = _normalize_environment_dict(meta.get("environment"))
-    track_usage = _coerce_optional_str(meta.get("TrackUsage"))
+    track_usage = _normalize_track_usage(meta.get("TrackUsage"))
+    if track_usage is None and session_info_yaml:
+        extracted = extract_environment_from_session_info(session_info_yaml)
+        if isinstance(extracted, dict):
+            track_usage = _normalize_track_usage(extracted.get("track_usage"))
     if environment is not None:
         if track_usage and not _coerce_optional_str(environment.get("track_usage")):
             environment["track_usage"] = track_usage
@@ -134,7 +148,11 @@ def extract_environment_from_session_info(session_info_yaml: str) -> dict[str, A
         return None
     parsed = _safe_yaml_parse(text)
     if isinstance(parsed, dict):
-        return _extract_environment(_as_dict(parsed.get("WeekendInfo")))
+        return _extract_environment(
+            _as_dict(parsed.get("WeekendInfo")),
+            parsed=parsed,
+            session_info=_as_dict(parsed.get("SessionInfo")),
+        )
     return _extract_environment(
         {
             "TrackTemp": _regex_extract_scalar(text, "TrackTemp"),
@@ -160,6 +178,7 @@ def extract_environment_from_session_info(session_info_yaml: str) -> dict[str, A
             "AirPressure": _regex_extract_scalar(text, "AirPressure"),
             "TrackAirPressure": _regex_extract_scalar(text, "TrackAirPressure"),
             "TrackUsage": _regex_extract_scalar(text, "TrackUsage"),
+            "SessionTrackRubberState": _regex_extract_scalar(text, "SessionTrackRubberState"),
         }
     )
 
@@ -257,6 +276,48 @@ def _extract_primary_session_type(root: dict[str, Any], session_info: dict[str, 
     return session_info.get("SessionType")
 
 
+def _extract_primary_session_field(root: dict[str, Any], session_info: dict[str, Any], field_name: str) -> Any:
+    """Extract one field from the active session, falling back to any session match."""
+    current_session_num = _coerce_int(
+        _coalesce(
+            root.get("SessionNum"),
+            session_info.get("CurrentSessionNum"),
+            _find_first_value_for_key(session_info, "SessionNum"),
+        )
+    )
+    sessions = _as_list(session_info.get("Sessions"))
+    if current_session_num is not None:
+        for item in sessions:
+            if not isinstance(item, dict):
+                continue
+            item_num = _coerce_int(item.get("SessionNum"))
+            if item_num is not None and item_num == current_session_num and item.get(field_name) is not None:
+                return item.get(field_name)
+
+    for item in sessions:
+        if isinstance(item, dict) and item.get(field_name) is not None:
+            return item.get(field_name)
+    return session_info.get(field_name)
+
+
+def _extract_track_usage(
+    root: dict[str, Any] | None,
+    weekend_info: dict[str, Any] | None,
+    session_info: dict[str, Any] | None,
+) -> str | None:
+    """Extract and normalize track usage/rubber state from known SessionInfo fields."""
+    root_dict = root if isinstance(root, dict) else {}
+    weekend_dict = weekend_info if isinstance(weekend_info, dict) else {}
+    session_dict = session_info if isinstance(session_info, dict) else {}
+    raw_value = _coalesce(
+        weekend_dict.get("TrackUsage"),
+        weekend_dict.get("SessionTrackRubberState"),
+        _extract_primary_session_field(root_dict, session_dict, "SessionTrackRubberState"),
+        session_dict.get("SessionTrackRubberState"),
+    )
+    return _normalize_track_usage(raw_value)
+
+
 def _find_first_value_for_key(value: Any, key: str) -> Any:
     """Find first value for key."""
     if isinstance(value, dict):
@@ -286,7 +347,12 @@ def _regex_extract_scalar(text: str, key: str) -> str | None:
     return value or None
 
 
-def _extract_environment(weekend_info: dict[str, Any]) -> dict[str, Any] | None:
+def _extract_environment(
+    weekend_info: dict[str, Any],
+    *,
+    parsed: dict[str, Any] | None = None,
+    session_info: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Extract environment metadata from WeekendInfo."""
     weekend_options = _as_dict(weekend_info.get("WeekendOptions"))
     environment = {
@@ -340,7 +406,7 @@ def _extract_environment(weekend_info: dict[str, Any]) -> dict[str, Any] | None:
                 weekend_options.get("WeatherType"),
             )
         ),
-        "track_usage": _coerce_optional_str(weekend_info.get("TrackUsage")),
+        "track_usage": _extract_track_usage(parsed, weekend_info, session_info),
         "air_pressure_hpa": _coerce_pressure_hpa(
             _coalesce(
                 weekend_info.get("AirPressure"),
@@ -398,6 +464,28 @@ def _coerce_optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_track_usage(value: Any) -> str | None:
+    """Normalize known track-usage labels to a stable display form."""
+    text = _coerce_optional_str(value)
+    if text is None:
+        return None
+    compact = re.sub(r"\s+", " ", text).strip()
+    lowered = compact.casefold()
+    known = {
+        "low usage": "Low Usage",
+        "moderate usage": "Moderate Usage",
+        "high usage": "High Usage",
+        "moderately high usage": "Moderately High Usage",
+        "moderately low usage": "Moderately Low Usage",
+        "low": "Low Usage",
+        "moderate": "Moderate Usage",
+        "high": "High Usage",
+    }
+    if lowered in known:
+        return known[lowered]
+    return compact.title()
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:

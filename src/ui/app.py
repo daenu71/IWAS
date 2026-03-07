@@ -1772,24 +1772,30 @@ class CoachingView(ttk.Frame):
         self.rowconfigure(0, weight=1)
         self._coaching_index: CoachingIndex | None = None
         self._status_poll_after_id: str | None = None
+        self._browser_collapsed = False
         self._browser_panel_width_px = COACHING_BROWSER_WIDTH_PX
         self._last_layout_debug_widths: tuple[int, int] | None = None
 
         layout = ttk.Frame(self, padding=12)
         layout.grid(row=0, column=0, sticky="nsew")
         layout.columnconfigure(0, weight=0)
-        layout.columnconfigure(1, weight=1)
+        layout.columnconfigure(1, weight=0)
+        layout.columnconfigure(2, weight=1)
         layout.rowconfigure(0, weight=1)
 
+        self._browser_toggle_btn = ttk.Button(layout, width=2, command=self._toggle_browser_panel)
+        self._browser_toggle_btn.grid(row=0, column=0, sticky="ns", padx=(0, 6))
+        self._browser_toggle_tooltip = HoverTooltip(self._browser_toggle_btn)
+
         self._browser_panel = ttk.LabelFrame(layout, text="Browser", padding=COACHING_BROWSER_LABELFRAME_PADDING_X_PX)
-        self._browser_panel.grid(row=0, column=0, sticky="nsw")
+        self._browser_panel.grid(row=0, column=1, sticky="nsw")
         self._browser_panel.configure(width=self._browser_panel_width_px)
         self._browser_panel.grid_propagate(False)
         self._browser_panel.columnconfigure(0, weight=1)
         self._browser_panel.rowconfigure(1, weight=1)
 
         self._detail_view = CoachingDetailView(layout)
-        self._detail_view.grid(row=0, column=1, sticky="nsew")
+        self._detail_view.grid(row=0, column=2, sticky="nsew")
 
         conn_bar = ttk.Frame(self._browser_panel)
         conn_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
@@ -1815,10 +1821,44 @@ class CoachingView(ttk.Frame):
             self._browser_panel.bind("<Configure>", self._debug_log_layout_widths, add="+")
             self._browser_widget.tree.bind("<Configure>", self._debug_log_layout_widths, add="+")
             self.after(0, self._debug_log_layout_widths)
+        self._update_browser_toggle_ui()
         self._refresh_coaching_index()
         self.after(100, self._restore_coaching_ui_state)
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.after(300, self._poll_recorder_status)
+
+    def _toggle_browser_panel(self) -> None:
+        self._set_browser_collapsed(not self._browser_collapsed)
+
+    def _set_browser_collapsed(self, collapsed: bool) -> None:
+        if self._browser_collapsed == collapsed:
+            return
+        self._browser_collapsed = collapsed
+        if collapsed:
+            self._browser_panel.grid_remove()
+        else:
+            self._browser_panel.grid()
+        self._update_browser_toggle_ui()
+        self.after_idle(self._refresh_detail_after_browser_toggle)
+
+    def _update_browser_toggle_ui(self) -> None:
+        if self._browser_collapsed:
+            self._browser_toggle_btn.configure(text="▶")
+            self._browser_toggle_tooltip.set_text("Browser einblenden")
+            return
+        self._browser_toggle_btn.configure(text="◀")
+        self._browser_toggle_tooltip.set_text("Browser einklappen")
+
+    def _refresh_detail_after_browser_toggle(self) -> None:
+        self.update_idletasks()
+        refresh_trackmap = getattr(self._detail_view, "refresh_trackmap", None)
+        if callable(refresh_trackmap):
+            refresh_trackmap()
+            return
+        self._detail_view.event_generate("<Configure>")
+        trackmap_canvas = getattr(self._detail_view, "_trackmap_canvas", None)
+        if isinstance(trackmap_canvas, tk.Widget):
+            trackmap_canvas.event_generate("<Configure>")
 
     def _debug_log_layout_widths(self, _event=None) -> None:
         if not _debug_swallowed_enabled():

@@ -115,6 +115,25 @@ WeekendInfo:
     assert environment["air_pressure_hpa"] == pytest.approx(1012.2066093347631)
 
 
+def test_extract_session_meta_reads_track_usage_from_session_track_rubber_state() -> None:
+    yaml_text = """
+WeekendInfo:
+  TrackDisplayName: Misano
+  TrackAirPressure: 30.48 Hg
+SessionInfo:
+  CurrentSessionNum: 0
+  Sessions:
+    - SessionNum: 0
+      SessionType: Offline Testing
+      SessionTrackRubberState: low usage
+"""
+
+    meta = extract_session_meta(yaml_text)
+
+    assert meta["TrackUsage"] == "Low Usage"
+    assert meta["environment"]["track_usage"] == "Low Usage"
+
+
 def test_resolve_session_environment_merges_top_level_track_usage() -> None:
     environment = resolve_session_environment(
         {
@@ -125,5 +144,25 @@ def test_resolve_session_environment_merges_top_level_track_usage() -> None:
 
     assert environment == {
         "air_pressure_hpa": 1010.5,
+        "track_usage": "Low Usage",
+    }
+
+
+def test_resolve_session_environment_backfills_track_usage_from_yaml_when_meta_is_old() -> None:
+    environment = resolve_session_environment(
+        {"environment": {"air_pressure_hpa": 1032.2}},
+        session_info_yaml="""
+WeekendInfo:
+  TrackAirPressure: 30.48 Hg
+SessionInfo:
+  CurrentSessionNum: 0
+  Sessions:
+    - SessionNum: 0
+      SessionTrackRubberState: low usage
+""",
+    )
+
+    assert environment == {
+        "air_pressure_hpa": 1032.2,
         "track_usage": "Low Usage",
     }
