@@ -135,14 +135,15 @@ class FilterDialog(tk.Toplevel):
         parent: tk.Widget,
         filter_index: FilterIndex,
         current: FilterState | None,
+        on_apply: Callable[[FilterState | None], None],
     ) -> None:
         super().__init__(parent)
         self.title("Filter")
         self.resizable(False, False)
-        self.transient(parent.winfo_toplevel())
-        self.result: FilterState | None = None
+        self.transient(parent)
         self._filter_index = filter_index
         self._current = current or FilterState()
+        self._on_apply_cb = on_apply
         self._checkbox_vars: dict[str, dict[str, tk.BooleanVar]] = {}
         self._visible_range_fields: set[str] = set()
         self._error_var = tk.StringVar(value="")
@@ -223,8 +224,6 @@ class FilterDialog(tk.Toplevel):
         self.bind("<Escape>", lambda _event: self._on_cancel(), add="+")
         self.update_idletasks()
         self._position_over_parent(parent)
-        self.grab_set()
-        self.wait_window(self)
 
     def _build_sections(self) -> None:
         """Build all filter UI sections."""
@@ -365,6 +364,24 @@ class FilterDialog(tk.Toplevel):
 
     def _on_apply(self) -> None:
         """Collect filter values and close the dialog if valid."""
+        state = self._build_filter_state()
+        if state is None:
+            return
+        self._on_apply_cb(state)
+        self.destroy()
+
+    def _on_reset(self) -> None:
+        """Reset all filters and close the dialog."""
+        self._on_apply_cb(FilterState())
+        self.destroy()
+
+    def _on_cancel(self) -> None:
+        """Close without applying changes."""
+        self._on_apply_cb(None)
+        self.destroy()
+
+    def _build_filter_state(self) -> FilterState | None:
+        """Collect filter values and return them if validation succeeds."""
         self._error_var.set("")
         try:
             result = FilterState(
@@ -393,27 +410,8 @@ class FilterDialog(tk.Toplevel):
                 setattr(result, f"{field_name}_to", range_to)
         except ValueError as exc:
             self._error_var.set(str(exc))
-            return
-        self.result = result
-        self._close()
-
-    def _on_reset(self) -> None:
-        """Reset all filters and close the dialog."""
-        self.result = FilterState()
-        self._close()
-
-    def _on_cancel(self) -> None:
-        """Close without applying changes."""
-        self.result = None
-        self._close()
-
-    def _close(self) -> None:
-        """Release the modal grab and destroy the dialog."""
-        try:
-            self.grab_release()
-        except Exception:
-            pass
-        self.destroy()
+            return None
+        return result
 
     def _on_scroll_frame_configure(self, _event=None) -> None:
         """Update the canvas scrollregion when inner content changes."""
@@ -621,6 +619,7 @@ class CoachingBrowser(ttk.Frame):
 
         self._index: CoachingIndex | None = None
         self._filter_index: FilterIndex | None = None
+        self._filter_dialog: FilterDialog | None = None
         self._active_filter: FilterState | None = None
         self._filtered_nodes_by_id: dict[str, CoachingTreeNode] | None = None
         self._expanded_ids: set[str] = set()
@@ -846,15 +845,31 @@ class CoachingBrowser(ttk.Frame):
         self._schedule_overlay_refresh(10)
 
     def _open_filter_dialog(self) -> None:
-        """Open the modal filter dialog and rebuild the tree after applying."""
+        """Open the filter dialog and rebuild the tree after applying."""
         if self._filter_index is None:
             return
-        dialog = FilterDialog(self, self._filter_index, self._active_filter)
-        if dialog.result is None:
-            return
-        self._active_filter = dialog.result if not dialog.result.is_empty() else None
-        self._update_filter_badge()
-        self._rebuild_tree(selected_id=self._selected_id())
+        if self._filter_dialog is not None:
+            try:
+                self._filter_dialog.lift()
+                self._filter_dialog.focus_force()
+                return
+            except tk.TclError:
+                self._filter_dialog = None
+
+        def on_apply(result: FilterState | None) -> None:
+            self._filter_dialog = None
+            if result is None:
+                return
+            self._active_filter = result if not result.is_empty() else None
+            self._update_filter_badge()
+            self._rebuild_tree(selected_id=self._selected_id())
+
+        self._filter_dialog = FilterDialog(
+            self,
+            self._filter_index,
+            self._active_filter,
+            on_apply=on_apply,
+        )
 
     def _update_filter_badge(self) -> None:
         """Update the filter button caption with the number of active groups."""
