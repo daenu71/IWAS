@@ -228,6 +228,10 @@ class RecorderService:
                         self._finalize_active_run_if_any(reason="session_end")
                         self._sleep_interruptible(1.0)
                         continue
+                    self._finalize_active_run_if_any(reason="reconnect")
+                    self._mark_session_finalized_if_possible()
+                    with self._lock:
+                        self._reset_session_state()
                     self._debug_log_line("connect_ok")
                     with self._lock:
                         _rs_session_dir = self._session_dir
@@ -1663,6 +1667,43 @@ class RecorderService:
         except Exception as exc:
             _LOG.warning("irsdk session finalized marker write failed (%s)", exc)
             self._debug_log_line(f"session_finalized_failed error={type(exc).__name__}:{exc}")
+
+    def _reset_session_state(self) -> None:
+        """Setzt den Session-State zurück, als ob der Service neu gestartet wäre.
+
+        Wird nach jedem IRSDK-Reconnect aufgerufen.
+        Muss unter self._lock aufgerufen werden.
+        """
+        self._recorded_channels = tuple(REQUESTED_CHANNELS)
+        self._missing_channels = ()
+        self._channels_initialized = False
+        self._channel_info = {}
+        self._dtype_decisions = {}
+        self._session_meta_written = False
+        self._session_dir = None
+        self._session_start_wall_ts = time.time()
+        self._session_info_yaml_saved = False
+        self._session_info_wait_logged = False
+        self._session_info_artifacts_logged = False
+        self._session_type = None
+        self._run_detector = None
+        self._run_id_seq = 0
+        self._active_run_id = None
+        self._run_events = deque(maxlen=200)
+        self._active_run_writer = None
+        self._active_run_meta = None
+        self._active_lap_segmenter = None
+        self._active_run_last_sample_index = None
+        self._active_run_last_sample_ts = None
+        self._active_run_write_error_logged = False
+        self._session_identity_fields = {}
+        self._session_finalized_marked = False
+        self._debug_session_info_attempts = 0
+        self._debug_session_info_probe_writes = 0
+        self._debug_prev_sample_probe = {}
+        self._debug_sample_dump_entries = 0
+        self._last_io_summary = None
+        self._last_io_error = None
 
     def _record_chunk_io_summary(self, *, active_run_id: int, summary: dict[str, Any]) -> None:
         """Implement record chunk io summary logic."""
