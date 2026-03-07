@@ -1940,9 +1940,9 @@ def _format_environment_field(key: str, value: object) -> str:
     if key == "wind_speed_ms":
         return _format_environment_number(value, suffix=" m/s", decimals=1)
     if key == "wind_dir_deg":
-        degrees = _format_environment_number(value, suffix=" deg", decimals=0)
+        degrees = _format_environment_number(value, suffix="°", decimals=0)
         cardinal = _wind_cardinal(value)
-        return f"{degrees} {cardinal}".strip() if degrees else ""
+        return f"{degrees}{cardinal}" if degrees else ""
     if key == "air_pressure_hpa":
         return _format_environment_number(value, suffix=" hPa", decimals=1)
     return str(value).strip()

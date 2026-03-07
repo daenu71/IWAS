@@ -218,14 +218,14 @@ def _format_environment_field(key: str, value: object) -> str:
 
 def _build_wind_summary(environment: dict[str, object]) -> str:
     speed_text = _format_environment_field("wind_speed_ms", environment.get("wind_speed_ms"))
-    dir_text = _wind_cardinal(environment.get("wind_dir_deg"))
+    dir_text = _format_wind_direction(environment.get("wind_dir_deg"))
     return " ".join(part for part in (speed_text, dir_text) if part)
 
 
 def _format_wind_direction(value: object) -> str:
     degrees = _format_environment_number(value, suffix="°", decimals=0)
     cardinal = _wind_cardinal(value)
-    return f"{degrees} {cardinal}".strip() if degrees else cardinal
+    return f"{degrees}{cardinal}" if degrees else cardinal
 
 
 def _format_environment_number(value: object, *, suffix: str, decimals: int) -> str:
