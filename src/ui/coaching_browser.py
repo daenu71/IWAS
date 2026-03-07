@@ -476,6 +476,10 @@ class CoachingBrowser(ttk.Frame):
             node = index.nodes_by_id.get(iid)
             if node is None:
                 continue
+            if node.kind == "lap":
+                lap_summary = _node_lap_summary(node)
+                if not _lap_is_valid_for_best(node.summary, lap_summary=lap_summary):
+                    continue
             purple_text = _format_time_col(node)
             if purple_text and purple_text != "na":
                 self._best_text[iid] = purple_text
@@ -789,7 +793,13 @@ def _has_analysis_data(node: CoachingTreeNode) -> bool | str:
 def _best_time_for_node(node: CoachingTreeNode) -> float | None:
     """Return comparison time for best-time highlighting (None or ≤0 means no valid time)."""
     if node.kind == "lap":
-        return node.summary.total_time_s
+        lap_summary = _node_lap_summary(node)
+        if not _lap_is_valid_for_best(node.summary, lap_summary=lap_summary):
+            return None
+        lap_time_s = node.summary.total_time_s
+        if lap_time_s is None:
+            lap_time_s = _coerce_optional_float(lap_summary.get("lap_time_s"))
+        return lap_time_s
     return node.summary.fastest_lap_s
 
 
@@ -836,8 +846,7 @@ def _compute_best_ids(index: CoachingIndex) -> set[str]:
                     all_runs.append(run)
                     for lap in run.children:
                         lap_sum = _node_lap_summary(lap)
-                        if not _lap_is_incomplete(lap.summary, lap_summary=lap_sum) \
-                                and not _lap_is_offtrack(lap.summary, lap_summary=lap_sum):
+                        if _lap_is_valid_for_best(lap.summary, lap_summary=lap_sum):
                             all_laps.append(lap)
 
             # Level 4: fastest run (one per car, across all sessions)
@@ -979,6 +988,16 @@ def _lap_is_offtrack(summary: NodeSummary, *, lap_summary: dict[str, object]) ->
             if explicit is not None:
                 return bool(explicit)
     return False
+
+
+def _lap_is_valid_for_best(summary: NodeSummary, *, lap_summary: dict[str, object]) -> bool:
+    """Return whether the lap may participate in best-time highlighting."""
+    explicit = _coerce_optional_bool(lap_summary.get("valid_lap"))
+    if explicit is not None:
+        return bool(explicit)
+    return not _lap_is_incomplete(summary, lap_summary=lap_summary) and not _lap_is_offtrack(
+        summary, lap_summary=lap_summary
+    )
 
 
 def _format_seconds(seconds: float) -> str:
