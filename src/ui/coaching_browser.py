@@ -988,8 +988,8 @@ def _format_lap_seconds(seconds: float | None) -> str:
     minutes = int(value // 60)
     remainder = value - (minutes * 60)
     if minutes > 0:
-        return f"{minutes}:{remainder:05.2f}"
-    return f"{remainder:.2f}"
+        return f"{minutes}:{remainder:06.3f}"
+    return f"{remainder:.3f}"
 
 
 def _format_last_driven(ts: float | None) -> str:
