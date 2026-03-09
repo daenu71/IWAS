@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .analysis_cache import AnalysisCache
+
+log = logging.getLogger(__name__)
 
 
 def _find_flat_lap_meta_path(session_dir: Path, run_id: int, lap_no: int) -> Path:
@@ -77,6 +80,120 @@ def analyze_lap(session_dir: Path, run_id: int, lap_no: int) -> bool:
         cache = AnalysisCache()
         result = cache.compute(lap_dir)
         status = result.get("status", "blocked")
-        return status in {"computed", "partial"}
+        ok = status in {"computed", "partial"}
     except Exception:
         return False
+
+    if ok:
+        _try_ensure_track_geometry(session_dir)
+
+    return ok
+
+
+def _try_ensure_track_geometry(session_dir: Path) -> None:
+    """Ensure track_road_geometry.json exists for the session's track.
+
+    Tries (in order):
+      1. IBT file scan in ~/Documents/iRacing/telemetry/
+      2. Parquet velocity-integration fallback using the session's run_0001.parquet
+
+    Never raises – all errors are logged and silently ignored.
+    """
+    try:
+        from .ibt_track_extractor import (
+            extract_track_geometry,
+            extract_track_geometry_from_parquet,
+            _output_path,
+        )
+        from .storage import sanitize_name
+
+        storage_root = session_dir.parent
+        track_key, _ = _read_track_key_from_session(session_dir)
+        if not track_key:
+            log.debug("[track_geometry] Cannot determine track key for %s", session_dir)
+            return
+
+        out_path = _output_path(storage_root, track_key)
+        if out_path.exists():
+            log.debug("[track_geometry] Already exists: %s", out_path)
+            return
+
+        # 1) Try IBT scan
+        ibt_path = _find_ibt_for_track(track_key)
+        if ibt_path is not None:
+            try:
+                written = extract_track_geometry(ibt_path, storage_root)
+                log.info("[track_geometry] Extracted from IBT: %s", written)
+                return
+            except Exception as exc:
+                log.warning("[track_geometry] IBT extraction failed: %s", exc)
+
+        # 2) Parquet fallback
+        parquet_path = _find_parquet_for_session(session_dir)
+        if parquet_path is not None:
+            try:
+                written = extract_track_geometry_from_parquet(parquet_path, track_key, storage_root)
+                log.info("[track_geometry] Extracted from Parquet: %s", written)
+                return
+            except Exception as exc:
+                log.warning("[track_geometry] Parquet extraction failed: %s", exc)
+
+        log.info("[track_geometry] No source available for track key: %s", track_key)
+
+    except Exception as exc:
+        log.debug("[track_geometry] Unexpected error in _try_ensure_track_geometry: %s", exc)
+
+
+def _read_track_key_from_session(session_dir: Path) -> tuple[str, str]:
+    """Return (primary_track_key, legacy_track_key) from session_meta.json."""
+    try:
+        from .storage import sanitize_name
+
+        meta_path = session_dir / "session_meta.json"
+        if not meta_path.exists():
+            return "", ""
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        track_name = (
+            meta.get("TrackDisplayName")
+            or meta.get("TrackName")
+            or ""
+        )
+        config_name = (
+            meta.get("TrackConfigName")
+            or meta.get("TrackConfig")
+            or ""
+        )
+        car_class = meta.get("CarClassShortName") or ""
+        if not track_name:
+            return "", ""
+
+        primary = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}__{sanitize_name(car_class)}"
+        legacy = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
+        return primary, legacy
+    except Exception:
+        return "", ""
+
+
+def _find_ibt_for_track(track_key: str) -> "Path | None":
+    """Scan the standard iRacing telemetry folder for an IBT matching *track_key*."""
+    import os
+
+    tel_dir = Path(os.path.expanduser("~/Documents/iRacing/telemetry"))
+    if not tel_dir.is_dir():
+        return None
+
+    # Normalize track_key for fuzzy matching (first segment = track name)
+    track_part = track_key.split("__")[0].lower().replace("_", " ")
+
+    for ibt_file in tel_dir.glob("*.ibt"):
+        if track_part[:8] in ibt_file.stem.lower():  # compare first 8 chars of track name
+            return ibt_file
+
+    return None
+
+
+def _find_parquet_for_session(session_dir: Path) -> "Path | None":
+    """Return the first run_*.parquet in *session_dir*, or None."""
+    for p in sorted(session_dir.glob("run_*.parquet")):
+        return p
+    return None

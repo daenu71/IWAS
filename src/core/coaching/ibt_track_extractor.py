@@ -394,6 +394,128 @@ def _to_normalised_list(pts_m: np.ndarray) -> list[list[float]]:
 
 
 # ---------------------------------------------------------------------------
+# Parquet-based geometry extraction (fallback when no IBT is available)
+# ---------------------------------------------------------------------------
+
+
+def extract_track_geometry_from_parquet(
+    parquet_path: str | Path,
+    track_key: str,
+    storage_root: str | Path,
+) -> Path:
+    """Extract TrackRoadGeometry from a recorded session Parquet file.
+
+    Uses VelocityX/VelocityY integration over the cleanest complete lap to
+    build a centerline, then applies ±``_EDGE_OFFSET_M`` normals for edges.
+
+    Returns the path of the written ``track_road_geometry.json`` file.
+
+    Raises
+    ------
+    RuntimeError
+        If the Parquet file cannot be read or contains no usable velocity data.
+    """
+    parquet_path = Path(parquet_path)
+    storage_root = Path(storage_root)
+
+    center_m = _integrate_velocity_from_parquet(parquet_path)
+    if len(center_m) < 2:
+        raise RuntimeError(
+            f"No usable velocity data in Parquet: {parquet_path}"
+        )
+
+    normals = _compute_normals(center_m)
+    left_m = center_m + normals * _EDGE_OFFSET_M
+    right_m = center_m - normals * _EDGE_OFFSET_M
+
+    center_norm = _to_normalised_list(center_m)
+    left_norm = _to_normalised_list(left_m)
+    right_norm = _to_normalised_list(right_m)
+
+    out_path = _output_path(storage_root, track_key)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {
+        "track_key": track_key,
+        "source": "parquet_velocity_integration",
+        "center_line": center_norm,
+        "left_edge": left_norm,
+        "right_edge": right_norm,
+    }
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return out_path
+
+
+def _integrate_velocity_from_parquet(parquet_path: Path) -> np.ndarray:
+    """Read the cleanest complete lap from *parquet_path* and integrate VX/VY.
+
+    Returns an (N, 2) float64 array of XY positions in metres, or an empty
+    array if no usable data is found.
+    """
+    try:
+        import pyarrow.parquet as pq
+
+        table = pq.read_table(
+            parquet_path,
+            columns=["VelocityX", "VelocityY", "SessionTime", "LapDistPct", "Lap"],
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read Parquet: {exc}") from exc
+
+    vx_all = table.column("VelocityX").to_pylist()
+    vy_all = table.column("VelocityY").to_pylist()
+    t_all = table.column("SessionTime").to_pylist()
+    ldp_all = table.column("LapDistPct").to_pylist()
+    lap_all = table.column("Lap").to_pylist()
+
+    # Find the lap number with the most samples where LapDistPct reaches [0,1)
+    best_lap_frames = _select_best_lap_frames(vx_all, vy_all, t_all, ldp_all, lap_all)
+    if len(best_lap_frames["vx"]) < 10:
+        return np.empty((0, 2), dtype=np.float64)
+
+    vx = np.asarray(best_lap_frames["vx"], dtype=np.float64)
+    vy = np.asarray(best_lap_frames["vy"], dtype=np.float64)
+    t_arr = np.asarray(best_lap_frames["t"], dtype=np.float64)
+
+    dt = np.diff(t_arr, prepend=t_arr[0])
+    median_dt = float(np.nanmedian(np.diff(t_arr))) if len(t_arr) > 1 else _IBT_SAMPLE_DT
+    dt = np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
+
+    vx = np.where(np.isfinite(vx), vx, 0.0)
+    vy = np.where(np.isfinite(vy), vy, 0.0)
+
+    x = np.cumsum(vx * dt)
+    y = np.cumsum(vy * dt)
+    return np.column_stack([x, y])
+
+
+def _select_best_lap_frames(
+    vx_all: list, vy_all: list, t_all: list, ldp_all: list, lap_all: list
+) -> dict[str, list]:
+    """Return frames for the lap with the most samples (max coverage)."""
+    from collections import defaultdict
+
+    lap_buckets: dict[int, dict[str, list]] = defaultdict(
+        lambda: {"vx": [], "vy": [], "t": [], "ldp": []}
+    )
+    for vx, vy, t, ldp, lap in zip(vx_all, vy_all, t_all, ldp_all, lap_all):
+        if lap is not None and lap >= 1:  # skip warmup lap 0
+            b = lap_buckets[int(lap)]
+            b["vx"].append(float(vx) if vx is not None else 0.0)
+            b["vy"].append(float(vy) if vy is not None else 0.0)
+            b["t"].append(float(t) if t is not None else 0.0)
+            b["ldp"].append(float(ldp) if ldp is not None else 0.0)
+
+    if not lap_buckets:
+        return {"vx": [], "vy": [], "t": []}
+
+    # Pick the lap with the most frames (most complete coverage)
+    best_lap = max(lap_buckets, key=lambda k: len(lap_buckets[k]["vx"]))
+    b = lap_buckets[best_lap]
+    return {"vx": b["vx"], "vy": b["vy"], "t": b["t"]}
+
+
+# ---------------------------------------------------------------------------
 # Storage path
 # ---------------------------------------------------------------------------
 
