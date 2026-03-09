@@ -25,7 +25,7 @@ from core.coaching.storage import (
     mark_session_active,
     mark_session_finalized,
 )
-from core.irsdk.channels import DIAGNOSTIC_TARGET_SPECS, REQUESTED_CHANNELS, REQUESTED_CHANNEL_ALIASES
+from core.irsdk.channels import DIAGNOSTIC_TARGET_SPECS, GEO_COORD_CHANNELS, REQUESTED_CHANNELS, REQUESTED_CHANNEL_ALIASES
 from core.irsdk.irsdk_client import IRSDKClient
 from core.irsdk.sessioninfo_parser import extract_session_meta
 
@@ -341,10 +341,17 @@ class RecorderService:
             return
 
         available_channels = self._client.describe_available_channels()
+        live_channel_report = self._client.build_live_channel_report(GEO_COORD_CHANNELS)
         resolution = self._client.resolve_requested_channels(REQUESTED_CHANNELS)
         channel_info = dict(resolution.get("channel_info") or {})
         recorded_channels = [str(name) for name in (resolution.get("recorded_channels") or [])]
         missing_channels_raw = list(resolution.get("missing_channels") or [])
+        recorded_channels, missing_channels_raw, channel_info = self._apply_strict_geo_channel_gate(
+            recorded_channels=recorded_channels,
+            missing_channels=missing_channels_raw,
+            channel_info=channel_info,
+            live_channel_report=live_channel_report,
+        )
         telemetry_recorded_count = len(recorded_channels)
 
         # Sprint-1 requires SessionUniqueID as a recorded value. If telemetry does not expose it,
@@ -374,6 +381,12 @@ class RecorderService:
                 if "[" in spec
             ]
             _LOG.warning("irsdk channel discovery unavailable; falling back to scalar requested channel list")
+            recorded_channels, missing_channels_raw, channel_info = self._apply_strict_geo_channel_gate(
+                recorded_channels=recorded_channels,
+                missing_channels=missing_channels_raw,
+                channel_info=channel_info,
+                live_channel_report=live_channel_report,
+            )
 
         with self._lock:
             self._recorded_channels = tuple(recorded_channels)
@@ -393,13 +406,106 @@ class RecorderService:
         )
         if missing_channels_raw:
             self._debug_log_line("missing_channels " + self._format_missing_channels_for_log(missing_channels_raw))
+        self._log_live_geo_channel_report(live_channel_report)
+        self._persist_live_geo_channel_report(live_channel_report)
         self._write_vars_dump_once(
             available_channels=available_channels,
             recorded_channels=recorded_channels,
             missing_channels=missing_channels_raw,
             channel_info=channel_info,
+            live_channel_report=live_channel_report,
         )
         self._write_session_meta()
+
+    @staticmethod
+    def _apply_strict_geo_channel_gate(
+        *,
+        recorded_channels: list[str],
+        missing_channels: list[Any],
+        channel_info: dict[str, dict[str, Any]],
+        live_channel_report: dict[str, Any],
+    ) -> tuple[list[str], list[Any], dict[str, dict[str, Any]]]:
+        """Keep geo channels only when the live channel directory proves they exist."""
+        gated_recorded = [str(name) for name in recorded_channels]
+        gated_missing = list(missing_channels)
+        gated_info = dict(channel_info)
+        targets = dict(live_channel_report.get("targets") or {})
+        discovery_available = bool(live_channel_report.get("discovery_available"))
+
+        for spec in GEO_COORD_CHANNELS:
+            item = dict(targets.get(spec) or {})
+            if bool(item.get("available")):
+                continue
+            gated_recorded = [name for name in gated_recorded if name != spec]
+            gated_info.pop(spec, None)
+            gated_missing = [
+                entry
+                for entry in gated_missing
+                if not (
+                    (isinstance(entry, dict) and str(entry.get("request_spec") or "") == spec)
+                    or str(entry) == spec
+                )
+            ]
+            reason = "not_in_live_irsdk_header"
+            if not discovery_available:
+                reason = "live_channel_directory_unavailable"
+            missing_entry: dict[str, Any] = {
+                "request_spec": spec,
+                "reason": reason,
+                "strict_live_check": True,
+            }
+            similar_names = [str(match.get("name") or "") for match in item.get("similar_names") or [] if match.get("name")]
+            if similar_names:
+                missing_entry["similar_available_names"] = similar_names
+            gated_missing.append(missing_entry)
+        return gated_recorded, gated_missing, gated_info
+
+    def _log_live_geo_channel_report(self, live_channel_report: dict[str, Any]) -> None:
+        """Log the live IRSDK channel-directory result for Lat/Lon/Alt once per connect."""
+        discovery_source = str(live_channel_report.get("discovery_source") or "unknown")
+        discovery_available = bool(live_channel_report.get("discovery_available"))
+        available_count = int(live_channel_report.get("available_count") or 0)
+        header_message = (
+            f"irsdk live channel directory source={discovery_source} "
+            f"available={discovery_available} count={available_count}"
+        )
+        _LOG.info(header_message)
+        self._debug_log_line(header_message)
+
+        targets = dict(live_channel_report.get("targets") or {})
+        for spec in GEO_COORD_CHANNELS:
+            item = dict(targets.get(spec) or {})
+            resolved_name = str(item.get("resolved_name") or "").strip()
+            if bool(item.get("available")):
+                parts = [f"{spec}: available"]
+                if resolved_name:
+                    parts.append(f"name={resolved_name}")
+                value_type = str(item.get("type") or "").strip()
+                if value_type:
+                    parts.append(f"type={value_type}")
+                unit = str(item.get("unit") or "").strip()
+                if unit:
+                    parts.append(f"unit={unit}")
+                message = "irsdk live geo channel " + " ".join(parts)
+            else:
+                parts = [f"{spec}: unavailable"]
+                similar_names = [str(match.get("name") or "") for match in item.get("similar_names") or [] if match.get("name")]
+                if similar_names:
+                    parts.append(f"similar={','.join(similar_names)}")
+                message = "irsdk live geo channel " + " ".join(parts)
+            _LOG.info(message)
+            self._debug_log_line(message)
+
+    def _persist_live_geo_channel_report(self, live_channel_report: dict[str, Any]) -> None:
+        """Persist the live geo-channel status in session metadata."""
+        payload: dict[str, Any] = {
+            "irsdk_channel_directory_source": live_channel_report.get("discovery_source"),
+            "irsdk_channel_directory_available": bool(live_channel_report.get("discovery_available")),
+            "irsdk_channel_directory_count": int(live_channel_report.get("available_count") or 0),
+            "irsdk_live_geo_channels": live_channel_report.get("targets") or {},
+            "irsdk_live_geo_name_filters": live_channel_report.get("filtered_available_names") or {},
+        }
+        self._merge_session_meta_fields(payload)
 
     @classmethod
     def _build_dtype_decisions(
@@ -821,6 +927,7 @@ class RecorderService:
         recorded_channels: list[str],
         missing_channels: list[Any],
         channel_info: dict[str, dict[str, Any]],
+        live_channel_report: dict[str, Any],
     ) -> None:
         """Write vars dump once."""
         self._ensure_session_dir()
@@ -843,6 +950,17 @@ class RecorderService:
                         item[key] = info.get(key)
             available_vars.append(item)
 
+        directory_channels = dict(live_channel_report.get("available_channels") or {})
+        directory_vars: list[dict[str, Any]] = []
+        for name in sorted((str(k) for k in directory_channels.keys()), key=str.lower):
+            info = directory_channels.get(name) or {}
+            item: dict[str, Any] = {"name": name}
+            if isinstance(info, dict):
+                for key in ("type", "count", "unit", "desc"):
+                    if key in info:
+                        item[key] = info.get(key)
+            directory_vars.append(item)
+
         targets = self._build_target_resolution_snapshot(
             available_channels=available,
             recorded_channels=recorded_channels,
@@ -863,6 +981,12 @@ class RecorderService:
             },
             "diagnostic_targets": list(DIAGNOSTIC_TARGET_SPECS),
             "available_vars": available_vars,
+            "channel_directory_source": live_channel_report.get("discovery_source"),
+            "channel_directory_available": bool(live_channel_report.get("discovery_available")),
+            "channel_directory_available_count": int(live_channel_report.get("available_count") or 0),
+            "channel_directory_vars": directory_vars,
+            "filtered_available_names": live_channel_report.get("filtered_available_names") or {},
+            "geo_channel_report": live_channel_report.get("targets") or {},
             "target_resolution": targets,
         }
         self._debug_write_json(_VARS_DUMP_FILENAME, payload)

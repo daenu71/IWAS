@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Any, Sequence
 
-from core.irsdk.channels import REQUESTED_CHANNELS, REQUESTED_CHANNEL_ALIASES
+from core.irsdk.channels import GEO_COORD_CHANNELS, REQUESTED_CHANNELS, REQUESTED_CHANNEL_ALIASES
 
 
 _LOG = logging.getLogger(__name__)
@@ -151,14 +151,14 @@ class IRSDKClient:
             self.disconnect()
             return None
 
-    def describe_available_channels(self) -> dict[str, dict[str, Any]]:
+    def describe_available_channels(self, *, allow_fallback: bool = True) -> dict[str, dict[str, Any]]:
         """Implement describe available channels logic."""
         with self._lock:
             ir = self._ir
         if ir is None:
             return {}
         try:
-            return self._describe_available_channels_from_ir(ir)
+            return self._describe_available_channels_from_ir(ir, allow_fallback=allow_fallback)
         except Exception:
             return {}
 
@@ -188,6 +188,74 @@ class IRSDKClient:
             self._resolved_field_reads = dict(resolved.get("read_field_map") or {})
         resolved.pop("read_field_map", None)
         return resolved
+
+    def describe_channel_directory(self) -> dict[str, Any]:
+        """Describe the live IRSDK channel directory without fallback probing."""
+        with self._lock:
+            ir = self._ir
+        if ir is None:
+            return {
+                "available_channels": {},
+                "discovery_source": "disconnected",
+                "discovery_available": False,
+                "available_count": 0,
+            }
+        try:
+            available_channels, discovery_source = self._describe_available_channels_from_ir_with_source(
+                ir,
+                allow_fallback=False,
+            )
+        except Exception:
+            return {
+                "available_channels": {},
+                "discovery_source": "error",
+                "discovery_available": False,
+                "available_count": 0,
+            }
+        return {
+            "available_channels": dict(available_channels or {}),
+            "discovery_source": discovery_source,
+            "discovery_available": bool(available_channels),
+            "available_count": len(available_channels or {}),
+        }
+
+    def build_live_channel_report(self, target_specs: Sequence[str]) -> dict[str, Any]:
+        """Build a strict live-channel report from the IRSDK channel directory."""
+        directory = self.describe_channel_directory()
+        available_channels = dict(directory.get("available_channels") or {})
+        report: dict[str, Any] = {
+            "generated_ts": time.time(),
+            "discovery_source": directory.get("discovery_source"),
+            "discovery_available": bool(directory.get("discovery_available")),
+            "available_count": int(directory.get("available_count") or 0),
+            "available_channels": available_channels,
+            "targets": {},
+            "filtered_available_names": {},
+        }
+
+        for spec in target_specs:
+            name = str(spec)
+            aliases = tuple([name, *REQUESTED_CHANNEL_ALIASES.get(name, ())])
+            resolved_name = self._resolve_scalar_source_name(name, available_channels)
+            info = dict(available_channels.get(resolved_name) or {}) if resolved_name is not None else {}
+            report["targets"][name] = {
+                "request_spec": name,
+                "available": resolved_name is not None,
+                "resolved_name": resolved_name,
+                "aliases_checked": list(aliases),
+                "type": info.get("type"),
+                "count": info.get("count"),
+                "unit": info.get("unit"),
+                "desc": info.get("desc"),
+                "similar_names": self._find_similar_available_names(available_channels, aliases),
+            }
+
+        filter_specs = tuple(dict.fromkeys([*target_specs, *GEO_COORD_CHANNELS]))
+        for spec in filter_specs:
+            name = str(spec)
+            aliases = tuple([name, *REQUESTED_CHANNEL_ALIASES.get(name, ())])
+            report["filtered_available_names"][name] = self._find_similar_available_names(available_channels, aliases)
+        return report
 
     def get_session_info_yaml(self) -> str | None:
         """Implement get session info yaml logic."""
@@ -323,8 +391,24 @@ class IRSDKClient:
         _LOG.info("irsdk connect failed (%s); staying disconnected", exc)
 
     @classmethod
-    def _describe_available_channels_from_ir(cls, ir: Any) -> dict[str, dict[str, Any]]:
+    def _describe_available_channels_from_ir(
+        cls,
+        ir: Any,
+        *,
+        allow_fallback: bool = True,
+    ) -> dict[str, dict[str, Any]]:
         """Implement describe available channels from ir logic."""
+        result, _source = cls._describe_available_channels_from_ir_with_source(ir, allow_fallback=allow_fallback)
+        return result
+
+    @classmethod
+    def _describe_available_channels_from_ir_with_source(
+        cls,
+        ir: Any,
+        *,
+        allow_fallback: bool = True,
+    ) -> tuple[dict[str, dict[str, Any]], str]:
+        """Describe available channels from IRSDK and report the discovery source."""
         result: dict[str, dict[str, Any]] = {}
 
         for attr_name in ("var_headers", "varHeaders", "_var_headers", "_varHeaders"):
@@ -337,7 +421,7 @@ class IRSDKClient:
                     continue
                 result[str(name)] = cls._extract_header_info(header)
             if result:
-                return result
+                return result, attr_name
 
         for attr_name in ("var_headers_names", "varHeaderNames", "var_names", "varNames"):
             names = cls._get_ir_attr_value(ir, attr_name)
@@ -351,17 +435,19 @@ class IRSDKClient:
             except Exception:
                 continue
             if result:
-                return result
+                return result, attr_name
 
         # Fallback: probe requested specs and explicit aliases so unsupported header APIs
         # do not break recording.
+        if not allow_fallback:
+            return {}, "unavailable"
         for name in cls._build_fallback_probe_names():
             try:
                 ir[name]
             except Exception:
                 continue
             result[name] = {}
-        return result
+        return result, "fallback_probe"
 
     @classmethod
     def _resolve_requested_channels_from_available(
@@ -736,6 +822,45 @@ class IRSDKClient:
             return None
         matches.sort(key=lambda text: (0 if text.lower() == str(candidate).lower() else 1, text.lower(), text))
         return matches[0]
+
+    @classmethod
+    def _find_similar_available_names(
+        cls,
+        available: dict[str, dict[str, Any]],
+        aliases: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        """Find similarly named available variables for diagnostics."""
+        normalized_terms: list[str] = []
+        seen_terms: set[str] = set()
+        for alias in aliases:
+            text = str(alias or "").strip()
+            if not text:
+                continue
+            normalized = cls._normalize_var_key(text)
+            if len(normalized) >= 3 and normalized not in seen_terms:
+                seen_terms.add(normalized)
+                normalized_terms.append(normalized)
+
+        matches: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for candidate_name, candidate_info in available.items():
+            name = str(candidate_name)
+            norm_name = cls._normalize_var_key(name)
+            if not norm_name:
+                continue
+            if not any(term in norm_name or norm_name in term for term in normalized_terms):
+                continue
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            item: dict[str, Any] = {"name": name}
+            if isinstance(candidate_info, dict):
+                for key in ("type", "count", "unit", "desc"):
+                    if key in candidate_info:
+                        item[key] = candidate_info.get(key)
+            matches.append(item)
+        matches.sort(key=lambda item: str(item.get("name") or "").lower())
+        return matches
 
     @staticmethod
     def _build_missing_spec_entry(spec: str, reason: str, **extra: Any) -> dict[str, Any]:

@@ -1,0 +1,163 @@
+Diagnose – TrackRoadGeometry Ursachenanalyse
+===========================================
+
+Zusammenfassung
+---------------
+Untersuchung, ob `track_road_geometry.json` existiert, ob `LapViewModel.load()` sie lädt, und ob `render_trackmap()` sie korrekt rendert.
+
+Schritt 1 – Storage-Prüfung
+---------------------------
+Suchpfad:
+- Konfigurierter Coaching-Storage: `C:\iWAS\data\coaching`
+- Rekursive Suche nach `track_road_geometry.json`
+
+Ergebnis:
+FEHLER: Keine track_road_geometry.json gefunden. IBT-Extraktor muss zuerst ausgeführt werden.
+
+
+Schritt 2 – Prüfung `LapViewModel.load()`
+-----------------------------------------
+Datei:
+- `src/core/coaching/lap_view_model.py`
+
+Bewertung:
+- `track_road_geometry.json` wird im `load()`-Pfad nicht gelesen.
+- Es gibt kein Feld `track_road_geometry` in `LapViewModel.__init__`.
+- Es gibt keine Zuweisung eines geladenen Road-Geometry-Objekts.
+- Es gibt keinen implementierten Pfad, weder relativ zu `session_dir` noch relativ zu `<storage_root>/track_geometries/<track_key>/`.
+
+Code-Auszug aus `LapViewModel.__init__()` und `load()`:
+
+```python
+95:     def __init__(self) -> None:
+96:         self.meta: LapMeta | None = None
+97:         self.track_xy: np.ndarray = np.empty((0, 2), dtype=np.float64)
+98:         self.lap_dist_pct: np.ndarray = np.empty(0, dtype=np.float64)
+99:         self.corners: list[CornerInfo] = []
+100:         self.events: dict[int, list[Event]] = {}
+101:         self.corner_events: dict[int, list[Event]] = {}
+102:         self.features: dict[int, dict[str, Any]] = {}
+103:         self.track_length_m: float | None = None
+104:         self._resampled_path: Path | None = None
+105:         self._loaded: bool = False
+
+111:     @staticmethod
+112:     def load(
+113:         session_dir: Path | str,
+114:         run_id: int,
+115:         lap_no: int,
+116:     ) -> "LapViewModel":
+122:         vm = LapViewModel()
+123:         session_dir = Path(session_dir)
+125:         lap_dir = _resolve_lap_dir(session_dir, run_id, lap_no)
+126:         analysis_dir = lap_dir / "analysis"
+128:         vm._resampled_path = analysis_dir / "lap_resampled.parquet"
+129:         vm.meta = _load_meta(session_dir, run_id, lap_no)
+130:         vm.lap_dist_pct, vm.track_xy = _load_resampled_geometry(vm._resampled_path)
+131:         vm.track_length_m = _load_track_length_m(session_dir)
+133:         vm.corners = _load_corners(session_dir, vm.track_length_m)
+134:         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
+135:         vm.corner_events = _load_corner_events(analysis_dir / "corner_events.json")
+136:         vm.features = _load_features(analysis_dir / "corner_features.parquet")
+138:         vm._loaded = True
+139:         return vm
+```
+
+Zusatzbefund:
+- Der vorgesehene Storage-Pfad wird nur im IBT-Extraktor definiert:
+
+```python
+401: def _output_path(storage_root: Path, track_key: str) -> Path:
+402:     safe_key = sanitize_name(track_key)
+403:     return storage_root / "track_geometries" / safe_key / "track_road_geometry.json"
+```
+
+
+Schritt 3 – Prüfung `render_trackmap()`
+---------------------------------------
+Datei:
+- `src/core/coaching/track_geometry.py`
+
+Bewertung:
+- `render_trackmap()` hat keinen `road_geometry`-Parameter.
+- In `render_trackmap()` gibt es keinen Renderblock für Straßenband / linke-rechte Kante.
+- Stattdessen wird nur die Fahrlinie bzw. Segment-Overlay gezeichnet.
+- Im selben Modul ist nur `render_corner_zoom()` mit einem Platzhalter versehen; dort steht explizit, dass `road_geometry` "future" ist und das Rendering absichtlich ausgelassen wurde.
+
+Code-Auszug aus `render_trackmap()`:
+
+```python
+447: def render_trackmap(
+448:     canvas: tk.Canvas,
+449:     xy: np.ndarray,
+450:     corners: list,
+451:     selected_corner_id: Optional[int],
+452:     width: int,
+453:     height: int,
+454:     lap_color: str = "#E53935",
+455:     lap_dist_pct: Optional[np.ndarray] = None,
+456:     on_corner_selected: Optional[Callable[[int], None]] = None,
+457:     zoom: float = 1.0,
+458:     offset: tuple = (0.0, 0.0),
+459: ) -> None:
+485:     canvas.delete("all")
+491:     fit_context = _legend_aware_fit_context(xy, width, height)
+493:     coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)
+494:     closed_flat = _closed_flat(coords)
+496:     # 1 – Base track line (grey)
+497:     canvas.create_line(closed_flat, fill=_TRACK_COLOR, width=_TRACK_WIDTH,
+498:                        smooth=False, tags=("track",))
+500:     # 2 – Corner segments (underneath the lap line)
+501:     for corner in corners:
+```
+
+Code-Auszug zum Corner-Zoom-Platzhalter im selben Modul:
+
+```python
+552: def render_corner_zoom(
+559:     road_geometry=None,                  # TrackRoadGeometry | None (future)
+582:     road_geometry:
+583:         Reserved for future ``TrackRoadGeometry``; ignored when ``None``.
+653:     # -- Road band (future: road_geometry support) --------------------------
+654:     # road_geometry rendering intentionally omitted until type is defined.
+```
+
+Normierung
+----------
+Bewertung:
+- Die Normierung waere grundsaetzlich kompatibel.
+- `reconstruct_xy()` normiert ueber `_normalise_xy(...)`.
+- Der IBT-Extraktor verwendet fuer `track_road_geometry.json` ebenfalls `_normalise_xy(...)`.
+- Damit ist die wahrscheinlichste Ursache nicht die Normierung, sondern das fehlende Laden und fehlende Rendering.
+
+Code-Auszug Normierung:
+
+```python
+387: def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
+398:     Returns an (N, 2) float64 array normalised to [0, 1] with the aspect
+418:             return _normalise_xy(x, y)
+429:             return _normalise_xy(x, y)
+439:     return _normalise_xy(x, y)
+
+975: def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+976:     """Normalise *x* and *y* to [0, 1] preserving aspect ratio."""
+985:     scale = max(x_range, y_range)
+986:     xn = (x - x_min) / scale
+987:     yn = (y - y_min) / scale
+988:     return np.column_stack([xn, yn])
+```
+
+
+Wahrscheinlichste Ursache
+-------------------------
+Die wahrscheinlichste Ursache ist eine Kombination aus zwei Blockern:
+
+1. Es existiert aktuell keine `track_road_geometry.json` im konfigurierten Storage, daher gibt es zur Laufzeit nichts zu laden.
+2. Selbst wenn die Datei vorhanden waere, wuerde sie derzeit nicht sichtbar werden, weil:
+   - `LapViewModel.load()` kein `track_road_geometry` laedt,
+   - `LapViewModel` kein entsprechendes Feld besitzt,
+   - `render_trackmap()` keinen `road_geometry`-Parameter und keinen Renderpfad hat,
+   - `render_corner_zoom()` das Road-Band explizit noch als "future" / nicht implementiert markiert.
+
+Fazit:
+Story 3.1 / 3.3 sind im aktuellen Code nicht vollstaendig umgesetzt oder nicht in den aktiven Lade-/Renderpfad integriert.

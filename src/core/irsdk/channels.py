@@ -90,6 +90,12 @@ REQUESTED_CHANNEL_ALIASES: dict[str, tuple[str, ...]] = {
     "Alt": ("Altitude",),
 }
 
+GEO_COORD_CHANNELS: tuple[str, ...] = (
+    "Lat",
+    "Lon",
+    "Alt",
+)
+
 # Target channels for one-time recorder diagnostics (vars_dump / first-sample probe).
 DIAGNOSTIC_TARGET_SPECS: tuple[str, ...] = (
     "ABSactive",
