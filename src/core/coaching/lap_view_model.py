@@ -281,7 +281,7 @@ def _load_resampled_geometry(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (lap_dist_pct, track_xy) from lap_resampled.parquet.
 
-    track_xy is (N, 2) normalised to [0, 1].  XY reconstruction priority:
+    track_xy is (N, 2) in raw world coordinates (meters).  XY reconstruction priority:
       1. Direct X/Y world-frame columns.
       2. Dead-reckoning via Speed × cos/sin(Yaw) × dt.
          (iRacing VelocityX is forward velocity in vehicle frame.)
@@ -330,7 +330,7 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
     x_raw = _get_float_array(data, "X", n)
     y_raw = _get_float_array(data, "Y", n)
     if x_raw is not None and y_raw is not None:
-        return _normalise_xy(x_raw, y_raw)
+        return np.column_stack([x_raw, y_raw])
 
     # 2 – Dead-reckoning: Speed × cos/sin(Yaw)
     sp = _get_float_array(data, "Speed", n)
@@ -344,7 +344,7 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
         # wrap-around gap from accumulated integration error.
         x, y = _close_loop(x, y)
         if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
-            return _normalise_xy(x, y)
+            return np.column_stack([x, y])
 
     # 3 – Fallback: raw VelocityX/VelocityY
     vx = _get_float_array(data, "VelocityX", n)
@@ -354,7 +354,7 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
     y = np.cumsum(np.where(np.isfinite(vy), vy, 0.0) * dt)
     x, y = _close_loop(x, y)
-    return _normalise_xy(x, y)
+    return np.column_stack([x, y])
 
 
 def _close_loop(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

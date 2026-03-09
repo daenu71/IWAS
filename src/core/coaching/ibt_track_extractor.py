@@ -453,27 +453,16 @@ def _compute_normals(pts: np.ndarray, smooth_window: int = 21) -> np.ndarray:
 def _normalise_road_geometry(
     center_m: np.ndarray, left_m: np.ndarray, right_m: np.ndarray
 ) -> tuple[list, list, list]:
-    """Normalise center, left and right with the center-line bounding box.
+    """Return raw world-coordinate arrays (meters) as JSON-serialisable lists.
 
-    All three arrays share the same coordinate system so they can be rendered
-    together without offsets.  Returns (center_norm, left_norm, right_norm).
+    No per-array normalisation is applied here.  All three share the same
+    world coordinate system, and alignment with the lap line is handled at
+    render time by computing a shared fit_context from the combined bounding
+    box of all geometry.
     """
     if len(center_m) < 2:
         return [], [], []
-    x_min = float(np.nanmin(center_m[:, 0]))
-    y_min = float(np.nanmin(center_m[:, 1]))
-    x_max = float(np.nanmax(center_m[:, 0]))
-    y_max = float(np.nanmax(center_m[:, 1]))
-    scale = max(x_max - x_min, y_max - y_min) or 1.0
-
-    def norm(pts: np.ndarray) -> list:
-        if len(pts) < 2:
-            return []
-        xn = (pts[:, 0].astype(np.float64) - x_min) / scale
-        yn = (pts[:, 1].astype(np.float64) - y_min) / scale
-        return np.column_stack([xn, yn]).tolist()
-
-    return norm(center_m), norm(left_m), norm(right_m)
+    return center_m.tolist(), left_m.tolist(), right_m.tolist()
 
 
 # ---------------------------------------------------------------------------

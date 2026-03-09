@@ -512,13 +512,22 @@ def render_trackmap(
     if xy is None or len(xy) < 2:
         return
 
-    fit_context = _legend_aware_fit_context(xy, width, height)
+    # Compute road arrays first so they can be included in the shared fit_context.
+    # Both lap line and road geometry are now in raw world coordinates (meters),
+    # so combining them gives a correct common bounding box.
+    road_arrays = _road_geometry_arrays(road_geometry)
+    if road_arrays is not None:
+        cl, le, re = road_arrays
+        combined_xy = np.vstack([xy, cl, le, re])
+    else:
+        combined_xy = xy
+
+    fit_context = _legend_aware_fit_context(combined_xy, width, height)
     canvas._fit_context = fit_context
     coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)  # (N, 2) pixel coords
     closed_flat = _closed_flat(coords)       # flat list, first == last
 
     # 1 – Optional road band
-    road_arrays = _road_geometry_arrays(road_geometry)
     if road_arrays is not None:
         _, left_edge, right_edge = road_arrays
         left_canvas = _transform_zoom(left_edge, width, height, zoom, offset, fit_context=fit_context)
