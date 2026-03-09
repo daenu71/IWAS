@@ -397,15 +397,13 @@ class ResolvedEvent(NamedTuple):
 def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
     """Reconstruct normalised (N, 2) XY from *resampled_df*.
 
-    iRacing coordinate system: X = East, Y = Up (vertical), Z = South.
-    World-frame 2-D position: east = X, north = -Z.
-
     Priority:
-      1. Direct ``X`` / ``Z`` columns – world-frame east/south positions.
-         y_world = -Z  (South → North sign flip).
-      2. Integration of ``VelocityX`` / ``VelocityZ`` × dt with loop-closure.
-         VelocityX = East component, VelocityZ = South component.
-         vy_world = -VelocityZ.
+      1. Direct ``X`` / ``Y`` columns if both present and non-trivial.
+      2. Dead-reckoning via ``Speed`` × ``cos/sin(Yaw)`` × ``dt``.
+         iRacing ``VelocityX`` is the car's forward velocity (vehicle frame),
+         not a world-frame East component, so Yaw is required to reconstruct
+         world-frame positions.
+      3. Raw ``VelocityX`` / ``VelocityY`` integration as last resort.
 
     Returns an (N, 2) float64 array normalised to [0, 1] with the aspect
     ratio preserved.  On failure returns an (0, 2) empty array.
@@ -422,21 +420,41 @@ def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
 
     dt = _build_dt(resampled_df, cols, n)
 
-    # --- Priority 1: Direct X / Z world-frame columns ---
-    if "X" in cols and "Z" in cols:
+    # --- Prefer direct XY ---
+    if "X" in cols and "Y" in cols:
         x = _to_f64(resampled_df["X"].to_numpy())
-        z = _to_f64(resampled_df["Z"].to_numpy())
-        if np.any(np.isfinite(x)) and np.any(np.isfinite(z)):
-            return _normalise_xy(x, -z)
+        y = _to_f64(resampled_df["Y"].to_numpy())
+        if np.any(np.isfinite(x)) and np.any(np.isfinite(y)):
+            return _normalise_xy(x, y)
 
-    # --- Priority 2: VelocityX / VelocityZ integration ---
-    if "VelocityX" not in cols or "VelocityZ" not in cols:
+    # --- Dead-reckoning: Speed × cos/sin(Yaw) ---
+    if "Speed" in cols and "Yaw" in cols:
+        sp = _to_f64(resampled_df["Speed"].to_numpy())
+        yaw = _to_f64(resampled_df["Yaw"].to_numpy())
+        sp = np.where(np.isfinite(sp), sp, 0.0)
+        yaw = np.where(np.isfinite(yaw), yaw, 0.0)
+        x = np.cumsum(sp * np.cos(yaw) * dt)
+        # Bug 2 fix: iRacing Yaw is CW-positive (positive = right turn = South direction),
+        # so sin(Yaw) gives the South component.  Negate to get the North component so
+        # that the Y-axis points North and _transform_zoom's (y_max − y) inversion
+        # correctly places North at the top of the canvas.
+        y = np.cumsum(-sp * np.sin(yaw) * dt)
+        # Bug 1 fix: linear drift correction – close the integrated loop to eliminate
+        # the wrap-around gap caused by accumulated integration error over one lap.
+        x, y = _close_loop(x, y)
+        if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
+            return _normalise_xy(x, y)
+
+    # --- Fallback: raw VelocityX / VelocityY ---
+    if "VelocityX" not in cols or "VelocityY" not in cols:
         return np.empty((0, 2), dtype=np.float64)
 
     vx = _to_f64(resampled_df["VelocityX"].to_numpy())
-    vz = _to_f64(resampled_df["VelocityZ"].to_numpy())
+    vy = _to_f64(resampled_df["VelocityY"].to_numpy())
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
-    y = np.cumsum(-np.where(np.isfinite(vz), vz, 0.0) * dt)
+    # Bug 2 fix: negate vy – same South→North convention correction as Speed×Yaw path.
+    y = np.cumsum(-np.where(np.isfinite(vy), vy, 0.0) * dt)
+    # Bug 1 fix: linear drift correction.
     x, y = _close_loop(x, y)
     return _normalise_xy(x, y)
 

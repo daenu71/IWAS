@@ -136,17 +136,6 @@ class LapViewModel:
         print(f"[LVM-DEBUG] track_length_m resolved: {vm.track_length_m!r}")
         vm.corners = _load_corners(session_dir, vm.track_length_m)
         vm.track_road_geometry = _load_track_road_geometry(session_dir)
-
-        # Option B: override track_xy with center_line lookup when geometry is available
-        if vm.track_road_geometry is not None and len(vm.lap_dist_pct) > 0:
-            center = np.array(vm.track_road_geometry["center_line"])  # (N, 2)
-            _cl_n = len(center)
-            idx = vm.lap_dist_pct * (_cl_n - 1)
-            vm.track_xy = np.column_stack([
-                np.interp(idx, np.arange(_cl_n), center[:, 0]),
-                np.interp(idx, np.arange(_cl_n), center[:, 1]),
-            ])
-
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
         vm.corner_events = _load_corner_events(analysis_dir / "corner_events.json")
         vm.features = _load_features(analysis_dir / "corner_features.parquet")
@@ -302,7 +291,7 @@ def _load_resampled_geometry(
         return np.empty(0, dtype=np.float64), np.empty((0, 2), dtype=np.float64)
 
     try:
-        wanted = ["LapDistPct", "SessionTime", "VelocityX", "VelocityZ", "X", "Z"]
+        wanted = ["LapDistPct", "SessionTime", "Speed", "Yaw", "VelocityX", "VelocityY", "X", "Y"]
         schema_names = pq.ParquetFile(str(parquet_path)).schema_arrow.names
         present = [c for c in wanted if c in schema_names]
         table = pq.read_table(str(parquet_path), columns=present)
@@ -322,43 +311,64 @@ def _load_resampled_geometry(
 def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
     """Reconstruct normalised (N, 2) XY.
 
-    iRacing coordinate system: X = East, Y = Up (vertical), Z = South.
-    World-frame 2-D position: east = X, north = -Z.
-
     Priority:
-      1. Direct X / Z world-frame columns (y_world = -Z).
-      2. VelocityX / VelocityZ integration × dt with loop-closure
-         (VelocityX = East, VelocityZ = South → negate for North).
+      1. Direct X/Y world-frame columns.
+      2. Dead-reckoning: Speed × cos/sin(Yaw) × dt.
+         (iRacing VelocityX is the car's forward velocity in vehicle frame,
+         not a world-frame East component.)
+      3. Raw VelocityX/VelocityY integration as last resort.
     """
     # Build dt from SessionTime
     st = _get_float_array(data, "SessionTime", n)
     if st is not None and st.size >= 2:
-        median_dt = float(np.nanmedian(np.diff(st)))
         dt = np.diff(st, prepend=st[0])
-        dt = np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
+        dt = np.where(np.isfinite(dt) & (dt > 0), dt, np.nanmedian(np.diff(st)))
     else:
         dt = np.full(n, 0.01, dtype=np.float64)
 
-    # 1 – Direct X / Z world-frame positions
+    # 1 – Prefer direct XY
     x_raw = _get_float_array(data, "X", n)
-    z_raw = _get_float_array(data, "Z", n)
-    if x_raw is not None and z_raw is not None:
-        return _normalise_xy(x_raw, -z_raw)
+    y_raw = _get_float_array(data, "Y", n)
+    if x_raw is not None and y_raw is not None:
+        return _normalise_xy(x_raw, y_raw)
 
-    # 2 – VelocityX / VelocityZ integration
+    # 2 – Dead-reckoning: Speed × cos/sin(Yaw)
+    sp = _get_float_array(data, "Speed", n)
+    yaw = _get_float_array(data, "Yaw", n)
+    if sp is not None and yaw is not None:
+        sp_safe = np.where(np.isfinite(sp), sp, 0.0)
+        yaw_safe = np.where(np.isfinite(yaw), yaw, 0.0)
+        x = np.cumsum(sp_safe * np.cos(yaw_safe) * dt)
+        # iRacing Yaw is CW-positive, so sin(Yaw) gives the South component.
+        # Negate to get the North component (Y-axis points North).
+        y = np.cumsum(-sp_safe * np.sin(yaw_safe) * dt)
+        # Linear drift correction: close the integrated loop to eliminate
+        # wrap-around gap from accumulated integration error.
+        x, y = _close_loop(x, y)
+        if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
+            return _normalise_xy(x, y)
+
+    # 3 – Fallback: raw VelocityX/VelocityY
     vx = _get_float_array(data, "VelocityX", n)
-    vz = _get_float_array(data, "VelocityZ", n)
-    if vx is None or vz is None:
-        return np.empty((0, 2), dtype=np.float64)
+    vy = _get_float_array(data, "VelocityY", n)
+    if vx is None or vy is None:
+        return np.zeros((n, 2), dtype=np.float64)
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
-    y = np.cumsum(-np.where(np.isfinite(vz), vz, 0.0) * dt)
-    # Linear drift correction – close the integrated loop
-    _n = len(x)
-    if _n >= 2:
-        t = np.arange(_n, dtype=np.float64) / _n
-        x = x - t * (x[-1] - x[0])
-        y = y - t * (y[-1] - y[0])
+    # Negate vy – same South→North convention correction as Speed×Yaw path.
+    y = np.cumsum(-np.where(np.isfinite(vy), vy, 0.0) * dt)
+    x, y = _close_loop(x, y)
     return _normalise_xy(x, y)
+
+
+def _close_loop(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Linear drift correction: distribute the wrap-around gap evenly over all N points."""
+    n = len(x)
+    if n < 2:
+        return x, y
+    t = np.arange(n, dtype=np.float64) / n
+    x = x - t * (x[-1] - x[0])
+    y = y - t * (y[-1] - y[0])
+    return x, y
 
 
 def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
