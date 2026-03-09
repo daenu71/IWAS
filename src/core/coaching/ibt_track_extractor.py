@@ -390,11 +390,27 @@ def _read_track_half_width(ir: Any) -> float | None:
     return None
 
 
-def _compute_normals(pts: np.ndarray) -> np.ndarray:
-    """Return unit left-perpendicular normals at every point of *pts*."""
+def _compute_normals(pts: np.ndarray, smooth_window: int = 21) -> np.ndarray:
+    """Return unit left-perpendicular normals at every point of *pts*.
+
+    Tangents are computed via centered differences and then smoothed with a
+    box filter to prevent the normal direction from flipping between adjacent
+    points when the integrated centerline data is dense or noisy (60 Hz).
+    """
+    n = len(pts)
     tangents = np.zeros_like(pts)
-    tangents[:-1] = pts[1:] - pts[:-1]
-    tangents[-1] = tangents[-2]
+
+    # Centered differences — more stable than forward-only differences
+    tangents[1:-1] = pts[2:] - pts[:-2]
+    tangents[0] = pts[1] - pts[0]
+    tangents[-1] = pts[-1] - pts[-2]
+
+    # Smooth both tangent components with a box filter to suppress
+    # frame-to-frame direction oscillation caused by integration noise.
+    if smooth_window > 1 and n > smooth_window:
+        kernel = np.ones(smooth_window) / smooth_window
+        tangents[:, 0] = np.convolve(tangents[:, 0], kernel, mode="same")
+        tangents[:, 1] = np.convolve(tangents[:, 1], kernel, mode="same")
 
     lengths = np.hypot(tangents[:, 0], tangents[:, 1])
     lengths = np.where(lengths > 1e-9, lengths, 1.0)
