@@ -434,7 +434,14 @@ def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
         sp = np.where(np.isfinite(sp), sp, 0.0)
         yaw = np.where(np.isfinite(yaw), yaw, 0.0)
         x = np.cumsum(sp * np.cos(yaw) * dt)
-        y = np.cumsum(sp * np.sin(yaw) * dt)
+        # Bug 2 fix: iRacing Yaw is CW-positive (positive = right turn = South direction),
+        # so sin(Yaw) gives the South component.  Negate to get the North component so
+        # that the Y-axis points North and _transform_zoom's (y_max − y) inversion
+        # correctly places North at the top of the canvas.
+        y = np.cumsum(-sp * np.sin(yaw) * dt)
+        # Bug 1 fix: linear drift correction – close the integrated loop to eliminate
+        # the wrap-around gap caused by accumulated integration error over one lap.
+        x, y = _close_loop(x, y)
         if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
             return _normalise_xy(x, y)
 
@@ -445,7 +452,10 @@ def reconstruct_xy(resampled_df: "pd.DataFrame") -> np.ndarray:
     vx = _to_f64(resampled_df["VelocityX"].to_numpy())
     vy = _to_f64(resampled_df["VelocityY"].to_numpy())
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
-    y = np.cumsum(np.where(np.isfinite(vy), vy, 0.0) * dt)
+    # Bug 2 fix: negate vy – same South→North convention correction as Speed×Yaw path.
+    y = np.cumsum(-np.where(np.isfinite(vy), vy, 0.0) * dt)
+    # Bug 1 fix: linear drift correction.
+    x, y = _close_loop(x, y)
     return _normalise_xy(x, y)
 
 
@@ -985,6 +995,22 @@ def _build_dt(resampled_df, cols: set, n: int) -> np.ndarray:
 def _to_f64(arr: np.ndarray) -> np.ndarray:
     out = np.asarray(arr, dtype=np.float64)
     return out
+
+
+def _close_loop(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Apply linear drift correction so the integrated path forms a closed loop.
+
+    Distributes the wrap-around gap (xy[-1] − xy[0]) evenly over all N points:
+        xy_corrected[i] = xy[i] − (i / N) × drift
+    so that the last point equals the first point after correction.
+    """
+    n = len(x)
+    if n < 2:
+        return x, y
+    t = np.arange(n, dtype=np.float64) / n
+    x = x - t * (x[-1] - x[0])
+    y = y - t * (y[-1] - y[0])
+    return x, y
 
 
 def _fix_nonfinite(arr: np.ndarray) -> np.ndarray:
