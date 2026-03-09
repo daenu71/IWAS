@@ -81,6 +81,16 @@ class Event:
     session_time: float | None = field(default=None)
 
 
+@dataclass(frozen=True)
+class TrackGeometryData:
+    """Track geometry plus minimal metadata for rendering decisions."""
+
+    lap_dist_pct: np.ndarray
+    track_xy: np.ndarray
+    source: str
+    is_closed: bool
+
+
 # ---------------------------------------------------------------------------
 # LapViewModel
 # ---------------------------------------------------------------------------
@@ -98,6 +108,8 @@ class LapViewModel:
     def __init__(self) -> None:
         self.meta: LapMeta | None = None
         self.track_xy: np.ndarray = np.empty((0, 2), dtype=np.float64)
+        self.track_xy_source: str = "unavailable"
+        self.track_xy_is_closed: bool = False
         self.lap_dist_pct: np.ndarray = np.empty(0, dtype=np.float64)
         self.corners: list[CornerInfo] = []
         self.track_road_geometry: TrackRoadGeometry | None = None
@@ -131,9 +143,14 @@ class LapViewModel:
 
         vm._resampled_path = analysis_dir / "lap_resampled.parquet"
         vm.meta = _load_meta(session_dir, run_id, lap_no)
-        vm.lap_dist_pct, vm.track_xy = _load_resampled_geometry(vm._resampled_path)
+        geometry = _load_resampled_geometry(vm._resampled_path)
+        vm.lap_dist_pct = geometry.lap_dist_pct
+        vm.track_xy = geometry.track_xy
+        vm.track_xy_source = geometry.source
+        vm.track_xy_is_closed = geometry.is_closed
         vm.track_length_m = _load_track_length_m(session_dir)
         print(f"[LVM-DEBUG] track_length_m resolved: {vm.track_length_m!r}")
+        _log_track_geometry_debug(vm)
         vm.corners = _load_corners(session_dir, vm.track_length_m)
         vm.track_road_geometry = _load_track_road_geometry(session_dir)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
@@ -278,45 +295,63 @@ def _read_lap_meta(session_dir: Path, run_id: int, lap_no: int) -> dict[str, Any
 
 def _load_resampled_geometry(
     parquet_path: Path,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return (lap_dist_pct, track_xy) from lap_resampled.parquet.
+) -> TrackGeometryData:
+    """Return track geometry plus metadata from lap_resampled.parquet.
 
     track_xy is (N, 2) in raw world coordinates (meters).  XY reconstruction priority:
       1. Direct X/Y world-frame columns.
-      2. Dead-reckoning via Speed × cos/sin(Yaw) × dt.
+      2. Lat/Lon projected to local meters.
+      3. Dead-reckoning via Speed × cos/sin(Yaw) × dt.
          (iRacing VelocityX is forward velocity in vehicle frame.)
-      3. Raw VelocityX/VelocityY integration as last resort.
+      4. Raw VelocityX/VelocityY integration as last resort.
     """
     if not parquet_path.exists():
-        return np.empty(0, dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+        return _empty_track_geometry_data()
 
     try:
-        wanted = ["LapDistPct", "SessionTime", "Speed", "Yaw", "VelocityX", "VelocityY", "X", "Y"]
+        wanted = [
+            "LapDistPct",
+            "SessionTime",
+            "Speed",
+            "Yaw",
+            "VelocityX",
+            "VelocityY",
+            "X",
+            "Y",
+            "Lat",
+            "Lon",
+        ]
         schema_names = pq.ParquetFile(str(parquet_path)).schema_arrow.names
         present = [c for c in wanted if c in schema_names]
         table = pq.read_table(str(parquet_path), columns=present)
         data = {col: table.column(col).to_pylist() for col in present}
     except Exception:
-        return np.empty(0, dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+        return _empty_track_geometry_data()
 
     n = len(data.get("LapDistPct", []))
     if n == 0:
-        return np.empty(0, dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+        return _empty_track_geometry_data()
 
     ldp = _col_to_float64(data.get("LapDistPct", []))
-    track_xy = _reconstruct_xy(data, n)
-    return ldp, track_xy
+    geometry = _reconstruct_track_geometry(data, n)
+    return TrackGeometryData(
+        lap_dist_pct=ldp,
+        track_xy=geometry.track_xy,
+        source=geometry.source,
+        is_closed=geometry.is_closed,
+    )
 
 
-def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
-    """Reconstruct normalised (N, 2) XY.
+def _reconstruct_track_geometry(data: dict[str, Any], n: int) -> TrackGeometryData:
+    """Reconstruct (N, 2) XY plus source metadata.
 
     Priority:
       1. Direct X/Y world-frame columns.
-      2. Dead-reckoning: Speed × cos/sin(Yaw) × dt.
+      2. Lat/Lon projected to local meters.
+      3. Dead-reckoning: Speed × cos/sin(Yaw) × dt.
          (iRacing VelocityX is the car's forward velocity in vehicle frame,
          not a world-frame East component.)
-      3. Raw VelocityX/VelocityY integration as last resort.
+      4. Raw VelocityX/VelocityY integration as last resort.
     """
     # Build dt from SessionTime
     st = _get_float_array(data, "SessionTime", n)
@@ -330,9 +365,26 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
     x_raw = _get_float_array(data, "X", n)
     y_raw = _get_float_array(data, "Y", n)
     if x_raw is not None and y_raw is not None:
-        return np.column_stack([x_raw, y_raw])
+        return TrackGeometryData(
+            lap_dist_pct=np.empty(0, dtype=np.float64),
+            track_xy=np.column_stack([x_raw, y_raw]),
+            source="xy",
+            is_closed=_geometry_is_closed(x_raw, y_raw),
+        )
 
-    # 2 – Dead-reckoning: Speed × cos/sin(Yaw)
+    # 2 – Prefer Lat/Lon over reconstructed geometry
+    lat = _get_float_array(data, "Lat", n)
+    lon = _get_float_array(data, "Lon", n)
+    latlon_xy = _project_latlon_to_xy(lat, lon)
+    if latlon_xy is not None:
+        return TrackGeometryData(
+            lap_dist_pct=np.empty(0, dtype=np.float64),
+            track_xy=latlon_xy,
+            source="latlon",
+            is_closed=_geometry_is_closed(latlon_xy[:, 0], latlon_xy[:, 1]),
+        )
+
+    # 3 – Dead-reckoning: Speed × cos/sin(Yaw)
     sp = _get_float_array(data, "Speed", n)
     yaw = _get_float_array(data, "Yaw", n)
     if sp is not None and yaw is not None:
@@ -340,32 +392,111 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
         yaw_safe = np.where(np.isfinite(yaw), yaw, 0.0)
         x = np.cumsum(sp_safe * np.cos(yaw_safe) * dt)
         y = np.cumsum(sp_safe * np.sin(yaw_safe) * dt)
-        # Linear drift correction: close the integrated loop to eliminate
-        # wrap-around gap from accumulated integration error.
-        x, y = _close_loop(x, y)
         if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
-            return np.column_stack([x, y])
+            return TrackGeometryData(
+                lap_dist_pct=np.empty(0, dtype=np.float64),
+                track_xy=np.column_stack([x, y]),
+                source="dead_reckoning",
+                is_closed=False,
+            )
 
-    # 3 – Fallback: raw VelocityX/VelocityY
+    # 4 – Fallback: raw VelocityX/VelocityY
     vx = _get_float_array(data, "VelocityX", n)
     vy = _get_float_array(data, "VelocityY", n)
     if vx is None or vy is None:
-        return np.zeros((n, 2), dtype=np.float64)
+        return TrackGeometryData(
+            lap_dist_pct=np.empty(0, dtype=np.float64),
+            track_xy=np.zeros((n, 2), dtype=np.float64),
+            source="unavailable",
+            is_closed=False,
+        )
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
     y = np.cumsum(np.where(np.isfinite(vy), vy, 0.0) * dt)
-    x, y = _close_loop(x, y)
+    return TrackGeometryData(
+        lap_dist_pct=np.empty(0, dtype=np.float64),
+        track_xy=np.column_stack([x, y]),
+        source="dead_reckoning",
+        is_closed=False,
+    )
+
+
+def _empty_track_geometry_data() -> TrackGeometryData:
+    return TrackGeometryData(
+        lap_dist_pct=np.empty(0, dtype=np.float64),
+        track_xy=np.empty((0, 2), dtype=np.float64),
+        source="unavailable",
+        is_closed=False,
+    )
+
+
+def _project_latlon_to_xy(
+    lat: np.ndarray | None,
+    lon: np.ndarray | None,
+) -> np.ndarray | None:
+    if lat is None or lon is None or len(lat) < 2 or len(lon) < 2:
+        return None
+
+    finite_mask = np.isfinite(lat) & np.isfinite(lon)
+    if not np.any(finite_mask):
+        return None
+
+    first_idx = int(np.flatnonzero(finite_mask)[0])
+    lat0_rad = math.radians(float(lat[first_idx]))
+    lon0_rad = math.radians(float(lon[first_idx]))
+    cos_lat0 = math.cos(lat0_rad)
+    if abs(cos_lat0) < 1e-6:
+        cos_lat0 = 1e-6 if cos_lat0 >= 0.0 else -1e-6
+
+    r = 6378137.0
+    x = np.full(len(lat), np.nan, dtype=np.float64)
+    y = np.full(len(lat), np.nan, dtype=np.float64)
+    lat_rad = np.radians(lat[finite_mask])
+    lon_rad = np.radians(lon[finite_mask])
+    x[finite_mask] = (lon_rad - lon0_rad) * cos_lat0 * r
+    y[finite_mask] = (lat_rad - lat0_rad) * r
     return np.column_stack([x, y])
 
 
-def _close_loop(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Linear drift correction: distribute the wrap-around gap evenly over all N points."""
-    n = len(x)
-    if n < 2:
-        return x, y
-    t = np.arange(n, dtype=np.float64) / n
-    x = x - t * (x[-1] - x[0])
-    y = y - t * (y[-1] - y[0])
-    return x, y
+def _geometry_is_closed(x: np.ndarray, y: np.ndarray) -> bool:
+    if len(x) < 2 or len(y) < 2:
+        return False
+    distance = _start_end_distance(x, y)
+    if not math.isfinite(distance):
+        return False
+    try:
+        span = math.hypot(
+            float(np.nanmax(x) - np.nanmin(x)),
+            float(np.nanmax(y) - np.nanmin(y)),
+        )
+    except ValueError:
+        return False
+    tolerance = min(5.0, max(0.5, 0.01 * span))
+    return distance <= tolerance
+
+
+def _start_end_distance(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 2 or len(y) < 2:
+        return float("nan")
+    x0 = float(x[0])
+    y0 = float(y[0])
+    x1 = float(x[-1])
+    y1 = float(y[-1])
+    if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+        return float("nan")
+    return math.hypot(x1 - x0, y1 - y0)
+
+
+def _log_track_geometry_debug(vm: LapViewModel) -> None:
+    start_end_distance = float("nan")
+    if len(vm.track_xy) >= 2:
+        start_end_distance = _start_end_distance(vm.track_xy[:, 0], vm.track_xy[:, 1])
+    print(
+        "[TRACKMAP-DEBUG]"
+        f" source={vm.track_xy_source}"
+        f" is_closed={vm.track_xy_is_closed}"
+        f" points={len(vm.track_xy)}"
+        f" start_end_distance_m={start_end_distance:.3f}"
+    )
 
 
 def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:

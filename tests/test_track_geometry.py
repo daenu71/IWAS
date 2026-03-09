@@ -123,6 +123,30 @@ def test_render_trackmap_with_road_geometry_draws_extra_canvas_items() -> None:
     assert len(canvas_with_road.items) > len(canvas_without_road.items)
 
 
+def test_render_trackmap_respects_open_geometry_flag() -> None:
+    xy = _sample_xy()
+    canvas = FakeCanvas()
+
+    render_trackmap(
+        canvas=canvas,
+        xy=xy,
+        corners=[],
+        selected_corner_id=None,
+        width=320,
+        height=240,
+        is_closed=False,
+    )
+
+    line_items = [
+        (args, kwargs)
+        for item_type, args, kwargs in canvas.items
+        if item_type == "line" and kwargs.get("tags") in (("track",), ("lapline",))
+    ]
+
+    assert len(line_items) == 2
+    assert all(len(args[0]) == 2 * len(xy) for args, _kwargs in line_items)
+
+
 def test_render_corner_zoom_with_road_geometry_draws_extra_canvas_items() -> None:
     xy = _sample_xy()
     lap_dist_pct = np.linspace(0.0, 1.0, len(xy))

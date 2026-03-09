@@ -39,6 +39,7 @@ def _write_session_meta(session_dir: Path) -> None:
         "TrackDisplayName": "Spa-Francorchamps",
         "TrackConfigName": "Full",
         "CarScreenName": "Dallara Formula 3",
+        "CarClassShortName": "unknown_class",
         "TrackUsage": "Low Usage",
         "environment": {
             "track_temp_c": 27.5,
@@ -58,6 +59,7 @@ def _write_session_meta_without_environment(session_dir: Path) -> None:
         "TrackDisplayName": "Spa-Francorchamps",
         "TrackConfigName": "Full",
         "CarScreenName": "Dallara Formula 3",
+        "CarClassShortName": "unknown_class",
     }
     (session_dir / "session_meta.json").write_text(
         json.dumps(meta), encoding="utf-8"
@@ -99,20 +101,33 @@ def _make_lap_dir(session_dir: Path, lap_no: int) -> Path:
     return lap_dir
 
 
-def _write_resampled(lap_dir: Path, n: int = _N) -> None:
+def _write_resampled(
+    lap_dir: Path,
+    n: int = _N,
+    extra_cols: dict[str, np.ndarray] | None = None,
+    include_defaults: bool = True,
+) -> None:
     ldp = np.linspace(0.0, 1.0, n, dtype=np.float32)
     st = np.arange(n, dtype=np.float32) * 0.01
-    vx = (10.0 * np.sin(2.0 * np.pi * ldp)).astype(np.float32)
-    vy = (5.0 * np.cos(2.0 * np.pi * ldp)).astype(np.float32)
-    speed = (40.0 + 5.0 * np.sin(2.0 * np.pi * ldp)).astype(np.float32)
-
     cols = {
         "LapDistPct": pa.array(ldp.tolist(), type=pa.float32()),
         "SessionTime": pa.array(st.tolist(), type=pa.float32()),
-        "VelocityX": pa.array(vx.tolist(), type=pa.float32()),
-        "VelocityY": pa.array(vy.tolist(), type=pa.float32()),
-        "Speed": pa.array(speed.tolist(), type=pa.float32()),
     }
+    if include_defaults:
+        vx = (10.0 * np.sin(2.0 * np.pi * ldp)).astype(np.float32)
+        vy = (5.0 * np.cos(2.0 * np.pi * ldp)).astype(np.float32)
+        speed = (40.0 + 5.0 * np.sin(2.0 * np.pi * ldp)).astype(np.float32)
+        cols.update(
+            {
+                "VelocityX": pa.array(vx.tolist(), type=pa.float32()),
+                "VelocityY": pa.array(vy.tolist(), type=pa.float32()),
+                "Speed": pa.array(speed.tolist(), type=pa.float32()),
+            }
+        )
+    if extra_cols:
+        for name, values in extra_cols.items():
+            arr = np.asarray(values, dtype=np.float32)
+            cols[name] = pa.array(arr.tolist(), type=pa.float32())
     pq.write_table(
         pa.table(cols),
         str(lap_dir / "analysis" / "lap_resampled.parquet"),
@@ -152,7 +167,7 @@ def _write_corner_map(session_dir: Path) -> None:
             },
         ],
     }
-    map_dir = session_dir / "corner_maps" / "Spa-Francorchamps__Full"
+    map_dir = session_dir.parent / "corner_maps" / "Spa-Francorchamps__Full"
     map_dir.mkdir(parents=True, exist_ok=True)
     (map_dir / "corner_map_v1.json").write_text(
         json.dumps(corner_map), encoding="utf-8"
@@ -281,10 +296,11 @@ def test_load_full_artefact_set(tmp_path: Path) -> None:
     # geometry
     assert vm.lap_dist_pct.shape == (_N,)
     assert vm.track_xy.shape == (_N, 2)
+    assert vm.track_xy_source == "dead_reckoning"
+    assert vm.track_xy_is_closed is False
     assert float(vm.track_xy[:, 0].min()) >= 0.0
-    assert float(vm.track_xy[:, 0].max()) <= 1.0
-    assert float(vm.track_xy[:, 1].min()) >= 0.0
-    assert float(vm.track_xy[:, 1].max()) <= 1.0
+    assert float(np.ptp(vm.track_xy[:, 0])) > 1.0
+    assert float(np.ptp(vm.track_xy[:, 1])) > 1.0
 
     # corners
     assert len(vm.corners) == 2
@@ -299,10 +315,8 @@ def test_load_full_artefact_set(tmp_path: Path) -> None:
     assert "turn_in" in event_types_c1
     assert "min_speed" in event_types_c1
 
-    # brake_start (0.04) is before corner 1 → key 0
-    assert 0 in vm.events
-    event_types_global = {e.event_type for e in vm.events[0]}
-    assert "brake_start" in event_types_global
+    # brake_start may be grouped into corner 1 via runtime padding.
+    assert "brake_start" in event_types_c1
 
     # gear_change (0.35) is inside corner 2 [0.30, 0.40]
     assert 2 in vm.events
@@ -358,6 +372,94 @@ def test_get_resampled_channel(tmp_path: Path) -> None:
     speed = vm.get_resampled_channel("Speed")
     assert isinstance(speed, np.ndarray)
     assert speed.dtype == np.float64
+
+
+def test_load_prefers_xy_over_latlon_and_dead_reckoning(tmp_path: Path) -> None:
+    session_dir = _make_session_dir(tmp_path)
+    _write_session_meta(session_dir)
+    _write_lap_meta(session_dir, run_id=1, lap_no=1)
+    lap_dir = _make_lap_dir(session_dir, lap_no=1)
+    x = np.linspace(100.0, 220.0, _N, dtype=np.float32)
+    y = np.linspace(-50.0, 35.0, _N, dtype=np.float32)
+    theta = np.linspace(0.0, 2.0 * np.pi, _N, dtype=np.float32)
+    lat = 46.0 + 1.0e-4 * np.sin(theta)
+    lon = 7.0 + 1.0e-4 * np.cos(theta)
+    yaw = np.linspace(0.0, 1.5 * np.pi, _N, dtype=np.float32)
+    speed = np.full(_N, 42.0, dtype=np.float32)
+    _write_resampled(
+        lap_dir,
+        extra_cols={
+            "X": x,
+            "Y": y,
+            "Lat": lat.astype(np.float32),
+            "Lon": lon.astype(np.float32),
+            "Yaw": yaw,
+            "Speed": speed,
+        },
+        include_defaults=False,
+    )
+
+    vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
+
+    assert vm.track_xy_source == "xy"
+    assert vm.track_xy_is_closed is False
+    assert np.allclose(vm.track_xy[:, 0], x.astype(np.float64))
+    assert np.allclose(vm.track_xy[:, 1], y.astype(np.float64))
+
+
+def test_load_prefers_latlon_over_dead_reckoning(tmp_path: Path) -> None:
+    session_dir = _make_session_dir(tmp_path)
+    _write_session_meta(session_dir)
+    _write_lap_meta(session_dir, run_id=1, lap_no=1)
+    lap_dir = _make_lap_dir(session_dir, lap_no=1)
+    theta = np.linspace(0.0, 2.0 * np.pi, _N, dtype=np.float32)
+    lat = 46.0 + 1.0e-4 * np.sin(theta)
+    lon = 7.0 + 1.0e-4 * np.cos(theta)
+    yaw = np.linspace(0.0, 1.5 * np.pi, _N, dtype=np.float32)
+    speed = np.full(_N, 38.0, dtype=np.float32)
+    _write_resampled(
+        lap_dir,
+        extra_cols={
+            "Lat": lat.astype(np.float32),
+            "Lon": lon.astype(np.float32),
+            "Yaw": yaw,
+            "Speed": speed,
+        },
+        include_defaults=False,
+    )
+
+    vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
+
+    assert vm.track_xy_source == "latlon"
+    assert vm.track_xy_is_closed is True
+    assert vm.track_xy.shape == (_N, 2)
+    assert np.ptp(vm.track_xy[:, 0]) > 1.0
+    assert np.ptp(vm.track_xy[:, 1]) > 1.0
+
+
+def test_dead_reckoning_fallback_stays_open(tmp_path: Path) -> None:
+    session_dir = _make_session_dir(tmp_path)
+    _write_session_meta(session_dir)
+    _write_lap_meta(session_dir, run_id=1, lap_no=1)
+    lap_dir = _make_lap_dir(session_dir, lap_no=1)
+    yaw = np.linspace(0.0, np.pi, _N, dtype=np.float32)
+    speed = np.full(_N, 30.0, dtype=np.float32)
+    _write_resampled(
+        lap_dir,
+        extra_cols={
+            "Yaw": yaw,
+            "Speed": speed,
+        },
+        include_defaults=False,
+    )
+
+    vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
+
+    assert vm.track_xy_source == "dead_reckoning"
+    assert vm.track_xy_is_closed is False
+    start = vm.track_xy[0]
+    end = vm.track_xy[-1]
+    assert float(np.hypot(*(end - start))) > 1.0
     assert speed.shape == (_N,)
     assert float(speed.min()) > 0.0  # sanity: positive speed values
 

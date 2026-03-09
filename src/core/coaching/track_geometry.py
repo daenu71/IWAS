@@ -477,6 +477,7 @@ def render_trackmap(
     on_corner_selected: Optional[Callable[[int], None]] = None,
     zoom: float = 1.0,
     offset: tuple = (0.0, 0.0),
+    is_closed: bool = True,
 ) -> None:
     """Render a complete TrackMap onto *canvas*.
 
@@ -505,6 +506,9 @@ def render_trackmap(
     on_corner_selected:
         Callback ``on_corner_selected(corner_id: int)`` fired when the user
         clicks a corner segment.
+    is_closed:
+        Whether the lap geometry should be rendered as a closed loop. Dead-
+        reckoning fallback geometry should pass ``False`` here.
     """
     canvas.delete("all")
     canvas._fit_context = None
@@ -525,7 +529,7 @@ def render_trackmap(
     fit_context = _legend_aware_fit_context(combined_xy, width, height)
     canvas._fit_context = fit_context
     coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)  # (N, 2) pixel coords
-    closed_flat = _closed_flat(coords)       # flat list, first == last
+    line_flat = _line_flat(coords, is_closed=is_closed)
 
     # 1 – Optional road band
     if road_arrays is not None:
@@ -535,7 +539,7 @@ def render_trackmap(
         _draw_road_band(canvas, left_canvas, right_canvas, smooth=False, prefix="trackmap")
 
     # 2 – Base track line (grey)
-    canvas.create_line(closed_flat, fill=_TRACK_COLOR, width=_TRACK_WIDTH,
+    canvas.create_line(line_flat, fill=_TRACK_COLOR, width=_TRACK_WIDTH,
                        smooth=False, tags=("track",))
 
     # 3 – Corner segments (underneath the lap line)
@@ -581,7 +585,7 @@ def render_trackmap(
         )
 
     # 4 – Lap line (primary colour, on top)
-    canvas.create_line(closed_flat, fill=lap_color, width=_LAP_WIDTH,
+    canvas.create_line(line_flat, fill=lap_color, width=_LAP_WIDTH,
                        smooth=False, tags=("lapline",))
 
 
@@ -1132,10 +1136,11 @@ def _to_canvas(xy: np.ndarray, width: int, height: int) -> np.ndarray:
     return np.column_stack([cx, cy])
 
 
-def _closed_flat(coords: np.ndarray) -> list:
-    """Return a flat [x0, y0, x1, y1, …, x0, y0] list closing the path."""
+def _line_flat(coords: np.ndarray, is_closed: bool = True) -> list:
+    """Return a flat line coordinate list, optionally closing the path."""
     pts = coords.tolist()
-    pts.append(pts[0])  # close
+    if is_closed and pts:
+        pts.append(pts[0])
     flat: list = []
     for x, y in pts:
         flat.append(x)

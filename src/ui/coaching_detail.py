@@ -654,6 +654,7 @@ class CoachingDetailView(ttk.Frame):
             lap_dist_pct=vm.lap_dist_pct,
             zoom=self._map_zoom,
             offset=self._map_offset,
+            is_closed=vm.track_xy_is_closed,
         )
 
     def _on_trackmap_resize(self, _event=None) -> None:
