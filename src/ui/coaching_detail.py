@@ -284,6 +284,8 @@ class CoachingDetailView(ttk.Frame):
     def __init__(self, master: tk.Widget, **kw) -> None:
         super().__init__(master, **kw)
         self._vm: Optional[LapViewModel] = None
+        self._session_dir: Optional[Path] = None
+        self._run_id: Optional[int] = None
         self._selected_corner_id: Optional[int] = None
         self._event_visibility: dict[str, tk.BooleanVar] = {
             name: tk.BooleanVar(master=self, value=True)
@@ -304,12 +306,22 @@ class CoachingDetailView(ttk.Frame):
     # Public API
     # ------------------------------------------------------------------
 
-    def load_lap(self, vm: Optional[LapViewModel], *, is_purple: bool = False) -> None:
+    def load_lap(
+        self,
+        vm: Optional[LapViewModel],
+        *,
+        is_purple: bool = False,
+        session_dir: Optional[Path] = None,
+        run_id: Optional[int] = None,
+    ) -> None:
         """Load *vm* and refresh all sub-widgets.
 
         Passing ``None`` is equivalent to calling ``clear()``.
+        *session_dir* and *run_id* enable the manual track-geometry refresh button.
         """
         self._vm = vm
+        self._session_dir = session_dir
+        self._run_id = run_id
         if vm is None:
             self.clear()
             return
@@ -318,6 +330,10 @@ class CoachingDetailView(ttk.Frame):
             vm.meta.environment if vm.meta is not None else None,
             track_usage=(vm.meta.track_usage if vm.meta is not None else None),
         )
+        if vm is not None and session_dir is not None:
+            self._refresh_btn.grid()
+        else:
+            self._refresh_btn.grid_remove()
         self._redraw_trackmap()
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -325,9 +341,12 @@ class CoachingDetailView(ttk.Frame):
     def clear(self) -> None:
         """Reset all sub-widgets to the empty / placeholder state."""
         self._vm = None
+        self._session_dir = None
+        self._run_id = None
         self._selected_corner_id = None
         self._set_header_empty()
         self._conditions_summary.set_environment(None, track_usage=None)
+        self._refresh_btn.grid_remove()
         self._trackmap_canvas.delete("all")
         self._clear_corner_zoom()
         self._update_scorecard(None)
@@ -398,6 +417,7 @@ class CoachingDetailView(ttk.Frame):
         trackmap_header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         trackmap_header.columnconfigure(0, minsize=90)
         trackmap_header.columnconfigure(1, weight=1)
+        trackmap_header.columnconfigure(2, minsize=0)
         ttk.Label(
             trackmap_header,
             text="Track Map",
@@ -411,6 +431,13 @@ class CoachingDetailView(ttk.Frame):
         self._conditions_summary = _EnvironmentSummary(trackmap_header)
         self._conditions_summary.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         self._conditions_summary.grid_remove()
+        self._refresh_btn = ttk.Button(
+            trackmap_header,
+            text="\u21ba Strecke neu laden",
+            command=self._on_refresh_track,
+        )
+        self._refresh_btn.grid(row=0, column=2, sticky="e", padx=(4, 0))
+        self._refresh_btn.grid_remove()
 
         # TrackMap Canvas
         trackmap_lf = ttk.Frame(trackmap_wrap, borderwidth=1, relief="groove")
@@ -549,6 +576,56 @@ class CoachingDetailView(ttk.Frame):
         self._lbl_car.configure(text="—")
         self._lbl_lap.configure(text="Lap —")
         self._lbl_time.configure(text="—:—.—")
+
+    def _on_refresh_track(self) -> None:
+        """Delete track_road_geometry.json and re-extract it, then reload the VM."""
+        if self._vm is None or self._session_dir is None:
+            return
+
+        import json as _json
+
+        from core.coaching.lap_analyzer import _try_ensure_track_geometry
+        from core.coaching.track_key import build_track_key
+
+        storage_root = self._session_dir.parent
+        session_meta: dict = {}
+        meta_path = self._session_dir / "session_meta.json"
+        if meta_path.exists():
+            try:
+                session_meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        track_name = (
+            session_meta.get("TrackDisplayName")
+            or session_meta.get("TrackName")
+            or "unknown_track"
+        )
+        config_name = (
+            session_meta.get("TrackConfigName")
+            or session_meta.get("TrackConfig")
+            or ""
+        )
+        track_key = build_track_key(str(track_name), str(config_name))
+        geom_path = storage_root / "track_geometries" / track_key / "track_road_geometry.json"
+        if geom_path.exists():
+            try:
+                geom_path.unlink()
+            except Exception:
+                pass
+
+        _try_ensure_track_geometry(self._session_dir)
+
+        if self._run_id is not None and self._vm.meta is not None:
+            try:
+                new_vm = LapViewModel.load(self._session_dir, self._run_id, self._vm.meta.lap_no)
+                self.load_lap(
+                    new_vm,
+                    session_dir=self._session_dir,
+                    run_id=self._run_id,
+                )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # TrackMap helpers

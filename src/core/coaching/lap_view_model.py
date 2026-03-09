@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 from core.irsdk.sessioninfo_parser import resolve_session_environment
 
 from .corner_map import load_corner_map
-from .storage import sanitize_name
+from .track_key import build_track_key
 
 if TYPE_CHECKING:
     from .track_geometry import TrackRoadGeometry
@@ -654,32 +654,17 @@ def _track_key_candidates(session_dir: Path) -> list[str]:
     config_name = (
         _str_or(session_meta.get("TrackConfigName"))
         or _str_or(session_meta.get("TrackConfig"))
-        or "unknown_config"
+        or ""
     )
-    car_class = _str_or(session_meta.get("CarClassShortName")) or "unknown_class"
 
-    primary = (
-        f"{sanitize_name(track_name)}"
-        f"__{sanitize_name(config_name)}"
-        f"__{sanitize_name(car_class)}"
-    )
-    legacy = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
+    primary = build_track_key(track_name, config_name)
 
     candidates = [primary]
-    if legacy not in candidates:
-        candidates.append(legacy)
     return candidates
 
 
 def _track_road_geometry_paths(storage_root: Path, track_key: str) -> list[Path]:
-    raw_path = storage_root / "track_geometries" / track_key / "track_road_geometry.json"
-    sanitized_path = (
-        storage_root / "track_geometries" / sanitize_name(track_key) / "track_road_geometry.json"
-    )
-    paths = [raw_path]
-    if sanitized_path != raw_path:
-        paths.append(sanitized_path)
-    return paths
+    return [storage_root / "track_geometries" / track_key / "track_road_geometry.json"]
 
 
 def _coerce_track_road_geometry(

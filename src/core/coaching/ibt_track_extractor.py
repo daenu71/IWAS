@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,10 @@ if _SRC_DIR not in sys.path:
 
 try:
     from .track_geometry import _normalise_xy
-    from .storage import sanitize_name
+    from .track_key import build_track_key
 except ImportError:
     from core.coaching.track_geometry import _normalise_xy  # type: ignore[no-redef]
-    from core.coaching.storage import sanitize_name  # type: ignore[no-redef]
+    from core.coaching.track_key import build_track_key  # type: ignore[no-redef]
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
     ir = _open_ibt(ibt_path)
     try:
         track_key = _read_track_key(ir)
+        iracing_build = _read_iracing_build(ir)
         center_m = _extract_centerline_m(ir)
         left_m, right_m = _compute_edges_m(center_m, ir)
     finally:
@@ -82,7 +84,9 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
 
     payload: dict[str, Any] = {
         "track_key": track_key,
-        "source": "ibt_header",
+        "source": "ibt_telemetry",
+        "iracing_build": iracing_build,
+        "extracted_at": datetime.utcnow().isoformat(),
         "center_line": center_norm,
         "left_edge": left_norm,
         "right_edge": right_norm,
@@ -125,7 +129,7 @@ def _close_ibt(ir: Any) -> None:
 def _read_track_key(ir: Any) -> str:
     yaml_text = _get_session_yaml(ir)
     track_display, track_config = _parse_track_names(yaml_text)
-    return _build_track_key(track_display, track_config)
+    return build_track_key(track_display, track_config)
 
 
 def _get_session_yaml(ir: Any) -> str:
@@ -157,11 +161,16 @@ def _parse_track_names(yaml_text: str) -> tuple[str, str]:
     return display, config
 
 
-def _build_track_key(track_display: str, track_config: str) -> str:
-    parts = [track_display]
-    if track_config:
-        parts.append(track_config)
-    return "__".join(parts)
+def _read_iracing_build(ir: Any) -> str:
+    """Return BuildVersion or SimMode from session YAML, or empty string."""
+    import re
+
+    yaml_text = _get_session_yaml(ir)
+    for field_name in ("BuildVersion", "SimMode"):
+        m = re.search(rf"{field_name}\s*:\s*(.+)", yaml_text)
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +446,9 @@ def extract_track_geometry_from_parquet(
 
     payload: dict[str, Any] = {
         "track_key": track_key,
-        "source": "parquet_velocity_integration",
+        "source": "parquet_fallback",
+        "iracing_build": "",
+        "extracted_at": datetime.utcnow().isoformat(),
         "center_line": center_norm,
         "left_edge": left_norm,
         "right_edge": right_norm,
@@ -521,8 +532,7 @@ def _select_best_lap_frames(
 
 
 def _output_path(storage_root: Path, track_key: str) -> Path:
-    safe_key = sanitize_name(track_key)
-    return storage_root / "track_geometries" / safe_key / "track_road_geometry.json"
+    return storage_root / "track_geometries" / track_key / "track_road_geometry.json"
 
 
 # ---------------------------------------------------------------------------

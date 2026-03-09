@@ -90,8 +90,37 @@ def analyze_lap(session_dir: Path, run_id: int, lap_no: int) -> bool:
     return ok
 
 
+def _needs_refresh(geom_path: Path, current_build: str) -> bool:
+    """Return True when the geometry file is missing or the build version changed."""
+    if not geom_path.exists():
+        return True
+    if not current_build:
+        return False
+    try:
+        data = json.loads(geom_path.read_text(encoding="utf-8"))
+        return data.get("iracing_build", "") != current_build
+    except Exception:
+        return True
+
+
+def _read_iracing_build_from_session(session_dir: Path) -> str:
+    """Return iRacing BuildVersion from session_info.yaml, or empty string."""
+    yaml_path = session_dir / "session_info.yaml"
+    if not yaml_path.exists():
+        return ""
+    try:
+        import yaml
+
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        weekend = (data or {}).get("WeekendInfo", {})
+        build = weekend.get("BuildVersion") or weekend.get("SimMode") or ""
+        return str(build).strip()
+    except Exception:
+        return ""
+
+
 def _try_ensure_track_geometry(session_dir: Path) -> None:
-    """Ensure track_road_geometry.json exists for the session's track.
+    """Ensure track_road_geometry.json exists and is up-to-date for the session's track.
 
     Tries (in order):
       1. IBT file scan in ~/Documents/iRacing/telemetry/
@@ -105,7 +134,6 @@ def _try_ensure_track_geometry(session_dir: Path) -> None:
             extract_track_geometry_from_parquet,
             _output_path,
         )
-        from .storage import sanitize_name
 
         storage_root = session_dir.parent
         track_key, _ = _read_track_key_from_session(session_dir)
@@ -113,9 +141,10 @@ def _try_ensure_track_geometry(session_dir: Path) -> None:
             log.debug("[track_geometry] Cannot determine track key for %s", session_dir)
             return
 
+        current_build = _read_iracing_build_from_session(session_dir)
         out_path = _output_path(storage_root, track_key)
-        if out_path.exists():
-            log.debug("[track_geometry] Already exists: %s", out_path)
+        if not _needs_refresh(out_path, current_build):
+            log.debug("[track_geometry] Already up-to-date: %s", out_path)
             return
 
         # 1) Try IBT scan
@@ -147,7 +176,7 @@ def _try_ensure_track_geometry(session_dir: Path) -> None:
 def _read_track_key_from_session(session_dir: Path) -> tuple[str, str]:
     """Return (primary_track_key, legacy_track_key) from session_meta.json."""
     try:
-        from .storage import sanitize_name
+        from .track_key import build_track_key
 
         meta_path = session_dir / "session_meta.json"
         if not meta_path.exists():
@@ -163,13 +192,11 @@ def _read_track_key_from_session(session_dir: Path) -> tuple[str, str]:
             or meta.get("TrackConfig")
             or ""
         )
-        car_class = meta.get("CarClassShortName") or ""
         if not track_name:
             return "", ""
 
-        primary = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}__{sanitize_name(car_class)}"
-        legacy = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
-        return primary, legacy
+        primary = build_track_key(track_name, config_name)
+        return primary, ""
     except Exception:
         return "", ""
 
