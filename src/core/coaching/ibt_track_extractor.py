@@ -75,9 +75,7 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
     finally:
         _close_ibt(ir)
 
-    center_norm = _to_normalised_list(center_m)
-    left_norm = _to_normalised_list(left_m)
-    right_norm = _to_normalised_list(right_m)
+    center_norm, left_norm, right_norm = _normalise_road_geometry(center_m, left_m, right_m)
 
     out_path = _output_path(storage_root, track_key)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,39 +222,60 @@ def _coerce_xy_array(raw: Any) -> np.ndarray | None:
 # ---------------------------------------------------------------------------
 
 
-def _integrate_velocity(ir: Any) -> np.ndarray:
-    """Integrate VelocityX/Y from the first lap into an (N, 2) XY array (m)."""
-    frames = _read_first_lap_frames(ir)
-    n = len(frames["VelocityX"])
+def _integrate_world_frame(frames: dict) -> np.ndarray:
+    """Integrate Speed×cos/sin(Yaw) or VelocityX/Y to (N, 2) XY in metres."""
+    n = len(frames.get("t", []))
     if n == 0:
         return np.empty((0, 2), dtype=np.float64)
 
-    vx = np.asarray(frames["VelocityX"], dtype=np.float64)
-    vy = np.asarray(frames["VelocityY"], dtype=np.float64)
-    t_list = frames["SessionTime"]
+    t_arr = np.asarray(frames["t"], dtype=np.float64)
+    dt = np.diff(t_arr, prepend=t_arr[0])
+    median_dt = float(np.nanmedian(np.diff(t_arr))) if n > 1 else _IBT_SAMPLE_DT
+    dt = np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
 
-    if len(t_list) >= 2:
-        t_arr = np.asarray(t_list, dtype=np.float64)
-        dt = np.diff(t_arr, prepend=t_arr[0])
-        median_dt = float(np.nanmedian(np.diff(t_arr)))
-        dt = np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
-    else:
-        dt = np.full(n, _IBT_SAMPLE_DT, dtype=np.float64)
+    # Bevorzuge Speed×cos/sin(Yaw) (Welt-Frame)
+    speed_list = frames.get("speed")
+    yaw_list = frames.get("yaw")
+    speed = np.asarray(speed_list, dtype=np.float64) if speed_list else None
+    yaw = np.asarray(yaw_list, dtype=np.float64) if yaw_list else None
 
+    if speed is not None and yaw is not None and len(speed) == n and len(yaw) == n:
+        sp = np.where(np.isfinite(speed), speed, 0.0)
+        ya = np.where(np.isfinite(yaw), yaw, 0.0)
+        x = np.cumsum(sp * np.cos(ya) * dt)
+        y = np.cumsum(sp * np.sin(ya) * dt)
+        if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:  # plausibel?
+            return np.column_stack([x, y])
+
+    # Fallback VelocityX/Y
+    vx = np.asarray(frames.get("vx", []), dtype=np.float64)
+    vy = np.asarray(frames.get("vy", []), dtype=np.float64)
     vx = np.where(np.isfinite(vx), vx, 0.0)
     vy = np.where(np.isfinite(vy), vy, 0.0)
+    return np.column_stack([np.cumsum(vx * dt), np.cumsum(vy * dt)])
 
-    x = np.cumsum(vx * dt)
-    y = np.cumsum(vy * dt)
-    return np.column_stack([x, y])
+
+def _integrate_velocity(ir: Any) -> np.ndarray:
+    """Integrate velocity from the first lap into an (N, 2) XY array (m).
+
+    Prefers Speed×cos/sin(Yaw) (world-frame); falls back to VelocityX/Y.
+    """
+    raw = _read_first_lap_frames(ir)
+    n = len(raw["vx"])
+    if n == 0:
+        return np.empty((0, 2), dtype=np.float64)
+
+    return _integrate_world_frame(raw)
 
 
 def _read_first_lap_frames(ir: Any) -> dict[str, list]:
-    """Return lists of VelocityX, VelocityY, SessionTime for the first lap."""
+    """Return lists of vx, vy, speed, yaw, t (SessionTime) for the first lap."""
     result: dict[str, list] = {
-        "VelocityX": [],
-        "VelocityY": [],
-        "SessionTime": [],
+        "vx": [],
+        "vy": [],
+        "speed": [],
+        "yaw": [],
+        "t": [],
     }
     try:
         _fill_frames_via_parse_to(ir, result)
@@ -281,11 +300,15 @@ def _fill_frames_via_parse_to(ir: Any, result: dict[str, list]) -> None:
 
         vx = _safe_float(ir["VelocityX"])
         vy = _safe_float(ir["VelocityY"])
+        speed = _safe_float(ir["Speed"])
+        yaw = _safe_float(ir["Yaw"])
         ldp = _safe_float(ir["LapDistPct"])
 
-        result["SessionTime"].append(t)
-        result["VelocityX"].append(vx if vx is not None else 0.0)
-        result["VelocityY"].append(vy if vy is not None else 0.0)
+        result["t"].append(t)
+        result["vx"].append(vx if vx is not None else 0.0)
+        result["vy"].append(vy if vy is not None else 0.0)
+        result["speed"].append(speed if speed is not None else 0.0)
+        result["yaw"].append(yaw if yaw is not None else 0.0)
         n += 1
 
         # Detect lap wrap-around via LapDistPct
@@ -382,24 +405,34 @@ def _compute_normals(pts: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Normalisation – must be identical to _normalise_xy in track_geometry.py
+# Normalisation – shared bounding box across all three geometry arrays
 # ---------------------------------------------------------------------------
 
 
-def _to_normalised_list(pts_m: np.ndarray) -> list[list[float]]:
-    """Normalise *pts_m* to [0, 1] (identical to track_geometry._normalise_xy).
+def _normalise_road_geometry(
+    center_m: np.ndarray, left_m: np.ndarray, right_m: np.ndarray
+) -> tuple[list, list, list]:
+    """Normalise center, left and right with the center-line bounding box.
 
-    Returns a list of [x, y] pairs, or an empty list when *pts_m* has
-    fewer than two points.
+    All three arrays share the same coordinate system so they can be rendered
+    together without offsets.  Returns (center_norm, left_norm, right_norm).
     """
-    if len(pts_m) < 2:
-        return []
-    x = pts_m[:, 0].astype(np.float64)
-    y = pts_m[:, 1].astype(np.float64)
-    normed = _normalise_xy(x, y)
-    if len(normed) == 0:
-        return []
-    return normed.tolist()
+    if len(center_m) < 2:
+        return [], [], []
+    x_min = float(np.nanmin(center_m[:, 0]))
+    y_min = float(np.nanmin(center_m[:, 1]))
+    x_max = float(np.nanmax(center_m[:, 0]))
+    y_max = float(np.nanmax(center_m[:, 1]))
+    scale = max(x_max - x_min, y_max - y_min) or 1.0
+
+    def norm(pts: np.ndarray) -> list:
+        if len(pts) < 2:
+            return []
+        xn = (pts[:, 0].astype(np.float64) - x_min) / scale
+        yn = (pts[:, 1].astype(np.float64) - y_min) / scale
+        return np.column_stack([xn, yn]).tolist()
+
+    return norm(center_m), norm(left_m), norm(right_m)
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +470,7 @@ def extract_track_geometry_from_parquet(
     left_m = center_m + normals * _EDGE_OFFSET_M
     right_m = center_m - normals * _EDGE_OFFSET_M
 
-    center_norm = _to_normalised_list(center_m)
-    left_norm = _to_normalised_list(left_m)
-    right_norm = _to_normalised_list(right_m)
+    center_norm, left_norm, right_norm = _normalise_road_geometry(center_m, left_m, right_m)
 
     out_path = _output_path(storage_root, track_key)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -458,7 +489,9 @@ def extract_track_geometry_from_parquet(
 
 
 def _integrate_velocity_from_parquet(parquet_path: Path) -> np.ndarray:
-    """Read the cleanest complete lap from *parquet_path* and integrate VX/VY.
+    """Read the cleanest complete lap from *parquet_path* and integrate to XY.
+
+    Prefers Speed×cos/sin(Yaw) (world-frame); falls back to VelocityX/Y.
 
     Returns an (N, 2) float64 array of XY positions in metres, or an empty
     array if no usable data is found.
@@ -466,64 +499,66 @@ def _integrate_velocity_from_parquet(parquet_path: Path) -> np.ndarray:
     try:
         import pyarrow.parquet as pq
 
-        table = pq.read_table(
-            parquet_path,
-            columns=["VelocityX", "VelocityY", "SessionTime", "LapDistPct", "Lap"],
-        )
+        wanted = ["VelocityX", "VelocityY", "Speed", "Yaw", "SessionTime", "LapDistPct", "Lap"]
+        schema_names = pq.ParquetFile(str(parquet_path)).schema_arrow.names
+        present = [c for c in wanted if c in schema_names]
+        table = pq.read_table(parquet_path, columns=present)
     except Exception as exc:
         raise RuntimeError(f"Cannot read Parquet: {exc}") from exc
 
-    vx_all = table.column("VelocityX").to_pylist()
-    vy_all = table.column("VelocityY").to_pylist()
-    t_all = table.column("SessionTime").to_pylist()
-    ldp_all = table.column("LapDistPct").to_pylist()
-    lap_all = table.column("Lap").to_pylist()
+    def _col(name: str) -> list:
+        return table.column(name).to_pylist() if name in present else []
 
-    # Find the lap number with the most samples where LapDistPct reaches [0,1)
-    best_lap_frames = _select_best_lap_frames(vx_all, vy_all, t_all, ldp_all, lap_all)
-    if len(best_lap_frames["vx"]) < 10:
+    best_lap_frames = _select_best_lap_frames(
+        vx_all=_col("VelocityX"),
+        vy_all=_col("VelocityY"),
+        speed_all=_col("Speed"),
+        yaw_all=_col("Yaw"),
+        t_all=_col("SessionTime"),
+        ldp_all=_col("LapDistPct"),
+        lap_all=_col("Lap"),
+    )
+    if len(best_lap_frames["t"]) < 10:
         return np.empty((0, 2), dtype=np.float64)
 
-    vx = np.asarray(best_lap_frames["vx"], dtype=np.float64)
-    vy = np.asarray(best_lap_frames["vy"], dtype=np.float64)
-    t_arr = np.asarray(best_lap_frames["t"], dtype=np.float64)
-
-    dt = np.diff(t_arr, prepend=t_arr[0])
-    median_dt = float(np.nanmedian(np.diff(t_arr))) if len(t_arr) > 1 else _IBT_SAMPLE_DT
-    dt = np.where(np.isfinite(dt) & (dt > 0), dt, median_dt)
-
-    vx = np.where(np.isfinite(vx), vx, 0.0)
-    vy = np.where(np.isfinite(vy), vy, 0.0)
-
-    x = np.cumsum(vx * dt)
-    y = np.cumsum(vy * dt)
-    return np.column_stack([x, y])
+    return _integrate_world_frame(best_lap_frames)
 
 
 def _select_best_lap_frames(
-    vx_all: list, vy_all: list, t_all: list, ldp_all: list, lap_all: list
+    vx_all: list,
+    vy_all: list,
+    speed_all: list,
+    yaw_all: list,
+    t_all: list,
+    ldp_all: list,
+    lap_all: list,
 ) -> dict[str, list]:
     """Return frames for the lap with the most samples (max coverage)."""
     from collections import defaultdict
 
     lap_buckets: dict[int, dict[str, list]] = defaultdict(
-        lambda: {"vx": [], "vy": [], "t": [], "ldp": []}
+        lambda: {"vx": [], "vy": [], "speed": [], "yaw": [], "t": [], "ldp": []}
     )
-    for vx, vy, t, ldp, lap in zip(vx_all, vy_all, t_all, ldp_all, lap_all):
+    for vx, vy, speed, yaw, t, ldp, lap in zip(
+        vx_all, vy_all, speed_all or [None] * len(vx_all),
+        yaw_all or [None] * len(vx_all), t_all, ldp_all, lap_all
+    ):
         if lap is not None and lap >= 1:  # skip warmup lap 0
             b = lap_buckets[int(lap)]
             b["vx"].append(float(vx) if vx is not None else 0.0)
             b["vy"].append(float(vy) if vy is not None else 0.0)
+            b["speed"].append(float(speed) if speed is not None else 0.0)
+            b["yaw"].append(float(yaw) if yaw is not None else 0.0)
             b["t"].append(float(t) if t is not None else 0.0)
             b["ldp"].append(float(ldp) if ldp is not None else 0.0)
 
     if not lap_buckets:
-        return {"vx": [], "vy": [], "t": []}
+        return {"vx": [], "vy": [], "speed": [], "yaw": [], "t": []}
 
     # Pick the lap with the most frames (most complete coverage)
     best_lap = max(lap_buckets, key=lambda k: len(lap_buckets[k]["vx"]))
     b = lap_buckets[best_lap]
-    return {"vx": b["vx"], "vy": b["vy"], "t": b["t"]}
+    return {"vx": b["vx"], "vy": b["vy"], "speed": b["speed"], "yaw": b["yaw"], "t": b["t"]}
 
 
 # ---------------------------------------------------------------------------

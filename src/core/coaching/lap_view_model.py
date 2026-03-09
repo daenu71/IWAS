@@ -641,7 +641,9 @@ def _coaching_storage_root(session_dir: Path) -> Path:
 
 
 def _track_key_candidates(session_dir: Path) -> list[str]:
-    """Return the primary coaching track key plus a legacy extractor fallback."""
+    """Return the primary coaching track key plus backward-compat legacy keys."""
+    from .storage import sanitize_name
+
     session_meta = _read_json(session_dir / "session_meta.json")
     parts = session_dir.name.split("__")
 
@@ -656,10 +658,28 @@ def _track_key_candidates(session_dir: Path) -> list[str]:
         or _str_or(session_meta.get("TrackConfig"))
         or ""
     )
+    car_class = (
+        _str_or(session_meta.get("CarClassShortName"))
+        or _str_or(session_meta.get("CarClassID"))
+        or _str_or(session_meta.get("CarClass"))
+        or ""
+    )
 
     primary = build_track_key(track_name, config_name)
 
     candidates = [primary]
+
+    # Altes Format für Backward-Compat (bestehende corner_maps und andere Assets)
+    old_primary = (
+        f"{sanitize_name(track_name)}"
+        f"__{sanitize_name(config_name)}"
+        f"__{sanitize_name(car_class)}"
+    )
+    old_legacy = f"{sanitize_name(track_name)}__{sanitize_name(config_name)}"
+    for k in (old_primary, old_legacy):
+        if k not in candidates:
+            candidates.append(k)
+
     return candidates
 
 
