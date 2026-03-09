@@ -340,6 +340,28 @@ def _safe_float(val: Any) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _close_edge_loop(pts: np.ndarray) -> np.ndarray:
+    """Distribute the linear drift so that pts[-1] matches pts[0].
+
+    The integrated centerline inherits a small positional error because
+    velocity integration accumulates floating-point and sensor drift over one
+    full lap.  left_edge / right_edge are derived from that centerline, so
+    they carry the same gap between the last and the first point.
+
+    This function removes the gap by subtracting a linearly growing correction
+    vector:  corrected[i] = pts[i] - (i / (N-1)) * (pts[-1] - pts[0])
+    The result starts at pts[0] and ends exactly at pts[0], closing the loop
+    without any hard jump.  The correction is spread uniformly across the
+    whole curve, so it is visually imperceptible.
+    """
+    n = len(pts)
+    if n < 2:
+        return pts
+    drift = pts[-1] - pts[0]
+    correction = np.outer(np.linspace(0.0, 1.0, n), drift)
+    return pts - correction
+
+
 def _compute_edges_m(
     center_m: np.ndarray,
     ir: Any,
@@ -348,6 +370,9 @@ def _compute_edges_m(
 
     Uses track-width metadata from the session YAML when available;
     falls back to ±``_EDGE_OFFSET_M`` along the center-line normal.
+
+    Both edge arrays are closed loops (last point == first point) so that
+    they render without a visible seam at the Start/Finish line.
     """
     if len(center_m) < 2:
         empty = np.empty((0, 2), dtype=np.float64)
@@ -357,8 +382,8 @@ def _compute_edges_m(
     half_w = _read_track_half_width(ir)
     offset = half_w if half_w is not None else _EDGE_OFFSET_M
 
-    left_m = center_m + normals * offset
-    right_m = center_m - normals * offset
+    left_m = _close_edge_loop(center_m + normals * offset)
+    right_m = _close_edge_loop(center_m - normals * offset)
     return left_m, right_m
 
 
@@ -483,8 +508,8 @@ def extract_track_geometry_from_parquet(
         )
 
     normals = _compute_normals(center_m)
-    left_m = center_m + normals * _EDGE_OFFSET_M
-    right_m = center_m - normals * _EDGE_OFFSET_M
+    left_m = _close_edge_loop(center_m + normals * _EDGE_OFFSET_M)
+    right_m = _close_edge_loop(center_m - normals * _EDGE_OFFSET_M)
 
     center_norm, left_norm, right_norm = _normalise_road_geometry(center_m, left_m, right_m)
 
