@@ -339,9 +339,7 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
         sp_safe = np.where(np.isfinite(sp), sp, 0.0)
         yaw_safe = np.where(np.isfinite(yaw), yaw, 0.0)
         x = np.cumsum(sp_safe * np.cos(yaw_safe) * dt)
-        # iRacing Yaw is CW-positive, so sin(Yaw) gives the South component.
-        # Negate to get the North component (Y-axis points North).
-        y = np.cumsum(-sp_safe * np.sin(yaw_safe) * dt)
+        y = np.cumsum(sp_safe * np.sin(yaw_safe) * dt)
         # Linear drift correction: close the integrated loop to eliminate
         # wrap-around gap from accumulated integration error.
         x, y = _close_loop(x, y)
@@ -354,8 +352,7 @@ def _reconstruct_xy(data: dict[str, Any], n: int) -> np.ndarray:
     if vx is None or vy is None:
         return np.zeros((n, 2), dtype=np.float64)
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
-    # Negate vy – same South→North convention correction as Speed×Yaw path.
-    y = np.cumsum(-np.where(np.isfinite(vy), vy, 0.0) * dt)
+    y = np.cumsum(np.where(np.isfinite(vy), vy, 0.0) * dt)
     x, y = _close_loop(x, y)
     return _normalise_xy(x, y)
 
