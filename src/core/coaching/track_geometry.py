@@ -191,8 +191,8 @@ def _brake_start_speed_tooltip(
             return ""
         units = str(speed_units or "km/h").strip().lower()
         if units in ("mph", "imperial"):
-            return f"{int(speed_ms * 2.23694)} mph"
-        return f"{int(speed_ms * 3.6)} km/h"
+            return f"brake start\n{int(speed_ms * 2.23694)} mph"
+        return f"brake start\n{int(speed_ms * 3.6)} km/h"
     except Exception:
         return ""
 
