@@ -232,34 +232,24 @@ def _write_track_road_geometry(
     dir_track_key: str = "Spa-Francorchamps__Full__unknown_class",
     payload_track_key: str = "Spa-Francorchamps__Full__unknown_class",
     source_type: str = "ibt",
+    center_line: list[list[float]] | None = None,
     left_edge: list[list[float]] | None = None,
     right_edge: list[list[float]] | None = None,
 ) -> None:
-    center_line = [
+    center_line = center_line or [
         [0.10, 0.50],
         [0.30, 0.65],
         [0.50, 0.72],
         [0.70, 0.65],
         [0.90, 0.50],
     ]
+    center_line_arr = np.asarray(center_line, dtype=np.float64)
     payload = {
         "track_key": payload_track_key,
         "source_type": source_type,
         "center_line": center_line,
-        "left_edge": left_edge if left_edge is not None else [
-            [0.10, 0.55],
-            [0.30, 0.70],
-            [0.50, 0.77],
-            [0.70, 0.70],
-            [0.90, 0.55],
-        ],
-        "right_edge": right_edge if right_edge is not None else [
-            [0.10, 0.45],
-            [0.30, 0.60],
-            [0.50, 0.67],
-            [0.70, 0.60],
-            [0.90, 0.45],
-        ],
+        "left_edge": left_edge if left_edge is not None else (center_line_arr + np.array([0.0, 0.05])).tolist(),
+        "right_edge": right_edge if right_edge is not None else (center_line_arr - np.array([0.0, 0.05])).tolist(),
     }
     road_dir = storage_root / "track_geometries" / dir_track_key
     road_dir.mkdir(parents=True, exist_ok=True)
@@ -526,13 +516,29 @@ def test_load_meta_falls_back_to_session_info_environment(tmp_path: Path) -> Non
     assert vm.meta.environment["air_pressure_hpa"] == pytest.approx(1009.1)
 
 
-def test_load_track_road_geometry_when_present(tmp_path: Path) -> None:
+def test_load_track_road_geometry_when_present_preserves_lap_xy(tmp_path: Path) -> None:
     session_dir = _make_session_dir(tmp_path)
     _write_session_meta(session_dir)
     _write_lap_meta(session_dir, run_id=1, lap_no=1)
     lap_dir = _make_lap_dir(session_dir, lap_no=1)
-    _write_resampled(lap_dir)
-    _write_track_road_geometry(tmp_path)
+    x = np.array([10.0, 20.0, 32.0, 44.0, 57.0], dtype=np.float32)
+    y = np.array([1.0, 6.0, 9.0, 7.0, 2.0], dtype=np.float32)
+    _write_resampled(
+        lap_dir,
+        n=len(x),
+        extra_cols={"X": x, "Y": y},
+        include_defaults=False,
+    )
+    _write_track_road_geometry(
+        tmp_path,
+        center_line=[
+            [0.10, 0.50],
+            [0.30, 0.65],
+            [0.50, 0.72],
+            [0.70, 0.65],
+            [0.90, 0.50],
+        ],
+    )
 
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
 
@@ -541,8 +547,10 @@ def test_load_track_road_geometry_when_present(tmp_path: Path) -> None:
     assert vm.track_road_geometry["source_type"] == "ibt"
     assert len(vm.track_road_geometry["center_line"]) == 5
     assert vm.track_road_geometry["left_edge"][0] == pytest.approx([0.10, 0.55])
-    assert vm.track_xy_source == "track_geometries_ibt"
-    assert np.allclose(vm.track_xy, np.asarray(vm.track_road_geometry["center_line"], dtype=np.float64))
+    assert vm.track_xy_source == "xy"
+    assert np.allclose(vm.track_xy[:, 0], x.astype(np.float64))
+    assert np.allclose(vm.track_xy[:, 1], y.astype(np.float64))
+    assert not np.allclose(vm.track_xy, np.asarray(vm.track_road_geometry["center_line"], dtype=np.float64))
 
 
 def test_load_track_road_geometry_when_missing(tmp_path: Path) -> None:
@@ -571,11 +579,14 @@ def test_load_track_road_geometry_accepts_center_line_only(tmp_path: Path, caplo
     assert vm.track_road_geometry is not None
     assert vm.track_road_geometry["left_edge"] == []
     assert vm.track_road_geometry["right_edge"] == []
-    assert vm.track_xy_source == "track_geometries_ibt"
-    assert np.allclose(vm.track_xy, np.asarray(vm.track_road_geometry["center_line"], dtype=np.float64))
+    assert vm.track_xy_source == "dead_reckoning"
+    assert vm.track_xy.shape == (_N, 2)
     assert "ibt_geometry_accepted=yes" in caplog.text
     assert "fallback_used=no" in caplog.text
     assert "trackmap_source=track_geometries_ibt" in caplog.text
+    assert "lap_geometry_source=dead_reckoning" in caplog.text
+    assert "road_geometry_mode=center_line_only" in caplog.text
+    assert "trackmap_source=dead_reckoning_live_fallback" not in caplog.text
 
 
 def test_load_track_road_geometry_track_key_mismatch_logs_clean_miss(
@@ -619,6 +630,8 @@ def test_load_track_road_geometry_fallback_source_logged(
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
 
     assert vm.track_road_geometry is not None
-    assert vm.track_xy_source == "track_geometries_fallback"
+    assert vm.track_xy_source == "dead_reckoning"
     assert "fallback_used=yes" in caplog.text
     assert "trackmap_source=track_geometries_fallback" in caplog.text
+    assert "lap_geometry_source=dead_reckoning" in caplog.text
+    assert "road_geometry_mode=center_line_only" in caplog.text

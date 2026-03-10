@@ -1004,30 +1004,49 @@ def _log_track_road_geometry_result(result: TrackRoadGeometryLoadResult) -> None
     )
 
 
+def _trackmap_source_name(source_type: str) -> str:
+    if source_type == "ibt":
+        return "track_geometries_ibt"
+    if source_type == "fallback":
+        return "track_geometries_fallback"
+    return "track_geometries_saved"
+
+
+def _road_geometry_mode_from_counts(
+    center_line_points: int,
+    left_edge_points: int,
+    right_edge_points: int,
+) -> str:
+    if center_line_points >= 2 and left_edge_points >= 2 and right_edge_points >= 2:
+        return "band"
+    if center_line_points >= 2:
+        return "center_line_only"
+    return "none"
+
+
 def _apply_saved_trackmap_geometry(vm: LapViewModel, result: TrackRoadGeometryLoadResult) -> None:
+    lap_geometry_source = vm.track_xy_source
     if result.geometry is None:
         _LOG.info(
-            "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=no fallback_used=yes trackmap_source=dead_reckoning_live_fallback",
+            "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=no fallback_used=yes trackmap_source=dead_reckoning_live_fallback lap_geometry_source=%s road_geometry_mode=none",
             result.requested_track_key,
             result.geometry_path,
             result.center_line_points,
             result.left_edge_points,
             result.right_edge_points,
+            lap_geometry_source,
         )
         return
 
-    center_line = np.asarray(result.geometry["center_line"], dtype=np.float64)
-    vm.track_xy = center_line
-    vm.track_xy_is_closed = _geometry_is_closed(center_line[:, 0], center_line[:, 1])
-    if result.source_type == "ibt":
-        vm.track_xy_source = "track_geometries_ibt"
-    elif result.source_type == "fallback":
-        vm.track_xy_source = "track_geometries_fallback"
-    else:
-        vm.track_xy_source = "track_geometries_saved"
+    trackmap_source = _trackmap_source_name(result.source_type)
+    road_geometry_mode = _road_geometry_mode_from_counts(
+        result.center_line_points,
+        result.left_edge_points,
+        result.right_edge_points,
+    )
 
     _LOG.info(
-        "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=%s fallback_used=%s trackmap_source=%s",
+        "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=%s fallback_used=%s trackmap_source=%s lap_geometry_source=%s road_geometry_mode=%s",
         result.requested_track_key,
         result.geometry_path,
         result.center_line_points,
@@ -1035,7 +1054,9 @@ def _apply_saved_trackmap_geometry(vm: LapViewModel, result: TrackRoadGeometryLo
         result.right_edge_points,
         "yes" if result.source_type == "ibt" else "no",
         "yes" if result.source_type == "fallback" else "no",
-        vm.track_xy_source,
+        trackmap_source,
+        lap_geometry_source,
+        road_geometry_mode,
     )
 
 

@@ -40,6 +40,7 @@ _PADDING = 0.06          # fraction of canvas dimension reserved per edge
 _TRACK_COLOR = "#555555"
 _TRACK_WIDTH = 1
 _LAP_WIDTH = 2
+_CENTER_LINE_TRACK_WIDTH = 4
 _SEG_WIDTH = 7           # corner-segment highlight width (px)
 _ROAD_FILL_COLOR = "#2D2D2D"
 _ROAD_EDGE_COLOR = "#8A8A8A"
@@ -660,6 +661,7 @@ def render_trackmap(
     # Both lap line and road geometry are in raw world coordinates (meters),
     # so combining them gives a correct common bounding box.
     road_arrays = _road_geometry_arrays(road_geometry)
+    road_geometry_mode = _road_geometry_mode(road_arrays)
     if road_arrays is not None:
         cl, le, re = road_arrays
         bbox_parts = [xy, cl]
@@ -680,19 +682,33 @@ def render_trackmap(
         width=width,
         height=height,
     )
+    _log_trackmap_geometry_state(
+        xy,
+        road_arrays,
+        fit_context,
+        width=width,
+        height=height,
+        road_geometry_mode=road_geometry_mode,
+    )
     coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)  # (N, 2) pixel coords
     line_flat = _line_flat(coords, is_closed=is_closed)
+    track_coords = coords
+    track_width = _TRACK_WIDTH
 
     # 1 – Optional road band
     if road_arrays is not None:
-        _, left_edge, right_edge = road_arrays
+        center_line, left_edge, right_edge = road_arrays
         if left_edge is not None and right_edge is not None:
             left_canvas = _transform_zoom(left_edge, width, height, zoom, offset, fit_context=fit_context)
             right_canvas = _transform_zoom(right_edge, width, height, zoom, offset, fit_context=fit_context)
             _draw_road_band(canvas, left_canvas, right_canvas, smooth=False, prefix="trackmap")
+        elif len(center_line) >= 2:
+            track_coords = _transform_zoom(center_line, width, height, zoom, offset, fit_context=fit_context)
+            track_width = _CENTER_LINE_TRACK_WIDTH
 
     # 2 – Base track line (grey)
-    canvas.create_line(line_flat, fill=_TRACK_COLOR, width=_TRACK_WIDTH,
+    track_line_flat = _line_flat(track_coords, is_closed=is_closed)
+    canvas.create_line(track_line_flat, fill=_TRACK_COLOR, width=track_width,
                        smooth=False, tags=("track",))
 
     # 3 – Corner segments (underneath the lap line)
@@ -1462,6 +1478,25 @@ def _road_geometry_arrays(
     return center_line, None, None
 
 
+def _road_geometry_mode(
+    road_arrays: tuple[np.ndarray, np.ndarray | None, np.ndarray | None] | None,
+) -> str:
+    if road_arrays is None:
+        return "none"
+    center_line, left_edge, right_edge = road_arrays
+    if (
+        len(center_line) >= 2
+        and left_edge is not None
+        and right_edge is not None
+        and len(left_edge) >= 2
+        and len(right_edge) >= 2
+    ):
+        return "band"
+    if len(center_line) >= 2:
+        return "center_line_only"
+    return "none"
+
+
 def _coerce_xy_array(value: object, *, allow_empty: bool = False) -> np.ndarray | None:
     if value == [] and allow_empty:
         return np.empty((0, 2), dtype=np.float64)
@@ -1562,6 +1597,63 @@ def _log_canvas_geometry_debug(
         fit_context.draw_height,
         width,
         height,
+    )
+
+
+def _log_trackmap_geometry_state(
+    lap_xy: np.ndarray,
+    road_arrays: tuple[np.ndarray, np.ndarray | None, np.ndarray | None] | None,
+    fit_context: _FitContext,
+    *,
+    width: int,
+    height: int,
+    road_geometry_mode: str,
+) -> None:
+    road_center_line = None
+    road_left_edge_points = 0
+    road_right_edge_points = 0
+    if road_arrays is not None:
+        road_center_line, left_edge, right_edge = road_arrays
+        road_left_edge_points = 0 if left_edge is None else len(left_edge)
+        road_right_edge_points = 0 if right_edge is None else len(right_edge)
+
+    lap_bbox = _bbox_stats(lap_xy)
+    road_bbox = _bbox_stats(road_center_line)
+    _LOG.debug(
+        "[trackmap_render_state] road_geometry_mode=%s lap_points=%d road_center_line_points=%d road_left_edge_points=%d road_right_edge_points=%d lap_min_x=%s lap_max_x=%s lap_min_y=%s lap_max_y=%s lap_bbox_width=%s lap_bbox_height=%s road_center_line_min_x=%s road_center_line_max_x=%s road_center_line_min_y=%s road_center_line_max_y=%s road_center_line_bbox_width=%s road_center_line_bbox_height=%s canvas_target_rect=x=%.3f,y=%.3f,w=%.3f,h=%.3f canvas_size=%dx%d",
+        road_geometry_mode,
+        0 if lap_xy is None else len(lap_xy),
+        0 if road_center_line is None else len(road_center_line),
+        road_left_edge_points,
+        road_right_edge_points,
+        *lap_bbox,
+        *road_bbox,
+        fit_context.offset_x,
+        fit_context.offset_y,
+        fit_context.draw_width,
+        fit_context.draw_height,
+        width,
+        height,
+    )
+
+
+def _bbox_stats(points: np.ndarray | None) -> tuple[str, str, str, str, str, str]:
+    if points is None or len(points) < 2:
+        return ("nan", "nan", "nan", "nan", "nan", "nan")
+    try:
+        x_min = float(np.nanmin(points[:, 0]))
+        x_max = float(np.nanmax(points[:, 0]))
+        y_min = float(np.nanmin(points[:, 1]))
+        y_max = float(np.nanmax(points[:, 1]))
+    except ValueError:
+        return ("nan", "nan", "nan", "nan", "nan", "nan")
+    return (
+        f"{x_min:.3f}",
+        f"{x_max:.3f}",
+        f"{y_min:.3f}",
+        f"{y_max:.3f}",
+        f"{x_max - x_min:.3f}",
+        f"{y_max - y_min:.3f}",
     )
 
 
