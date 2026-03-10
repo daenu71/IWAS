@@ -47,6 +47,8 @@ _IBT_INVENTORY_CANDIDATES: tuple[str, ...] = (
     "VelocityY",
     "VelocityZ",
 )
+_IBT_GEO_REQUIRED_CHANNELS: tuple[str, ...] = ("Lat", "Lon", "LapDistPct")
+_IBT_GEO_OPTIONAL_CHANNELS: tuple[str, ...] = ("SessionTime", "Alt")
 
 _LOG = logging.getLogger(__name__)
 
@@ -61,20 +63,51 @@ class TrackSessionMetadata:
     iracing_build: str
 
 
+@dataclass
+class _GeoPipelineResult:
+    status: str
+    reason: str
+    required_channels: list[str]
+    missing_channels: list[str]
+    similar_channels: dict[str, list[dict[str, Any]]]
+    source_channels: dict[str, str]
+    sample_count: int
+    joint_valid_sample_count: int
+    joint_in_range_sample_count: int
+    joint_valid_share: float | None
+    lap_dist_pct_in_range_share: float | None
+    lat_range: float | None
+    lon_range: float | None
+    lap_dist_pct_min: float | None
+    lap_dist_pct_max: float | None
+    unique_lap_dist_pct_samples: int
+    min_joint_samples_required: int | None
+    min_unique_lap_dist_required: int | None
+    enough_samples_for_centerline: bool
+    pipeline_counts: dict[str, int]
+    debug_valid_geo_samples_head: list[dict[str, float | None]]
+    debug_valid_geo_samples_tail: list[dict[str, float | None]]
+    center_line: list[dict[str, float]]
+
+
 def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Path:
     """Extract track geometry from *ibt_path* and persist it below *storage_root*."""
     ibt_path = Path(ibt_path)
     storage_root = Path(storage_root)
 
-    ir = _open_ibt(ibt_path)
+    ibt = _open_ibt_history(ibt_path)
     try:
-        metadata = _read_track_metadata(ir)
-        center_line = _extract_centerline_from_latlon(ir)
+        metadata = _read_track_metadata(ibt)
+        available_channels = _describe_available_channels(ibt)
+        pipeline = _build_latlon_centerline_pipeline(ibt, available_channels)
     finally:
-        _close_ibt(ir)
+        _close_ibt(ibt)
+
+    _log_latlon_centerline_pipeline(ibt_path, metadata.track_key, pipeline)
+    center_line = pipeline.center_line
 
     if len(center_line) < 2:
-        message = f"missing valid Lat/Lon + LapDistPct centerline in IBT: {ibt_path}"
+        message = f"missing valid Lat/Lon + LapDistPct centerline in IBT: {ibt_path} ({pipeline.reason})"
         _LOG.warning("[ibt_track_extract] %s", message)
         raise RuntimeError(message)
 
@@ -159,7 +192,7 @@ def build_ibt_inventory_report(ibt_path: str | Path) -> dict[str, Any]:
         available_channels = _describe_available_channels(ibt)
         channel_stats = _collect_ibt_channel_stats(ibt, available_channels)
         candidate_report = _build_candidate_channel_report(available_channels, channel_stats)
-        viability = _assess_latlon_centerline_viability(ibt, available_channels)
+        viability = _geo_pipeline_result_to_viability_report(_build_latlon_centerline_pipeline(ibt, available_channels))
         recommendation = _build_ibt_recommendation(candidate_report, viability)
     finally:
         _close_ibt(ibt)
@@ -532,61 +565,120 @@ def _assess_latlon_centerline_viability(
     ir: Any,
     available_channels: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    required = ("Lat", "Lon", "LapDistPct")
-    missing = [name for name in required if name not in available_channels]
-    if missing:
-        similar = {
-            name: _find_similar_available_names(available_channels, (name, *REQUESTED_CHANNEL_ALIASES.get(name, ())))
-            for name in missing
-        }
-        return {
-            "status": "missing",
-            "reason": f"missing required channels: {', '.join(missing)}",
-            "required_channels": list(required),
-            "missing_channels": missing,
-            "similar_channels": similar,
-            "joint_valid_sample_count": 0,
-            "joint_in_range_sample_count": 0,
-            "joint_valid_share": None,
-            "lap_dist_pct_in_range_share": None,
-            "lat_range": None,
-            "lon_range": None,
-            "lap_dist_pct_min": None,
-            "lap_dist_pct_max": None,
-            "unique_lap_dist_pct_samples": 0,
-            "min_joint_samples_required": None,
-            "min_unique_lap_dist_required": None,
-            "enough_samples_for_centerline": False,
-        }
+    return _geo_pipeline_result_to_viability_report(_build_latlon_centerline_pipeline(ir, available_channels))
 
-    lat = _series_to_float_array(_read_ibt_series(ir, "Lat"))
-    lon = _series_to_float_array(_read_ibt_series(ir, "Lon"))
-    lap_dist_pct = _series_to_float_array(_read_ibt_series(ir, "LapDistPct"))
-    sample_count = int(max(len(lat), len(lon), len(lap_dist_pct)))
+
+def _geo_pipeline_result_to_viability_report(result: _GeoPipelineResult) -> dict[str, Any]:
+    return {
+        "status": result.status,
+        "reason": result.reason,
+        "required_channels": list(result.required_channels),
+        "missing_channels": list(result.missing_channels),
+        "similar_channels": dict(result.similar_channels),
+        "source_channels": dict(result.source_channels),
+        "joint_valid_sample_count": result.joint_valid_sample_count,
+        "joint_in_range_sample_count": result.joint_in_range_sample_count,
+        "joint_valid_share": result.joint_valid_share,
+        "lap_dist_pct_in_range_share": result.lap_dist_pct_in_range_share,
+        "lat_range": result.lat_range,
+        "lon_range": result.lon_range,
+        "lap_dist_pct_min": result.lap_dist_pct_min,
+        "lap_dist_pct_max": result.lap_dist_pct_max,
+        "unique_lap_dist_pct_samples": result.unique_lap_dist_pct_samples,
+        "min_joint_samples_required": result.min_joint_samples_required,
+        "min_unique_lap_dist_required": result.min_unique_lap_dist_required,
+        "enough_samples_for_centerline": result.enough_samples_for_centerline,
+        "pipeline_counts": dict(result.pipeline_counts),
+        "debug_valid_geo_samples_head": list(result.debug_valid_geo_samples_head),
+        "debug_valid_geo_samples_tail": list(result.debug_valid_geo_samples_tail),
+        "center_line_point_count": len(result.center_line),
+    }
+
+
+def _build_latlon_centerline_pipeline(
+    ir: Any,
+    available_channels: dict[str, dict[str, Any]] | None = None,
+) -> _GeoPipelineResult:
+    available_channels = available_channels if available_channels is not None else _describe_available_channels(ir)
+    raw_series, source_channels = _read_geo_channel_series(ir, available_channels)
+    required = list(_IBT_GEO_REQUIRED_CHANNELS)
+    missing = [name for name in required if name not in source_channels]
+    similar = {
+        name: _find_similar_available_names(available_channels, (name, *REQUESTED_CHANNEL_ALIASES.get(name, ())))
+        for name in missing
+    }
+    sample_count = max((len(values) for values in raw_series.values()), default=0)
+    pipeline_counts = {
+        "raw_sample_count": int(sample_count),
+        "joint_valid_geo_sample_count": 0,
+        "after_unwrap_count": 0,
+        "after_sort_count": 0,
+        "after_dedupe_count": 0,
+        "after_resample_count": 0,
+        "before_json_write_count": 0,
+    }
+    if missing:
+        return _GeoPipelineResult(
+            status="missing",
+            reason=f"missing required channels: {', '.join(missing)}",
+            required_channels=required,
+            missing_channels=missing,
+            similar_channels=similar,
+            source_channels=source_channels,
+            sample_count=int(sample_count),
+            joint_valid_sample_count=0,
+            joint_in_range_sample_count=0,
+            joint_valid_share=None,
+            lap_dist_pct_in_range_share=None,
+            lat_range=None,
+            lon_range=None,
+            lap_dist_pct_min=None,
+            lap_dist_pct_max=None,
+            unique_lap_dist_pct_samples=0,
+            min_joint_samples_required=None,
+            min_unique_lap_dist_required=None,
+            enough_samples_for_centerline=False,
+            pipeline_counts=pipeline_counts,
+            debug_valid_geo_samples_head=[],
+            debug_valid_geo_samples_tail=[],
+            center_line=[],
+        )
+
+    arrays = {name: _align_float_array(raw_series.get(name), sample_count) for name in (*_IBT_GEO_REQUIRED_CHANNELS, *_IBT_GEO_OPTIONAL_CHANNELS)}
+    lat = arrays["Lat"]
+    lon = arrays["Lon"]
+    lap_dist_pct = arrays["LapDistPct"]
     if sample_count == 0:
-        return {
-            "status": "insufficient",
-            "reason": "required channels present but contain no samples",
-            "required_channels": list(required),
-            "missing_channels": [],
-            "similar_channels": {},
-            "joint_valid_sample_count": 0,
-            "joint_in_range_sample_count": 0,
-            "joint_valid_share": None,
-            "lap_dist_pct_in_range_share": None,
-            "lat_range": None,
-            "lon_range": None,
-            "lap_dist_pct_min": None,
-            "lap_dist_pct_max": None,
-            "unique_lap_dist_pct_samples": 0,
-            "min_joint_samples_required": None,
-            "min_unique_lap_dist_required": None,
-            "enough_samples_for_centerline": False,
-        }
+        return _GeoPipelineResult(
+            status="insufficient",
+            reason="required channels present but contain no samples",
+            required_channels=required,
+            missing_channels=[],
+            similar_channels={},
+            source_channels=source_channels,
+            sample_count=0,
+            joint_valid_sample_count=0,
+            joint_in_range_sample_count=0,
+            joint_valid_share=None,
+            lap_dist_pct_in_range_share=None,
+            lat_range=None,
+            lon_range=None,
+            lap_dist_pct_min=None,
+            lap_dist_pct_max=None,
+            unique_lap_dist_pct_samples=0,
+            min_joint_samples_required=None,
+            min_unique_lap_dist_required=None,
+            enough_samples_for_centerline=False,
+            pipeline_counts=pipeline_counts,
+            debug_valid_geo_samples_head=[],
+            debug_valid_geo_samples_tail=[],
+            center_line=[],
+        )
 
     nonzero_geo_mask = ~(np.isclose(lat, 0.0, atol=0.0, rtol=0.0) & np.isclose(lon, 0.0, atol=0.0, rtol=0.0))
     valid_mask = np.isfinite(lat) & np.isfinite(lon) & np.isfinite(lap_dist_pct) & nonzero_geo_mask
     joint_valid_count = int(valid_mask.sum())
+    pipeline_counts["joint_valid_geo_sample_count"] = joint_valid_count
     in_range_mask = valid_mask & (lap_dist_pct >= 0.0) & (lap_dist_pct <= 1.0)
     joint_in_range_count = int(in_range_mask.sum())
     joint_valid_share = float(joint_valid_count / sample_count) if sample_count > 0 else None
@@ -597,17 +689,15 @@ def _assess_latlon_centerline_viability(
     lap_dist_pct_min = _finite_min(lap_dist_pct[valid_mask])
     lap_dist_pct_max = _finite_max(lap_dist_pct[valid_mask])
     unique_lap_dist_pct_samples = _count_unique_finite(lap_dist_pct[in_range_mask], decimals=6)
-
     min_joint_samples = 4 if sample_count <= 10 else 20 if sample_count <= 100 else 100
     min_unique_lap_dist = 4 if sample_count <= 10 else 20
     enough_samples = joint_in_range_count >= min_joint_samples and unique_lap_dist_pct_samples >= min_unique_lap_dist
-    varies_meaningfully = (
-        lat_range is not None
-        and lon_range is not None
-        and (lat_range > 1e-6 or lon_range > 1e-6)
-    )
+    varies_meaningfully = lat_range is not None and lon_range is not None and (lat_range > 1e-6 or lon_range > 1e-6)
     plausible_lap_dist_pct = in_range_share is not None and in_range_share >= 0.95
+    debug_head, debug_tail = _build_geo_sample_debug_views(arrays, valid_mask)
 
+    status = "ok"
+    reason = "Lat/Lon + LapDistPct appear populated and varying enough for later geometry work"
     if joint_valid_count == 0:
         status = "insufficient"
         reason = "no samples contain valid Lat + Lon + LapDistPct together"
@@ -620,29 +710,49 @@ def _assess_latlon_centerline_viability(
     elif not enough_samples:
         status = "insufficient"
         reason = "too few joint-valid samples for a centerline"
-    else:
-        status = "ok"
-        reason = "Lat/Lon + LapDistPct appear populated and varying enough for later geometry work"
 
-    return {
-        "status": status,
-        "reason": reason,
-        "required_channels": list(required),
-        "missing_channels": [],
-        "similar_channels": {},
-        "joint_valid_sample_count": joint_valid_count,
-        "joint_in_range_sample_count": joint_in_range_count,
-        "joint_valid_share": joint_valid_share,
-        "lap_dist_pct_in_range_share": in_range_share,
-        "lat_range": lat_range,
-        "lon_range": lon_range,
-        "lap_dist_pct_min": lap_dist_pct_min,
-        "lap_dist_pct_max": lap_dist_pct_max,
-        "unique_lap_dist_pct_samples": unique_lap_dist_pct_samples,
-        "min_joint_samples_required": min_joint_samples,
-        "min_unique_lap_dist_required": min_unique_lap_dist,
-        "enough_samples_for_centerline": enough_samples,
-    }
+    center_line: list[dict[str, float]] = []
+    if status == "ok":
+        joint_samples = _collect_joint_valid_geo_samples(arrays, valid_mask)
+        unwrapped_samples = _unwrap_joint_valid_geo_samples(joint_samples)
+        pipeline_counts["after_unwrap_count"] = len(unwrapped_samples)
+        sorted_samples = _sort_and_select_best_geo_lap(unwrapped_samples)
+        pipeline_counts["after_sort_count"] = len(sorted_samples)
+        deduped_samples = _dedupe_sorted_geo_samples(sorted_samples)
+        pipeline_counts["after_dedupe_count"] = len(deduped_samples)
+        resampled_samples = _resample_geo_samples(deduped_samples)
+        pipeline_counts["after_resample_count"] = len(resampled_samples)
+        center_line = _build_centerline_from_geo_samples(resampled_samples)
+        pipeline_counts["before_json_write_count"] = len(center_line)
+        if len(center_line) < 2:
+            status = "insufficient"
+            reason = "valid geo samples collapsed before JSON write"
+
+    return _GeoPipelineResult(
+        status=status,
+        reason=reason,
+        required_channels=required,
+        missing_channels=[],
+        similar_channels={},
+        source_channels=source_channels,
+        sample_count=int(sample_count),
+        joint_valid_sample_count=joint_valid_count,
+        joint_in_range_sample_count=joint_in_range_count,
+        joint_valid_share=joint_valid_share,
+        lap_dist_pct_in_range_share=in_range_share,
+        lat_range=lat_range,
+        lon_range=lon_range,
+        lap_dist_pct_min=lap_dist_pct_min,
+        lap_dist_pct_max=lap_dist_pct_max,
+        unique_lap_dist_pct_samples=unique_lap_dist_pct_samples,
+        min_joint_samples_required=min_joint_samples,
+        min_unique_lap_dist_required=min_unique_lap_dist,
+        enough_samples_for_centerline=status == "ok" and len(center_line) >= 2,
+        pipeline_counts=pipeline_counts,
+        debug_valid_geo_samples_head=debug_head,
+        debug_valid_geo_samples_tail=debug_tail,
+        center_line=center_line,
+    )
 
 
 def _build_ibt_recommendation(
@@ -819,6 +929,227 @@ def _series_to_float_array(values: list[Any] | None) -> np.ndarray:
     return arr
 
 
+def _align_float_array(values: list[Any] | None, sample_count: int) -> np.ndarray:
+    arr = _series_to_float_array(values)
+    if sample_count <= 0 or len(arr) == sample_count:
+        return arr
+    aligned = np.full(sample_count, np.nan, dtype=np.float64)
+    aligned[: min(sample_count, len(arr))] = arr[:sample_count]
+    return aligned
+
+
+def _read_geo_channel_series(
+    ir: Any,
+    available_channels: dict[str, dict[str, Any]],
+) -> tuple[dict[str, list[Any]], dict[str, str]]:
+    raw_series: dict[str, list[Any]] = {}
+    source_channels: dict[str, str] = {}
+    for name in (*_IBT_GEO_REQUIRED_CHANNELS, *_IBT_GEO_OPTIONAL_CHANNELS):
+        source_name, values = _read_resolved_ibt_series(ir, available_channels, name)
+        if source_name is None or values is None:
+            continue
+        raw_series[name] = values
+        source_channels[name] = source_name
+    return raw_series, source_channels
+
+
+def _read_resolved_ibt_series(
+    ir: Any,
+    available_channels: dict[str, dict[str, Any]],
+    requested_name: str,
+) -> tuple[str | None, list[Any] | None]:
+    candidates = (requested_name, *REQUESTED_CHANNEL_ALIASES.get(requested_name, ()))
+    for name in candidates:
+        if name not in available_channels:
+            continue
+        values = _read_ibt_series(ir, name)
+        if values is not None:
+            return name, values
+    for name in candidates:
+        values = _read_ibt_series(ir, name)
+        if values is not None:
+            return name, values
+    return None, None
+
+
+def _build_geo_sample_debug_views(
+    arrays: dict[str, np.ndarray],
+    valid_mask: np.ndarray,
+) -> tuple[list[dict[str, float | None]], list[dict[str, float | None]]]:
+    indices = np.flatnonzero(valid_mask)
+    if indices.size == 0:
+        return [], []
+    head_idx = indices[:5]
+    tail_idx = indices[-5:]
+    return _format_geo_sample_debug_rows(arrays, head_idx), _format_geo_sample_debug_rows(arrays, tail_idx)
+
+
+def _format_geo_sample_debug_rows(
+    arrays: dict[str, np.ndarray],
+    indices: np.ndarray,
+) -> list[dict[str, float | None]]:
+    rows: list[dict[str, float | None]] = []
+    for idx in indices.tolist():
+        rows.append(
+            {
+                "SessionTime": _finite_float_or_none(arrays["SessionTime"][idx]),
+                "LapDistPct": _finite_float_or_none(arrays["LapDistPct"][idx]),
+                "Lat": _finite_float_or_none(arrays["Lat"][idx]),
+                "Lon": _finite_float_or_none(arrays["Lon"][idx]),
+                "Alt": _finite_float_or_none(arrays["Alt"][idx]),
+            }
+        )
+    return rows
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _collect_joint_valid_geo_samples(
+    arrays: dict[str, np.ndarray],
+    valid_mask: np.ndarray,
+) -> list[dict[str, float | None]]:
+    samples: list[dict[str, float | None]] = []
+    for idx in np.flatnonzero(valid_mask).tolist():
+        samples.append(
+            {
+                "session_time": _finite_float_or_none(arrays["SessionTime"][idx]),
+                "lap_dist_pct": float(arrays["LapDistPct"][idx]),
+                "lat": float(arrays["Lat"][idx]),
+                "lon": float(arrays["Lon"][idx]),
+                "alt": _finite_float_or_none(arrays["Alt"][idx]),
+            }
+        )
+    return samples
+
+
+def _unwrap_joint_valid_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
+    if not samples:
+        return []
+    wrapped = np.asarray([float(sample["lap_dist_pct"]) for sample in samples], dtype=np.float64)
+    unwrapped = _unwrap_lap_dist_pct(wrapped)
+    out: list[dict[str, float | None]] = []
+    for sample, lap_dist_unwrapped in zip(samples, unwrapped):
+        row = dict(sample)
+        row["lap_dist_unwrapped"] = float(lap_dist_unwrapped)
+        out.append(row)
+    return out
+
+
+def _unwrap_lap_dist_pct(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return np.empty(0, dtype=np.float64)
+    out = np.asarray(values, dtype=np.float64).copy()
+    offset = 0.0
+    prev = out[0]
+    for idx in range(1, len(out)):
+        cur = out[idx]
+        if math.isfinite(prev) and math.isfinite(cur) and cur < prev - 0.5:
+            offset += 1.0
+        out[idx] = cur + offset
+        prev = cur
+    return out
+
+
+def _sort_and_select_best_geo_lap(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
+    if not samples:
+        return []
+    buckets: dict[int, list[dict[str, float | None]]] = {}
+    for sample in samples:
+        lap_dist_unwrapped = _finite_float_or_none(sample.get("lap_dist_unwrapped"))
+        if lap_dist_unwrapped is None:
+            continue
+        lap_index = int(math.floor(lap_dist_unwrapped + 1e-9))
+        lap_dist_pct = lap_dist_unwrapped - float(lap_index)
+        if lap_dist_pct < 0.0:
+            lap_dist_pct += 1.0
+        elif lap_dist_pct >= 1.0:
+            lap_dist_pct -= 1.0
+        row = dict(sample)
+        row["lap_dist_pct"] = float(lap_dist_pct)
+        buckets.setdefault(lap_index, []).append(row)
+    if not buckets:
+        return []
+
+    def _bucket_score(bucket: list[dict[str, float | None]]) -> tuple[int, int, float, int]:
+        lap_dist = np.asarray([float(item["lap_dist_pct"]) for item in bucket], dtype=np.float64)
+        coverage = _finite_range(lap_dist) or 0.0
+        unique_count = _count_unique_finite(lap_dist, decimals=6)
+        return (1 if coverage >= 0.95 else 0, unique_count, coverage, len(bucket))
+
+    best_bucket = max(buckets.values(), key=_bucket_score)
+    return sorted(
+        best_bucket,
+        key=lambda item: (
+            float(item["lap_dist_pct"]),
+            _finite_float_or_none(item.get("session_time")) if item.get("session_time") is not None else -1.0,
+        ),
+    )
+
+
+def _dedupe_sorted_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
+    deduped: list[dict[str, float | None]] = []
+    seen_keys: set[float] = set()
+    for sample in samples:
+        lap_dist_pct = _finite_float_or_none(sample.get("lap_dist_pct"))
+        if lap_dist_pct is None:
+            continue
+        key = round(lap_dist_pct, 6)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(sample)
+    return deduped
+
+
+def _resample_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
+    if len(samples) < 2:
+        return []
+    lap_dist = np.asarray([float(sample["lap_dist_pct"]) for sample in samples], dtype=np.float64)
+    if len(np.unique(np.round(lap_dist, 6))) < 2:
+        return []
+    target_count = len(samples)
+    grid = np.linspace(float(lap_dist[0]), float(lap_dist[-1]), num=target_count, endpoint=True, dtype=np.float64)
+    lat = np.interp(grid, lap_dist, np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64))
+    lon = np.interp(grid, lap_dist, np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64))
+    session_time = _interp_optional_sample_field(samples, lap_dist, grid, "session_time")
+    alt = _interp_optional_sample_field(samples, lap_dist, grid, "alt")
+    resampled: list[dict[str, float | None]] = []
+    for idx, lap_dist_pct in enumerate(grid.tolist()):
+        resampled.append(
+            {
+                "session_time": session_time[idx],
+                "lap_dist_pct": float(lap_dist_pct),
+                "lat": float(lat[idx]),
+                "lon": float(lon[idx]),
+                "alt": alt[idx],
+            }
+        )
+    return resampled
+
+
+def _interp_optional_sample_field(
+    samples: list[dict[str, float | None]],
+    lap_dist: np.ndarray,
+    grid: np.ndarray,
+    field_name: str,
+) -> list[float | None]:
+    values = np.asarray([np.nan if sample.get(field_name) is None else float(sample[field_name]) for sample in samples], dtype=np.float64)
+    finite_mask = np.isfinite(values)
+    if int(finite_mask.sum()) >= 2:
+        interpolated = np.interp(grid, lap_dist[finite_mask], values[finite_mask])
+        return [float(value) for value in interpolated.tolist()]
+    if int(finite_mask.sum()) == 1:
+        only_value = float(values[finite_mask][0])
+        return [only_value] * len(grid)
+    return [None] * len(grid)
+
+
 def _finite_range(values: np.ndarray) -> float | None:
     if values.size == 0:
         return None
@@ -993,54 +1324,59 @@ def _read_iracing_build(ir: Any) -> str:
     return _read_track_metadata(ir).iracing_build
 
 
-def _extract_centerline_from_latlon(ir: Any) -> list[dict[str, float]]:
-    frames = _read_first_lap_frames(ir)
-    return _build_centerline_points(
-        lap_dist_pct_values=frames.get("ldp", []),
-        lat_values=frames.get("lat", []),
-        lon_values=frames.get("lon", []),
+def _log_latlon_centerline_pipeline(
+    ibt_path: Path,
+    track_key: str,
+    result: _GeoPipelineResult,
+) -> None:
+    counts = result.pipeline_counts
+    _LOG.info(
+        "[ibt_track_extract] track_key=%s ibt=%s status=%s reason=%s raw_sample_count=%d joint_valid_geo_sample_count=%d after_unwrap_count=%d after_sort_count=%d after_dedupe_count=%d after_resample_count=%d before_json_write_count=%d source_channels=%s",
+        track_key,
+        ibt_path,
+        result.status,
+        result.reason,
+        counts.get("raw_sample_count", 0),
+        counts.get("joint_valid_geo_sample_count", 0),
+        counts.get("after_unwrap_count", 0),
+        counts.get("after_sort_count", 0),
+        counts.get("after_dedupe_count", 0),
+        counts.get("after_resample_count", 0),
+        counts.get("before_json_write_count", 0),
+        result.source_channels,
     )
+    if result.debug_valid_geo_samples_head:
+        _LOG.debug(
+            "[ibt_track_extract] track_key=%s ibt=%s valid_geo_samples_head=%s",
+            track_key,
+            ibt_path,
+            result.debug_valid_geo_samples_head,
+        )
+        _LOG.debug(
+            "[ibt_track_extract] track_key=%s ibt=%s valid_geo_samples_tail=%s",
+            track_key,
+            ibt_path,
+            result.debug_valid_geo_samples_tail,
+        )
 
 
-def _build_centerline_points(
-    *,
-    lap_dist_pct_values: list[Any],
-    lat_values: list[Any],
-    lon_values: list[Any],
-) -> list[dict[str, float]]:
-    samples: list[tuple[int, float, float, float]] = []
-    for idx, (lap_dist_pct, lat, lon) in enumerate(zip(lap_dist_pct_values, lat_values, lon_values)):
-        lap_dist = _safe_float(lap_dist_pct)
-        lat_deg = _safe_float(lat)
-        lon_deg = _safe_float(lon)
-        if lap_dist is None or lat_deg is None or lon_deg is None:
-            continue
-        if lap_dist < 0.0 or lap_dist > 1.0:
-            continue
-        samples.append((idx, lap_dist, lat_deg, lon_deg))
-
+def _build_centerline_from_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float]]:
     if len(samples) < 2:
         return []
-
-    samples.sort(key=lambda item: item[1])
-    lat = np.asarray([item[2] for item in samples], dtype=np.float64)
-    lon = np.asarray([item[3] for item in samples], dtype=np.float64)
+    lat = np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64)
+    lon = np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64)
     xy_m = _project_latlon_to_xy(lat, lon)
-    if xy_m is None or len(xy_m) != len(samples):
+    if xy_m is None or len(xy_m) != len(samples) or len(samples) < 2:
         return []
 
     center_line: list[dict[str, float]] = []
-    last_key: tuple[float, float, float] | None = None
     for sample, xy in zip(samples, xy_m):
-        lap_dist = float(sample[1])
-        lat_deg = float(sample[2])
-        lon_deg = float(sample[3])
+        lap_dist = _finite_float_or_none(sample.get("lap_dist_pct"))
+        lat_deg = _finite_float_or_none(sample.get("lat"))
+        lon_deg = _finite_float_or_none(sample.get("lon"))
         x_m = _safe_float(xy[0])
         y_m = _safe_float(xy[1])
-        if x_m is None or y_m is None:
-            continue
-        dedupe_key = (lap_dist, lat_deg, lon_deg)
-        if dedupe_key == last_key:
+        if lap_dist is None or lat_deg is None or lon_deg is None or x_m is None or y_m is None:
             continue
         center_line.append(
             {
@@ -1051,7 +1387,6 @@ def _build_centerline_points(
                 "y_m": y_m,
             }
         )
-        last_key = dedupe_key
     return center_line if len(center_line) >= 2 else []
 
 

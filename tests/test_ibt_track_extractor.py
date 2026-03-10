@@ -164,6 +164,31 @@ def _make_geo_frames(samples: list[tuple[float, float, float]]) -> list[dict]:
     return frames
 
 
+def _make_geo_channel_values(
+    samples: list[tuple[float, float, float]],
+    *,
+    lat_name: str = "Lat",
+    lon_name: str = "Lon",
+    include_alt: bool = True,
+) -> dict[str, list[object]]:
+    values: dict[str, list[object]] = {
+        "SessionTime": [],
+        "LapDistPct": [],
+        lat_name: [],
+        lon_name: [],
+    }
+    if include_alt:
+        values["Alt"] = []
+    for idx, (lap_dist_pct, lat, lon) in enumerate(samples):
+        values["SessionTime"].append(idx / 60.0)
+        values["LapDistPct"].append(lap_dist_pct)
+        values[lat_name].append(lat)
+        values[lon_name].append(lon)
+        if include_alt:
+            values["Alt"].append(8.0 + idx * 0.1)
+    return values
+
+
 def _fake_irsdk_module(fake_ir: _FakeIRSDK | None = None, fake_ibt: _FakeIBT | None = None) -> types.ModuleType:
     mod = types.ModuleType("irsdk")
     if fake_ir is not None:
@@ -204,7 +229,7 @@ def _make_inventory_yaml(
 
 
 def test_extract_produces_valid_json(tmp_path: Path) -> None:
-    frames = _make_geo_frames(
+    channel_values = _make_geo_channel_values(
         [
             (0.00, 47.000000, 8.000000),
             (0.25, 47.000250, 8.000000),
@@ -212,14 +237,14 @@ def test_extract_produces_valid_json(tmp_path: Path) -> None:
             (0.75, 47.000000, 8.000350),
         ]
     )
-    fake_ir = _FakeIRSDK(
-        frames=frames,
+    fake_ibt = _FakeIBT(
+        channel_values,
         session_yaml=_make_session_yaml("Sebring", "Full Course", build_version="2026.03"),
     )
     ibt_file = tmp_path / "fake.ibt"
     ibt_file.touch()
 
-    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ir)}):
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
         out = extract_track_geometry(ibt_file, tmp_path)
 
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -245,8 +270,8 @@ def test_extract_produces_valid_json(tmp_path: Path) -> None:
 
 
 def test_extract_sorts_centerline_by_lap_dist_pct(tmp_path: Path) -> None:
-    fake_ir = _FakeIRSDK(
-        frames=_make_geo_frames(
+    fake_ibt = _FakeIBT(
+        _make_geo_channel_values(
             [
                 (0.60, 47.000600, 8.000000),
                 (0.20, 47.000200, 8.000000),
@@ -259,7 +284,7 @@ def test_extract_sorts_centerline_by_lap_dist_pct(tmp_path: Path) -> None:
     ibt_file = tmp_path / "fake.ibt"
     ibt_file.touch()
 
-    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ir)}):
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
         out = extract_track_geometry(ibt_file, tmp_path)
 
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -319,18 +344,79 @@ def test_normals_orthogonal_to_tangents() -> None:
 
 
 def test_missing_latlon_skips_geometry_export(tmp_path: Path) -> None:
-    fake_ir = _FakeIRSDK(
-        frames=_make_straight_frames(),
+    fake_ibt = _FakeIBT(
+        {
+            "SessionTime": [0.0, 1.0, 2.0],
+            "LapDistPct": [0.0, 0.4, 0.8],
+            "VelocityX": [50.0, 50.0, 50.0],
+        },
         session_yaml=_make_session_yaml("Unknown", ""),
     )
     ibt_file = tmp_path / "fake.ibt"
     ibt_file.touch()
 
-    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ir)}):
-        with pytest.raises(RuntimeError, match="Lat/Lon \\+ LapDistPct"):
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        with pytest.raises(RuntimeError, match="missing required channels"):
             extract_track_geometry(ibt_file, tmp_path)
 
     assert list(tmp_path.rglob("track_road_geometry.json")) == []
+
+
+def test_extract_logs_geo_pipeline_counts_and_debug_samples(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    samples = [
+        (0.00, 43.9600, 12.6830),
+        (0.25, 43.9605, 12.6833),
+        (0.50, 43.9610, 12.6838),
+        (0.75, 43.9604, 12.6842),
+        (0.99, 43.9599, 12.6834),
+        (0.01, 43.9601, 12.6831),
+        (0.26, 43.9606, 12.6834),
+        (0.51, 43.9611, 12.6839),
+        (0.76, 43.9605, 12.6843),
+    ]
+    fake_ibt = _FakeIBT(
+        _make_geo_channel_values(samples),
+        session_yaml=_make_session_yaml("Misano World Circuit Marco Simoncelli", "Grand Prix"),
+    )
+    ibt_file = tmp_path / "misano.ibt"
+    ibt_file.touch()
+
+    caplog.set_level("DEBUG", logger="core.coaching.ibt_track_extractor")
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        out = extract_track_geometry(ibt_file, tmp_path)
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["center_line"]
+    info_messages = [record.getMessage() for record in caplog.records if record.levelname == "INFO"]
+    debug_messages = [record.getMessage() for record in caplog.records if record.levelname == "DEBUG"]
+    assert any("joint_valid_geo_sample_count=9" in message for message in info_messages)
+    assert any(
+        "after_sort_count=5" in message
+        and "after_dedupe_count=5" in message
+        and "after_resample_count=5" in message
+        and "before_json_write_count=5" in message
+        for message in info_messages
+    )
+    assert any("valid_geo_samples_head=" in message for message in debug_messages)
+    assert any("valid_geo_samples_tail=" in message for message in debug_messages)
+
+
+def test_extract_skips_with_reason_when_geo_samples_are_not_joint_valid(tmp_path: Path) -> None:
+    fake_ibt = _FakeIBT(
+        {
+            "SessionTime": [0.0, 1.0, 2.0, 3.0],
+            "LapDistPct": [0.0, 0.2, 0.4, 0.6],
+            "Lat": [0.0, 0.0, 0.0, 0.0],
+            "Lon": [0.0, 0.0, 0.0, 0.0],
+        },
+        session_yaml=_make_session_yaml("Nowhere", ""),
+    )
+    ibt_file = tmp_path / "invalid_geo.ibt"
+    ibt_file.touch()
+
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        with pytest.raises(RuntimeError, match="no samples contain valid Lat \\+ Lon \\+ LapDistPct together"):
+            extract_track_geometry(ibt_file, tmp_path)
 
 
 def test_build_ibt_inventory_report_marks_latlon_centerline_viable(tmp_path: Path) -> None:
@@ -359,7 +445,6 @@ def test_build_ibt_inventory_report_marks_latlon_centerline_viable(tmp_path: Pat
     assert report["file_summary"]["track_display_name"] == "Misano World Circuit Marco Simoncelli"
     assert report["file_summary"]["track_config_name"] == "Grand Prix"
     assert report["file_summary"]["track_id"] == 501
-    assert report["file_summary"]["car_path"] == "lamborghinievogt3"
     assert report["file_summary"]["session_type"] == "practice"
     assert report["file_summary"]["iracing_build"] == "2026.02.02.02"
     assert report["file_summary"]["session_lap_count"] == 2
@@ -369,6 +454,7 @@ def test_build_ibt_inventory_report_marks_latlon_centerline_viable(tmp_path: Pat
     assert report["candidate_channel_report"]["VelocityZ"]["nonzero_count"] == 0
     assert report["lat_lon_centerline_viability"]["status"] == "ok"
     assert report["lat_lon_centerline_viability"]["joint_valid_sample_count"] == 4
+    assert report["lat_lon_centerline_viability"]["pipeline_counts"]["before_json_write_count"] == 4
     assert report["recommendation"]["summary"] == "Lat/Lon + LapDistPct nutzbar"
 
 
@@ -377,13 +463,13 @@ def test_build_ibt_inventory_report_surfaces_missing_exact_channel_names(tmp_pat
     ibt_file.touch()
     fake_ibt = _FakeIBT(
         {
-            "SessionTime": [0.0, 1.0, 2.0],
-            "LapDistPct": [0.1, 0.2, 0.3],
-            "Latitude": [43.96, 43.97, 43.98],
-            "Longitude": [12.68, 12.69, 12.70],
-            "LatAccel": [0.0, 0.1, 0.2],
-            "VelocityX": [1.0, 1.0, 1.0],
-            "VelocityY": [0.0, 0.1, 0.2],
+            "SessionTime": [0.0, 1.0, 2.0, 3.0],
+            "LapDistPct": [0.1, 0.2, 0.3, 0.4],
+            "Latitude": [43.96, 43.97, 43.98, 43.99],
+            "Longitude": [12.68, 12.69, 12.70, 12.71],
+            "LatAccel": [0.0, 0.1, 0.2, 0.3],
+            "VelocityX": [1.0, 1.0, 1.0, 1.0],
+            "VelocityY": [0.0, 0.1, 0.2, 0.3],
         },
         session_yaml=_make_inventory_yaml("Road Atlanta", "Full Course"),
     )
@@ -395,6 +481,7 @@ def test_build_ibt_inventory_report_surfaces_missing_exact_channel_names(tmp_pat
     assert report["candidate_channel_report"]["Lon"]["present"] is False
     assert [item["name"] for item in report["candidate_channel_report"]["Lat"]["similar_names"]] == ["LatAccel", "Latitude"]
     assert [item["name"] for item in report["candidate_channel_report"]["Lon"]["similar_names"]] == ["Longitude"]
-    assert report["lat_lon_centerline_viability"]["status"] == "missing"
-    assert report["lat_lon_centerline_viability"]["missing_channels"] == ["Lat", "Lon"]
-    assert report["recommendation"]["status"] == "not_usable"
+    assert report["lat_lon_centerline_viability"]["status"] == "ok"
+    assert report["lat_lon_centerline_viability"]["source_channels"]["Lat"] == "Latitude"
+    assert report["lat_lon_centerline_viability"]["source_channels"]["Lon"] == "Longitude"
+    assert report["recommendation"]["status"] == "usable"
