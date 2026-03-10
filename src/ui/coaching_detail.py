@@ -761,21 +761,30 @@ class CoachingDetailView(ttk.Frame):
             return
         is_offtrack = vm.meta is not None and not vm.meta.valid
 
-        # Collect all events across all corners for full-track display
+        # Collect all events across all corners for full-track display.
+        # Deduplicate by (event_type, lapdist_pct) with float tolerance to avoid
+        # rendering the same event twice when it appears in two adjacent corner windows.
         all_events: list = []
-        seen_ids: set = set()
+        seen_keys: set = set()
+
+        def _add_event(ev) -> None:
+            try:
+                key = (
+                    str(getattr(ev, "event_type", "") or ""),
+                    round(float(getattr(ev, "lapdist_pct", 0.0)), 6),
+                )
+            except (TypeError, ValueError):
+                key = id(ev)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                all_events.append(ev)
+
         for ev_list in (vm.corner_events or {}).values():
             for ev in ev_list:
-                eid = id(ev)
-                if eid not in seen_ids:
-                    seen_ids.add(eid)
-                    all_events.append(ev)
+                _add_event(ev)
         for ev_list in (vm.events or {}).values():
             for ev in ev_list:
-                eid = id(ev)
-                if eid not in seen_ids:
-                    seen_ids.add(eid)
-                    all_events.append(ev)
+                _add_event(ev)
 
         visible_types = {
             name for name in _TRACKMAP_EVENT_TYPE_NAMES
