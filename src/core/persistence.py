@@ -4,6 +4,7 @@ import configparser
 import json
 import logging
 import math
+import os
 from pathlib import Path
 
 from core.resources import get_resource_path
@@ -72,6 +73,8 @@ _COACHING_RECORDING_DEFAULTS: dict[str, object] = {
 }
 _COACHING_STORAGE_DIR_FALLBACK = Path(r"C:\iWAS\data\coaching")
 
+_IRACING_SECTION = "iracing"
+
 _VIDEO_CUT_DEFAULTS: dict[str, float] = {
     "video_before_brake": 1.0,
     "video_after_full_throttle": 1.0,
@@ -135,7 +138,7 @@ def save_endframes(d: dict[str, int]) -> None:
 def cfg_get(section: str, key: str, fallback: str) -> str:
     """Implement cfg get logic."""
     try:
-        return cfg.get(section, key, fallback=fallback)
+        return cfg.get(section, key, fallback=fallback, raw=True)
     except Exception:
         return fallback
 
@@ -187,6 +190,96 @@ def _coerce_str(raw: object, fallback: str) -> str:
         return str(raw).strip()
     except Exception:
         return str(fallback)
+
+
+def _normalize_optional_path(raw: object, fallback: str = "") -> str:
+    """Normalize optional path text while preserving empty input."""
+    text = _coerce_str(raw, fallback)
+    if not text:
+        return ""
+    try:
+        return os.path.normpath(os.path.expanduser(os.path.expandvars(text)))
+    except Exception:
+        return text
+
+
+def get_default_iracing_telemetry_dir() -> str:
+    """Return the default Windows iRacing telemetry folder."""
+    user_profile = str(os.environ.get("USERPROFILE") or Path.home())
+    return str(Path(user_profile) / "Documents" / "iRacing" / "telemetry")
+
+
+def load_iracing_settings() -> dict[str, object]:
+    """Load iRacing-related settings."""
+    default_dir = get_default_iracing_telemetry_dir()
+    return {
+        "iracing_telemetry_dir": _normalize_optional_path(
+            cfg_get(_IRACING_SECTION, "telemetry_dir", default_dir),
+            default_dir,
+        ),
+    }
+
+
+def get_iracing_telemetry_dir(raw_value: object | None = None) -> str:
+    """Return the normalized iRacing telemetry directory."""
+    if raw_value is None:
+        raw_value = load_iracing_settings().get("iracing_telemetry_dir", "")
+    return _normalize_optional_path(raw_value, "")
+
+
+def save_iracing_settings(values: dict[str, object]) -> dict[str, object]:
+    """Save iRacing-related settings into user.ini."""
+    current = load_iracing_settings()
+    merged: dict[str, object] = dict(current)
+    incoming = values if isinstance(values, dict) else {}
+
+    if "iracing_telemetry_dir" in incoming:
+        merged["iracing_telemetry_dir"] = _normalize_optional_path(
+            incoming.get("iracing_telemetry_dir"),
+            str(current["iracing_telemetry_dir"]),
+        )
+
+    user_cp = configparser.ConfigParser()
+    try:
+        if user_ini.exists():
+            user_cp.read(user_ini, encoding="utf-8")
+    except Exception:
+        pass
+    if not user_cp.has_section(_IRACING_SECTION):
+        user_cp.add_section(_IRACING_SECTION)
+
+    for key, value in merged.items():
+        text = str(value)
+        try:
+            user_cp.set(_IRACING_SECTION, str(key).replace("iracing_", "", 1), text)
+        except Exception:
+            pass
+        try:
+            if not cfg.has_section(_IRACING_SECTION):
+                cfg.add_section(_IRACING_SECTION)
+            cfg.set(_IRACING_SECTION, str(key).replace("iracing_", "", 1), text)
+        except Exception:
+            pass
+
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with user_ini.open("w", encoding="utf-8") as fh:
+            user_cp.write(fh)
+    except Exception:
+        pass
+
+    telemetry_dir = str(merged.get("iracing_telemetry_dir", "")).strip()
+    if telemetry_dir:
+        try:
+            telemetry_path = Path(telemetry_dir)
+            if not telemetry_path.exists():
+                _LOG.warning("iRacing telemetry directory does not exist '%s'", telemetry_dir)
+            elif not telemetry_path.is_dir():
+                _LOG.warning("iRacing telemetry path is not a directory '%s'", telemetry_dir)
+        except Exception as exc:
+            _LOG.warning("could not validate iRacing telemetry directory '%s' (%s)", telemetry_dir, exc)
+
+    return merged
 
 
 def _persist_coaching_storage_dir_if_user_empty(effective_dir: str) -> None:

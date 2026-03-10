@@ -1723,6 +1723,130 @@ class DebugSettingsPanel(ttk.LabelFrame):
             self._error_var.set("Could not save debug settings.")
 
 
+class IRacingTelemetrySettingsPanel(ttk.LabelFrame):
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master, text="iRacing Telemetry", padding=12)
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=1)
+        self.columnconfigure(2, weight=0)
+        self._project_root = find_project_root(Path(__file__))
+        self._load_state()
+        self._build_ui()
+        self._update_path_hint()
+
+    def _load_state(self) -> None:
+        sel = persistence.load_iracing_settings()
+        self._telemetry_dir_var = tk.StringVar(value=str(sel.get("iracing_telemetry_dir", "")))
+        self._hint_var = tk.StringVar(value="")
+        self._error_var = tk.StringVar(value="")
+
+    def _build_ui(self) -> None:
+        row = 0
+        ttk.Label(
+            self,
+            text="Standard folder for future .ibt lookup tasks.",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        row += 1
+        ttk.Label(self, text="Telemetry folder").grid(row=row, column=0, sticky="w", pady=2)
+        folder_row = ttk.Frame(self)
+        folder_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(10, 0), pady=2)
+        folder_row.columnconfigure(0, weight=1)
+        ent_folder = ttk.Entry(folder_row, textvariable=self._telemetry_dir_var)
+        ent_folder.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        btn_browse = ttk.Button(folder_row, text="Browse...", command=self._browse_telemetry_dir)
+        btn_browse.grid(row=0, column=1, sticky="w")
+        ent_folder.bind("<Return>", self._commit)
+        ent_folder.bind("<FocusOut>", self._commit)
+
+        row += 1
+        ttk.Label(
+            self,
+            text=f"Default: {persistence.get_default_iracing_telemetry_dir()}",
+            justify="left",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(2, 2))
+
+        row += 1
+        ttk.Label(
+            self,
+            textvariable=self._hint_var,
+            foreground="#a66200",
+            justify="left",
+            wraplength=760,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(2, 2))
+
+        row += 1
+        ttk.Label(self, textvariable=self._error_var, foreground="#b00020").grid(
+            row=row,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(2, 0),
+        )
+
+    def _update_path_hint(self) -> None:
+        raw_value = str(self._telemetry_dir_var.get()).strip()
+        if not raw_value:
+            self._hint_var.set("")
+            return
+        resolved = persistence.get_iracing_telemetry_dir(raw_value)
+        try:
+            path_obj = Path(resolved)
+            if not path_obj.exists():
+                self._hint_var.set(f"Folder not found: {resolved}. The value is still saved.")
+                return
+            if not path_obj.is_dir():
+                self._hint_var.set(f"Path is not a folder: {resolved}. The value is still saved.")
+                return
+        except Exception:
+            self._hint_var.set(f"Could not validate folder: {resolved}")
+            return
+        self._hint_var.set("")
+
+    def _commit(self, _event=None) -> None:
+        try:
+            saved = persistence.save_iracing_settings(
+                {"iracing_telemetry_dir": str(self._telemetry_dir_var.get()).strip()}
+            )
+        except Exception:
+            self._error_var.set("Could not save iRacing telemetry settings.")
+            return
+        self._error_var.set("")
+        self._telemetry_dir_var.set(str(saved.get("iracing_telemetry_dir", "")))
+        self._update_path_hint()
+
+    def _browse_telemetry_dir(self) -> None:
+        try:
+            root = self.winfo_toplevel()
+        except Exception:
+            root = None
+        initial_dir = persistence.get_iracing_telemetry_dir(str(self._telemetry_dir_var.get()).strip())
+        browse_root = Path(initial_dir) if initial_dir else Path(persistence.get_default_iracing_telemetry_dir())
+        while not browse_root.exists() and browse_root.parent != browse_root:
+            browse_root = browse_root.parent
+        if not browse_root.exists():
+            browse_root = self._project_root
+        try:
+            chosen = filedialog.askdirectory(
+                parent=root,
+                title="Choose iRacing Telemetry Folder",
+                initialdir=str(browse_root),
+                mustexist=False,
+            )
+        except TypeError:
+            chosen = filedialog.askdirectory(
+                parent=root,
+                title="Choose iRacing Telemetry Folder",
+                initialdir=str(browse_root),
+            )
+        except Exception:
+            chosen = ""
+        if not chosen:
+            return
+        self._telemetry_dir_var.set(str(chosen))
+        self._commit()
+
+
 class SettingsView(ttk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master)
@@ -1732,7 +1856,7 @@ class SettingsView(ttk.Frame):
         frm = ttk.Frame(self, padding=20)
         frm.grid(row=0, column=0, sticky="nsew")
         frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(2, weight=1)
+        frm.rowconfigure(3, weight=1)
 
         ttk.Label(frm, text="Settings").grid(row=0, column=0, sticky="w", pady=(0, 10))
 
@@ -1741,11 +1865,14 @@ class SettingsView(ttk.Frame):
         btn_updates = ttk.Button(app_panel, text="Check for Updates", command=self._on_check_for_updates)
         btn_updates.grid(row=0, column=0, sticky="w")
 
+        iracing_panel = IRacingTelemetrySettingsPanel(frm)
+        iracing_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+
         coaching_panel = CoachingRecordingSettingsPanel(frm)
-        coaching_panel.grid(row=2, column=0, sticky="new")
+        coaching_panel.grid(row=3, column=0, sticky="new")
 
         debug_panel = DebugSettingsPanel(frm)
-        debug_panel.grid(row=3, column=0, sticky="new", pady=(12, 0))
+        debug_panel.grid(row=4, column=0, sticky="new", pady=(12, 0))
 
     def _on_check_for_updates(self) -> None:
         try:
