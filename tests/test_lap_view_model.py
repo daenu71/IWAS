@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -13,12 +14,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from core.coaching.ibt_track_extractor import _normalise_exported_center_line_orientation  # noqa: E402
 from core.coaching.lap_view_model import (  # noqa: E402
     CornerInfo,
     Event,
     LapMeta,
     LapViewModel,
+    _reconstruct_track_geometry,
 )
+from core.coaching.track_orientation import orient_track_display_frame  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +327,8 @@ def test_load_full_artefact_set(tmp_path: Path) -> None:
     assert vm.lap_dist_pct.shape == (_N,)
     assert vm.track_xy.shape == (_N, 2)
     assert vm.track_xy_source == "dead_reckoning"
-    assert vm.track_xy_is_closed is False
-    assert float(vm.track_xy[:, 0].min()) >= 0.0
+    assert vm.track_xy_is_closed is True
+    assert vm.track_xy[0] == pytest.approx([0.0, 0.0], abs=1e-6)
     assert float(np.ptp(vm.track_xy[:, 0])) > 1.0
     assert float(np.ptp(vm.track_xy[:, 1])) > 1.0
 
@@ -426,11 +430,14 @@ def test_load_prefers_xy_over_latlon_and_dead_reckoning(tmp_path: Path) -> None:
     )
 
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
+    expected_xy = orient_track_display_frame(
+        np.column_stack([x.astype(np.float64), y.astype(np.float64)]),
+        np.linspace(0.0, 1.0, _N, dtype=np.float64),
+    ).xy
 
     assert vm.track_xy_source == "xy"
     assert vm.track_xy_is_closed is False
-    assert np.allclose(vm.track_xy[:, 0], x.astype(np.float64))
-    assert np.allclose(vm.track_xy[:, 1], y.astype(np.float64))
+    assert np.allclose(vm.track_xy, expected_xy)
 
 
 def test_load_prefers_latlon_over_dead_reckoning(tmp_path: Path) -> None:
@@ -459,11 +466,12 @@ def test_load_prefers_latlon_over_dead_reckoning(tmp_path: Path) -> None:
     assert vm.track_xy_source == "latlon"
     assert vm.track_xy_is_closed is True
     assert vm.track_xy.shape == (_N, 2)
+    assert vm.track_xy[0] == pytest.approx([0.0, 0.0], abs=1e-6)
     assert np.ptp(vm.track_xy[:, 0]) > 1.0
     assert np.ptp(vm.track_xy[:, 1]) > 1.0
 
 
-def test_dead_reckoning_fallback_stays_open(tmp_path: Path) -> None:
+def test_dead_reckoning_fallback_uses_shared_display_orientation(tmp_path: Path) -> None:
     session_dir = _make_session_dir(tmp_path)
     _write_session_meta(session_dir)
     _write_lap_meta(session_dir, run_id=1, lap_no=1)
@@ -482,10 +490,11 @@ def test_dead_reckoning_fallback_stays_open(tmp_path: Path) -> None:
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
 
     assert vm.track_xy_source == "dead_reckoning"
-    assert vm.track_xy_is_closed is False
+    assert vm.track_xy_is_closed is True
     start = vm.track_xy[0]
     end = vm.track_xy[-1]
-    assert float(np.hypot(*(end - start))) > 1.0
+    assert start == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert float(np.hypot(*(end - start))) <= 1.0
     assert speed.shape == (_N,)
     assert float(speed.min()) > 0.0  # sanity: positive speed values
 
@@ -493,6 +502,30 @@ def test_dead_reckoning_fallback_stays_open(tmp_path: Path) -> None:
     missing = vm.get_resampled_channel("NonExistentChannel")
     assert isinstance(missing, np.ndarray)
     assert missing.size == 0
+
+
+def test_reconstruct_dead_reckoning_uses_canonical_negative_y_convention() -> None:
+    yaw_geometry = _reconstruct_track_geometry(
+        {
+            "SessionTime": [0.0, 1.0],
+            "Speed": [10.0, 10.0],
+            "Yaw": [math.pi / 2.0, math.pi / 2.0],
+        },
+        2,
+    )
+    velocity_geometry = _reconstruct_track_geometry(
+        {
+            "SessionTime": [0.0, 1.0],
+            "VelocityX": [0.0, 0.0],
+            "VelocityY": [10.0, 10.0],
+        },
+        2,
+    )
+
+    assert yaw_geometry.source == "dead_reckoning"
+    assert velocity_geometry.source == "dead_reckoning"
+    assert float(yaw_geometry.track_xy[1, 1]) < 0.0
+    assert float(velocity_geometry.track_xy[1, 1]) < 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -542,45 +575,75 @@ def test_load_meta_falls_back_to_session_info_environment(tmp_path: Path) -> Non
     assert vm.meta.environment["air_pressure_hpa"] == pytest.approx(1009.1)
 
 
-def test_load_track_road_geometry_when_present_preserves_lap_xy(tmp_path: Path) -> None:
+def test_load_track_road_geometry_when_present_matches_exported_display_frame(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     session_dir = _make_session_dir(tmp_path)
     _write_session_meta(session_dir)
     _write_lap_meta(session_dir, run_id=1, lap_no=1)
     lap_dir = _make_lap_dir(session_dir, lap_no=1)
-    x = np.array([10.0, 20.0, 32.0, 44.0, 57.0], dtype=np.float32)
-    y = np.array([1.0, 6.0, 9.0, 7.0, 2.0], dtype=np.float32)
+    lap_dist_pct = np.array([0.0, 0.005, 0.02, 0.50, 1.0], dtype=np.float32)
+    raw_xy = np.array(
+        [
+            [10.0, 20.0],
+            [11.0, 20.0],
+            [10.0, 24.0],
+            [14.0, 24.0],
+            [10.0, 20.0],
+        ],
+        dtype=np.float32,
+    )
     _write_resampled(
         lap_dir,
-        n=len(x),
-        extra_cols={"X": x, "Y": y},
+        n=len(raw_xy),
+        extra_cols={
+            "LapDistPct": lap_dist_pct,
+            "X": raw_xy[:, 0],
+            "Y": raw_xy[:, 1],
+        },
         include_defaults=False,
     )
+    exported_center_line = _normalise_exported_center_line_orientation(
+        [
+            {
+                "lap_dist_pct": float(ldp),
+                "lat": 47.0 + idx * 1.0e-4,
+                "lon": 8.0 + idx * 1.0e-4,
+                "x_m": float(x_m),
+                "y_m": float(y_m),
+            }
+            for idx, (ldp, (x_m, y_m)) in enumerate(zip(lap_dist_pct.tolist(), raw_xy.tolist()))
+        ]
+    ).center_line
     _write_track_road_geometry(
         tmp_path,
-        center_line=_ibt_center_line_points([
-            [0.10, 0.50],
-            [0.30, 0.65],
-            [0.50, 0.72],
-            [0.70, 0.65],
-            [0.90, 0.50],
-        ]),
+        center_line=exported_center_line,
         left_edge=[],
         right_edge=[],
     )
 
+    caplog.set_level("INFO", logger="core.coaching.lap_view_model")
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
+    saved_center_line = np.asarray(
+        [_track_point_xy(point) for point in exported_center_line],
+        dtype=np.float64,
+    )
 
     assert vm.track_road_geometry is not None
     assert vm.track_road_geometry["track_key"] == "Spa-Francorchamps__Full__unknown_class"
     assert vm.track_road_geometry["source_type"] == "ibt"
     assert len(vm.track_road_geometry["center_line"]) == 5
-    assert vm.track_road_geometry["center_line"][0] == pytest.approx([0.10, 0.50])
+    assert vm.track_road_geometry["center_line"][0] == pytest.approx(saved_center_line[0].tolist())
     assert vm.track_road_geometry["left_edge"] == []
     assert vm.track_road_geometry["right_edge"] == []
     assert vm.track_xy_source == "xy"
-    assert np.allclose(vm.track_xy[:, 0], x.astype(np.float64))
-    assert np.allclose(vm.track_xy[:, 1], y.astype(np.float64))
-    assert not np.allclose(vm.track_xy, np.asarray(vm.track_road_geometry["center_line"], dtype=np.float64))
+    assert np.allclose(vm.track_xy, saved_center_line)
+    assert vm.lap_dist_pct.tolist() == pytest.approx(lap_dist_pct.tolist())
+    assert vm.track_xy[0] == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert "track_xy_source=xy" in caplog.text
+    assert "normalisation_rule=start_finish_tangent" in caplog.text
+    assert "orientation_transform=translate=start_anchor_to_origin" in caplog.text
 
 
 def test_load_track_road_geometry_when_missing(tmp_path: Path) -> None:

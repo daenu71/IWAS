@@ -20,8 +20,18 @@ if _SRC_DIR not in sys.path:
 
 try:
     from .track_key import build_track_key
+    from .track_orientation import (
+        DEFAULT_START_TANGENT_LOOKAHEAD_PCT,
+        DISPLAY_ORIENTATION_RULE,
+        orient_track_display_frame,
+    )
 except ImportError:
     from core.coaching.track_key import build_track_key  # type: ignore[no-redef]
+    from core.coaching.track_orientation import (  # type: ignore[no-redef]
+        DEFAULT_START_TANGENT_LOOKAHEAD_PCT,
+        DISPLAY_ORIENTATION_RULE,
+        orient_track_display_frame,
+    )
 
 try:
     from core.irsdk.channels import REQUESTED_CHANNEL_ALIASES
@@ -38,8 +48,8 @@ _REFERENCE_LAP_START_MAX_PCT: float = 0.02
 _REFERENCE_LAP_END_MIN_PCT: float = 0.98
 _REFERENCE_LAP_MIN_CLOSURE_GAP_M: float = 20.0
 _REFERENCE_LAP_CLOSURE_MEDIAN_STEP_FACTOR: float = 3.0
-_EXPORT_ORIENTATION_RULE: str = "start_finish_tangent"
-_EXPORT_START_TANGENT_LOOKAHEAD_PCT: float = 0.01
+_EXPORT_ORIENTATION_RULE: str = DISPLAY_ORIENTATION_RULE
+_EXPORT_START_TANGENT_LOOKAHEAD_PCT: float = DEFAULT_START_TANGENT_LOOKAHEAD_PCT
 _IBT_INVENTORY_CANDIDATES: tuple[str, ...] = (
     "Lat",
     "Lon",
@@ -1629,21 +1639,22 @@ def _normalise_exported_center_line_orientation(
             after_last=None,
         )
 
-    start_anchor_index = _find_start_anchor_index(center_line)
     xy_before = np.asarray(
         [[float(point["x_m"]), float(point["y_m"])] for point in center_line],
         dtype=np.float64,
     )
-    start_tangent = _find_start_tangent_vector(center_line, xy_before, start_anchor_index)
-    xy_after, rotation_rad, mirrored = _normalise_trackmap_orientation_impl(
-        xy_before,
-        start_anchor_index=start_anchor_index,
-        start_tangent=start_tangent,
+    lap_dist_pct = np.asarray(
+        [float(point["lap_dist_pct"]) for point in center_line],
+        dtype=np.float64,
     )
-    applied = not np.allclose(xy_before, xy_after, rtol=0.0, atol=1e-9)
+    orientation = orient_track_display_frame(
+        xy_before,
+        lap_dist_pct,
+        lookahead_pct=_EXPORT_START_TANGENT_LOOKAHEAD_PCT,
+    )
 
     normalised_center_line: list[dict[str, float]] = []
-    for point, xy in zip(center_line, xy_after):
+    for point, xy in zip(center_line, orientation.xy):
         row = dict(point)
         row["x_m"] = float(xy[0])
         row["y_m"] = float(xy[1])
@@ -1651,18 +1662,18 @@ def _normalise_exported_center_line_orientation(
 
     return _OrientationNormalisationResult(
         center_line=normalised_center_line,
-        rule=_EXPORT_ORIENTATION_RULE,
-        transform=_build_orientation_transform_string(rotation_rad, mirrored),
-        applied=applied,
-        start_anchor_lap_dist_pct=float(center_line[start_anchor_index]["lap_dist_pct"]),
-        start_anchor_xy_before=(float(xy_before[start_anchor_index, 0]), float(xy_before[start_anchor_index, 1])),
-        start_tangent_before=None if start_tangent is None else (float(start_tangent[0]), float(start_tangent[1])),
-        rotation_deg=None if rotation_rad is None else math.degrees(rotation_rad),
-        mirrored=mirrored,
-        before_first=(float(xy_before[0, 0]), float(xy_before[0, 1])),
-        before_last=(float(xy_before[-1, 0]), float(xy_before[-1, 1])),
-        after_first=(float(xy_after[0, 0]), float(xy_after[0, 1])),
-        after_last=(float(xy_after[-1, 0]), float(xy_after[-1, 1])),
+        rule=orientation.rule,
+        transform=orientation.transform,
+        applied=orientation.applied,
+        start_anchor_lap_dist_pct=orientation.start_anchor_lap_dist_pct,
+        start_anchor_xy_before=orientation.start_anchor_xy_before,
+        start_tangent_before=orientation.start_tangent_before,
+        rotation_deg=orientation.rotation_deg,
+        mirrored=orientation.mirrored,
+        before_first=orientation.before_first,
+        before_last=orientation.before_last,
+        after_first=orientation.after_first,
+        after_last=orientation.after_last,
     )
 
 
@@ -1721,113 +1732,18 @@ def _project_latlon_to_xy(lat: np.ndarray, lon: np.ndarray) -> np.ndarray | None
     return np.column_stack([east_m, north_m])
 
 
-def _find_start_anchor_index(center_line: list[dict[str, float]]) -> int:
-    best_idx = 0
-    best_key = (math.inf, math.inf, math.inf)
-    for idx, point in enumerate(center_line):
-        lap_dist_pct = float(point["lap_dist_pct"])
-        key = (abs(lap_dist_pct), lap_dist_pct, idx)
-        if key < best_key:
-            best_key = key
-            best_idx = idx
-    return best_idx
-
-
-def _find_start_tangent_vector(
-    center_line: list[dict[str, float]],
-    xy: np.ndarray,
-    start_anchor_index: int,
-) -> np.ndarray | None:
-    if len(center_line) < 2 or len(xy) != len(center_line):
-        return None
-
-    start_lap_dist_pct = float(center_line[start_anchor_index]["lap_dist_pct"])
-    candidates: list[tuple[float, np.ndarray]] = []
-    for idx, point in enumerate(center_line):
-        if idx == start_anchor_index:
-            continue
-        lap_dist_pct = float(point["lap_dist_pct"])
-        delta = lap_dist_pct - start_lap_dist_pct
-        if delta < 0.0:
-            delta += 1.0
-        if delta <= 1.0e-9 or delta >= 1.0 - 1.0e-9:
-            continue
-        tangent = np.asarray(xy[idx] - xy[start_anchor_index], dtype=np.float64)
-        if not np.all(np.isfinite(tangent)) or float(np.linalg.norm(tangent)) <= 1.0e-9:
-            continue
-        candidates.append((delta, tangent))
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: item[0])
-    for delta, tangent in candidates:
-        if delta >= _EXPORT_START_TANGENT_LOOKAHEAD_PCT - 1.0e-9:
-            return tangent
-    return candidates[0][1]
-
-
-def _build_orientation_transform_string(rotation_rad: float | None, mirrored: bool) -> str:
-    if rotation_rad is None:
-        rotation_text = "rotate=none"
-    else:
-        rotation_text = f"rotate={math.degrees(rotation_rad):.6f}deg"
-    mirror_text = "mirror_x=yes" if mirrored else "mirror_x=no"
-    return f"translate=start_anchor_to_origin,{rotation_text},{mirror_text}"
-
-
-def _normalise_trackmap_orientation_impl(
-    xy: np.ndarray,
-    *,
-    start_anchor_index: int = 0,
-    start_tangent: np.ndarray | None = None,
-) -> tuple[np.ndarray, float | None, bool]:
-    if xy is None or len(xy) == 0:
-        return np.empty((0, 2), dtype=np.float64), None, False
-
+def _normalise_trackmap_orientation(xy: np.ndarray) -> np.ndarray:
     xy_arr = np.asarray(xy, dtype=np.float64)
     if xy_arr.ndim != 2 or xy_arr.shape[1] != 2:
         raise ValueError("xy must have shape (n, 2)")
-
-    start_anchor_index = min(max(int(start_anchor_index), 0), len(xy_arr) - 1)
-    translated = xy_arr - xy_arr[start_anchor_index]
-
-    tangent = start_tangent
-    if tangent is None:
-        for idx in range(len(translated)):
-            if idx == start_anchor_index:
-                continue
-            candidate = np.asarray(xy_arr[idx] - xy_arr[start_anchor_index], dtype=np.float64)
-            if np.all(np.isfinite(candidate)) and float(np.linalg.norm(candidate)) > 1.0e-9:
-                tangent = candidate
-                break
-
-    if tangent is None or not np.all(np.isfinite(tangent)) or float(np.linalg.norm(tangent)) <= 1.0e-9:
-        return translated, None, False
-
-    tangent_x = float(tangent[0])
-    tangent_y = float(tangent[1])
-    current_angle = math.atan2(tangent_y, tangent_x)
-    target_angle = -math.pi / 2.0
-    rotation_rad = target_angle - current_angle
-    cos_a = math.cos(rotation_rad)
-    sin_a = math.sin(rotation_rad)
-    rotation_matrix = np.asarray([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float64)
-    rotated = translated @ rotation_matrix.T
-
-    max_x = float(np.max(rotated[:, 0]))
-    min_x = float(np.min(rotated[:, 0]))
-    mirrored = max_x > abs(min_x) + 1.0e-9
-    if mirrored:
-        rotated = rotated.copy()
-        rotated[:, 0] *= -1.0
-    rotated[np.abs(rotated) <= 1.0e-12] = 0.0
-    return rotated, rotation_rad, mirrored
-
-
-def _normalise_trackmap_orientation(xy: np.ndarray) -> np.ndarray:
-    oriented, _rotation_rad, _mirrored = _normalise_trackmap_orientation_impl(xy)
-    return oriented
+    if len(xy_arr) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    lap_dist_pct = np.linspace(0.0, 1.0, len(xy_arr), dtype=np.float64)
+    return orient_track_display_frame(
+        xy_arr,
+        lap_dist_pct,
+        lookahead_pct=_EXPORT_START_TANGENT_LOOKAHEAD_PCT,
+    ).xy
 
 
 def _integrate_velocity(ir: Any) -> np.ndarray:

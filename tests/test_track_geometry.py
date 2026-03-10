@@ -227,6 +227,46 @@ def test_render_corner_zoom_with_road_geometry_draws_extra_canvas_items() -> Non
     assert len(canvas_with_road.items) > len(canvas_without_road.items)
 
 
+def test_render_corner_zoom_preserves_input_segment_without_extra_rotation() -> None:
+    xy = _sample_xy()
+    lap_dist_pct = np.linspace(0.0, 1.0, len(xy))
+    corner = CornerInfo(
+        corner_id=1,
+        start_lapdist_pct=0.20,
+        end_lapdist_pct=0.80,
+        corner_type="sweeper",
+    )
+    canvas = FakeCanvas()
+
+    render_corner_zoom(
+        canvas=canvas,
+        xy=xy,
+        corner=corner,
+        events=[],
+        width=320,
+        height=240,
+        lap_dist_pct=lap_dist_pct,
+        lo=0.20,
+        hi=0.80,
+    )
+
+    lap_args, _lap_kwargs = _line_item(canvas, "zoom_lapline")
+    indices = np.where((lap_dist_pct >= 0.20) & (lap_dist_pct <= 0.80))[0]
+    seg_xy = xy[indices]
+    x_min = float(np.min(seg_xy[:, 0]))
+    y_min = float(np.min(seg_xy[:, 1]))
+    seg_scale = max(float(np.max(seg_xy[:, 0]) - x_min), float(np.max(seg_xy[:, 1]) - y_min)) or 1.0
+    seg_norm = np.column_stack(
+        [
+            (seg_xy[:, 0] - x_min) / seg_scale,
+            (seg_xy[:, 1] - y_min) / seg_scale,
+        ]
+    )
+    expected = _transform_zoom(seg_norm, 320, 240, 1.0, (0.0, 0.0), fit_context=canvas._fit_context).flatten().tolist()
+
+    assert np.allclose(lap_args[0], expected)
+
+
 def test_render_trackmap_accepts_center_line_only_road_geometry_and_logs_bbox(
     caplog,
 ) -> None:

@@ -20,6 +20,7 @@ from core.coaching.ibt_track_extractor import (  # noqa: E402
     extract_track_geometry,
     read_ibt_session_metadata,
 )
+from core.coaching.track_orientation import DISPLAY_ORIENTATION_RULE, orient_track_display_frame  # noqa: E402
 
 
 def _make_session_yaml(
@@ -653,6 +654,32 @@ def test_normalise_exported_center_line_orientation_uses_lookahead_tangent_and_p
     assert fourth["y_m"] < 0.0
     assert last["x_m"] == pytest.approx(0.0, abs=1e-6)
     assert last["y_m"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_shared_display_orientation_matches_export_normalisation() -> None:
+    lap_dist_pct = [0.0, 0.005, 0.02, 0.50, 1.0]
+    raw_xy = np.array(
+        [
+            [10.0, 20.0],
+            [11.0, 20.0],
+            [10.0, 24.0],
+            [14.0, 24.0],
+            [10.0, 20.0],
+        ],
+        dtype=np.float64,
+    )
+
+    shared = orient_track_display_frame(raw_xy, np.asarray(lap_dist_pct, dtype=np.float64))
+    exported = _normalise_exported_center_line_orientation(_make_center_line_points(lap_dist_pct, raw_xy))
+    exported_xy = np.asarray(
+        [[point["x_m"], point["y_m"]] for point in exported.center_line],
+        dtype=np.float64,
+    )
+
+    assert shared.rule == DISPLAY_ORIENTATION_RULE
+    assert exported.rule == DISPLAY_ORIENTATION_RULE
+    np.testing.assert_allclose(shared.xy, exported_xy)
+    assert [point["lap_dist_pct"] for point in exported.center_line] == pytest.approx(lap_dist_pct)
 
 
 def test_normalise_trackmap_orientation_places_start_tangent_down_and_start_on_right() -> None:

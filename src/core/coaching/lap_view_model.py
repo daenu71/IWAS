@@ -31,6 +31,7 @@ from core.irsdk.sessioninfo_parser import resolve_session_environment
 
 from .corner_map import load_corner_map
 from .track_key import build_track_key
+from .track_orientation import TrackDisplayOrientationResult, orient_track_display_frame
 
 if TYPE_CHECKING:
     from .track_geometry import TrackRoadGeometry
@@ -318,7 +319,7 @@ def _load_resampled_geometry(
 ) -> TrackGeometryData:
     """Return track geometry plus metadata from lap_resampled.parquet.
 
-    track_xy is (N, 2) in raw world coordinates (meters).  XY reconstruction priority:
+    track_xy is returned in the shared final display frame. Reconstruction priority:
       1. Direct X/Y world-frame columns.
       2. Lat/Lon projected to local meters.
       3. Dead-reckoning via Speed × cos/sin(Yaw) × dt.
@@ -354,6 +355,8 @@ def _load_resampled_geometry(
 
     ldp = _col_to_float64(data.get("LapDistPct", []))
     geometry = _reconstruct_track_geometry(data, n)
+    geometry, orientation = _orient_track_geometry_for_display(geometry, ldp)
+    _log_track_xy_orientation(geometry.source, orientation)
     return TrackGeometryData(
         lap_dist_pct=ldp,
         track_xy=geometry.track_xy,
@@ -411,13 +414,14 @@ def _reconstruct_track_geometry(data: dict[str, Any], n: int) -> TrackGeometryDa
         sp_safe = np.where(np.isfinite(sp), sp, 0.0)
         yaw_safe = np.where(np.isfinite(yaw), yaw, 0.0)
         x = np.cumsum(sp_safe * np.cos(yaw_safe) * dt)
-        y = np.cumsum(sp_safe * np.sin(yaw_safe) * dt)
+        y = np.cumsum(-sp_safe * np.sin(yaw_safe) * dt)
+        x, y = _close_loop(x, y)
         if np.ptp(x) > 1.0 or np.ptp(y) > 1.0:
             return TrackGeometryData(
                 lap_dist_pct=np.empty(0, dtype=np.float64),
                 track_xy=np.column_stack([x, y]),
                 source="dead_reckoning",
-                is_closed=False,
+                is_closed=_geometry_is_closed(x, y),
             )
 
     # 4 – Fallback: raw VelocityX/VelocityY
@@ -431,12 +435,13 @@ def _reconstruct_track_geometry(data: dict[str, Any], n: int) -> TrackGeometryDa
             is_closed=False,
         )
     x = np.cumsum(np.where(np.isfinite(vx), vx, 0.0) * dt)
-    y = np.cumsum(np.where(np.isfinite(vy), vy, 0.0) * dt)
+    y = np.cumsum(-np.where(np.isfinite(vy), vy, 0.0) * dt)
+    x, y = _close_loop(x, y)
     return TrackGeometryData(
         lap_dist_pct=np.empty(0, dtype=np.float64),
         track_xy=np.column_stack([x, y]),
         source="dead_reckoning",
-        is_closed=False,
+        is_closed=_geometry_is_closed(x, y),
     )
 
 
@@ -519,6 +524,57 @@ def _log_track_geometry_debug(vm: LapViewModel) -> None:
     )
 
 
+def _orient_track_geometry_for_display(
+    geometry: TrackGeometryData,
+    lap_dist_pct: np.ndarray,
+) -> tuple[TrackGeometryData, TrackDisplayOrientationResult | None]:
+    if len(geometry.track_xy) == 0:
+        return geometry, None
+
+    orientation = orient_track_display_frame(geometry.track_xy, lap_dist_pct)
+    return (
+        TrackGeometryData(
+            lap_dist_pct=geometry.lap_dist_pct,
+            track_xy=orientation.xy,
+            source=geometry.source,
+            is_closed=geometry.is_closed,
+        ),
+        orientation,
+    )
+
+
+def _log_track_xy_orientation(
+    track_xy_source: str,
+    orientation: TrackDisplayOrientationResult | None,
+) -> None:
+    if orientation is None:
+        _LOG.info(
+            "[track_xy_orientation] track_xy_source=%s normalisation_applied=no normalisation_rule=none applied_rotation_deg=nan applied_mirror_x=no orientation_transform=identity(empty_track_xy)",
+            track_xy_source,
+        )
+        return
+
+    _LOG.info(
+        "[track_xy_orientation] track_xy_source=%s normalisation_applied=%s normalisation_rule=%s start_anchor_lap_dist_pct=%s applied_rotation_deg=%s applied_mirror_x=%s orientation_transform=%s",
+        track_xy_source,
+        "yes" if orientation.applied else "no",
+        orientation.rule,
+        "nan" if orientation.start_anchor_lap_dist_pct is None else f"{orientation.start_anchor_lap_dist_pct:.6f}",
+        "nan" if orientation.rotation_deg is None else f"{orientation.rotation_deg:.6f}",
+        "yes" if orientation.mirrored else "no",
+        orientation.transform,
+    )
+    _LOG.debug(
+        "[track_xy_orientation_debug] track_xy_source=%s before_first=%s before_last=%s after_first=%s after_last=%s start_tangent_before=%s",
+        track_xy_source,
+        orientation.before_first,
+        orientation.before_last,
+        orientation.after_first,
+        orientation.after_last,
+        orientation.start_tangent_before,
+    )
+
+
 def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Normalise x and y to [0, 1] preserving aspect ratio."""
     x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
@@ -529,6 +585,14 @@ def _normalise_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     xn = (x - x_min) / scale
     yn = (y - y_min) / scale
     return np.column_stack([xn, yn])
+
+
+def _close_loop(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    n = len(x)
+    if n < 2:
+        return x, y
+    t = np.arange(n, dtype=np.float64) / n
+    return x - t * (x[-1] - x[0]), y - t * (y[-1] - y[0])
 
 
 # ---------------------------------------------------------------------------
