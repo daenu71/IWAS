@@ -379,11 +379,11 @@ class EventSpriteCache:
             draw.polygon(fg_pts, outline=fg, fill=None, width=2)
 
         elif event_type == "crest":
-            # Background: rectangle below arc
+            # Background: filled circle (consistent with other bg-sprites)
             if bg:
-                draw.rectangle([cx - r_bg, cy - 2, cx + r_bg, cy + r_bg],
-                               fill=bg)
-            # Symbol: upper half-circle arc
+                draw.ellipse([cx - r_bg, cy - r_bg, cx + r_bg, cy + r_bg],
+                             fill=bg)
+            # Symbol: upper half-circle arc (⌒)
             draw.arc([cx - r, cy - r, cx + r, cy + r],
                      start=180, end=0, fill=fg, width=2)
 
