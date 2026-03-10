@@ -44,7 +44,8 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _CORNER_ZOOM_LEGEND_ITEMS = (
     ("brake_start", "\u25bc", "#CC2222"),
     ("peak_brake", "\u25cf", "#770000", "brake_peak"),
-    ("turn_in", "\u25c0", "#FF8800"),
+    ("turn_in_rate_based", "\u25c0", "#FF8800", "turn_in"),
+    ("turn_in_angle_based", "\u25c4", "#FFAA44", "turn_in_a"),
     ("min_speed", "\u2605", "#FFDD00"),
     ("throttle_on", "\u25b2", "#88FF44"),
     ("throttle_off", "\u25b2", "#88FF88"),
@@ -60,9 +61,9 @@ _CORNER_ZOOM_LEGEND_ITEMS = (
 )
 _TRACKMAP_LEGEND_ITEMS = (
     # (event_name, display_label, color)
-    ("brake_start",       "brake_start",   "#CC2222"),
-    ("turn_in",           "turn_in",       "#FF8800"),
-    ("min_speed",         "min_speed",     "#FFDD00"),
+    ("brake_start",         "brake_start",   "#CC2222"),
+    ("turn_in_rate_based",  "turn_in",       "#FF8800"),
+    ("min_speed",           "min_speed",     "#FFDD00"),
     ("throttle_full",     "throttle_full", "#00CC00"),
     ("offtrack_incident", "offtrack",      "#CC0000"),
     ("loose_control",     "loose_control", "#CC0000"),
