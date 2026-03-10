@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from core.coaching.ibt_track_extractor import (  # noqa: E402
     _compute_normals,
+    _normalise_trackmap_orientation,
     _read_track_key,
     build_ibt_inventory_report,
     extract_track_geometry,
@@ -397,6 +398,14 @@ def test_extract_logs_geo_pipeline_counts_and_debug_samples(tmp_path: Path, capl
         and "before_json_write_count=5" in message
         for message in info_messages
     )
+    assert any(
+        "selected_reference_lap=0" in message
+        and "min_lap_dist_pct=0.000000" in message
+        and "max_lap_dist_pct=0.990000" in message
+        and "point_count=5" in message
+        and "closure_gap_m=" in message
+        for message in info_messages
+    )
     assert any("valid_geo_samples_head=" in message for message in debug_messages)
     assert any("valid_geo_samples_tail=" in message for message in debug_messages)
 
@@ -485,3 +494,97 @@ def test_build_ibt_inventory_report_surfaces_missing_exact_channel_names(tmp_pat
     assert report["lat_lon_centerline_viability"]["source_channels"]["Lat"] == "Latitude"
     assert report["lat_lon_centerline_viability"]["source_channels"]["Lon"] == "Longitude"
     assert report["recommendation"]["status"] == "usable"
+
+
+def test_extract_prefers_full_reference_lap_over_history_excerpt(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    samples = [
+        (0.030, 47.100030, 8.100000),
+        (0.260, 47.100260, 8.100020),
+        (0.510, 47.100360, 8.100180),
+        (0.760, 47.100180, 8.100360),
+        (0.999, 47.100020, 8.100010),
+        (0.000, 47.200000, 8.200000),
+        (0.330, 47.200250, 8.200000),
+        (0.660, 47.200250, 8.200350),
+        (0.990, 47.200005, 8.200010),
+    ]
+    fake_ibt = _FakeIBT(
+        _make_geo_channel_values(samples),
+        session_yaml=_make_session_yaml("Spa", "Grand Prix"),
+    )
+    ibt_file = tmp_path / "spa.ibt"
+    ibt_file.touch()
+
+    caplog.set_level("INFO", logger="core.coaching.ibt_track_extractor")
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        out = extract_track_geometry(ibt_file, tmp_path)
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    lap_dist_pct = [point["lap_dist_pct"] for point in payload["center_line"]]
+    assert lap_dist_pct[0] == pytest.approx(0.0)
+    assert lap_dist_pct[-1] == pytest.approx(1.0)
+    assert payload["center_line"][0]["lat"] == pytest.approx(47.2)
+    assert payload["center_line"][1]["lap_dist_pct"] == pytest.approx(1.0 / 3.0)
+    assert any(
+        "selected_reference_lap=1" in record.getMessage()
+        and "min_lap_dist_pct=0.000000" in record.getMessage()
+        and "max_lap_dist_pct=0.990000" in record.getMessage()
+        for record in caplog.records
+        if record.levelname == "INFO"
+    )
+
+
+def test_extract_full_reference_lap_closes_centerline_when_gap_is_plausible(tmp_path: Path) -> None:
+    fake_ibt = _FakeIBT(
+        _make_geo_channel_values(
+            [
+                (0.000, 47.000000, 8.000000),
+                (0.250, 47.000250, 8.000000),
+                (0.500, 47.000250, 8.000350),
+                (0.750, 47.000000, 8.000350),
+                (0.990, 47.000005, 8.000010),
+            ]
+        ),
+        session_yaml=_make_session_yaml("Sebring", "Full Course"),
+    )
+    ibt_file = tmp_path / "closed_ref.ibt"
+    ibt_file.touch()
+
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        out = extract_track_geometry(ibt_file, tmp_path)
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    first = payload["center_line"][0]
+    last = payload["center_line"][-1]
+    assert first["lap_dist_pct"] == pytest.approx(0.0)
+    assert last["lap_dist_pct"] == pytest.approx(1.0)
+    assert last["x_m"] == pytest.approx(first["x_m"])
+    assert last["y_m"] == pytest.approx(first["y_m"])
+    assert payload["left_edge"] == []
+    assert payload["right_edge"] == []
+
+
+def test_normalise_trackmap_orientation_is_stable_and_deterministic() -> None:
+    raw_xy = np.array(
+        [
+            [0.0, 0.0],
+            [12.0, 0.0],
+            [12.0, 5.0],
+        ],
+        dtype=np.float64,
+    )
+    oriented_once = _normalise_trackmap_orientation(raw_xy)
+    oriented_twice = _normalise_trackmap_orientation(raw_xy)
+
+    np.testing.assert_allclose(oriented_once, oriented_twice)
+    np.testing.assert_allclose(
+        oriented_once,
+        np.array(
+            [
+                [0.0, -0.0],
+                [0.0, -12.0],
+                [5.0, -12.0],
+            ],
+            dtype=np.float64,
+        ),
+    )

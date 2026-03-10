@@ -34,6 +34,10 @@ except ImportError:
 _EDGE_OFFSET_M: float = 5.0
 _IBT_SAMPLE_DT: float = 1.0 / 60.0
 _MAX_FRAMES: int = 200_000
+_REFERENCE_LAP_START_MAX_PCT: float = 0.02
+_REFERENCE_LAP_END_MIN_PCT: float = 0.98
+_REFERENCE_LAP_MIN_CLOSURE_GAP_M: float = 20.0
+_REFERENCE_LAP_CLOSURE_MEDIAN_STEP_FACTOR: float = 3.0
 _IBT_INVENTORY_CANDIDATES: tuple[str, ...] = (
     "Lat",
     "Lon",
@@ -88,6 +92,25 @@ class _GeoPipelineResult:
     debug_valid_geo_samples_head: list[dict[str, float | None]]
     debug_valid_geo_samples_tail: list[dict[str, float | None]]
     center_line: list[dict[str, float]]
+    selected_reference_lap: int | None
+    selected_reference_min_lap_dist_pct: float | None
+    selected_reference_max_lap_dist_pct: float | None
+    selected_reference_point_count: int
+    selected_reference_closure_gap_m: float | None
+    selected_reference_is_valid: bool
+
+
+@dataclass(frozen=True)
+class _GeoLapSelection:
+    lap_index: int
+    sorted_samples: list[dict[str, float | None]]
+    deduped_samples: list[dict[str, float | None]]
+    min_lap_dist_pct: float
+    max_lap_dist_pct: float
+    point_count: int
+    closure_gap_m: float | None
+    coverage: float
+    is_valid_reference_lap: bool
 
 
 def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Path:
@@ -592,6 +615,12 @@ def _geo_pipeline_result_to_viability_report(result: _GeoPipelineResult) -> dict
         "debug_valid_geo_samples_head": list(result.debug_valid_geo_samples_head),
         "debug_valid_geo_samples_tail": list(result.debug_valid_geo_samples_tail),
         "center_line_point_count": len(result.center_line),
+        "selected_reference_lap": result.selected_reference_lap,
+        "selected_reference_min_lap_dist_pct": result.selected_reference_min_lap_dist_pct,
+        "selected_reference_max_lap_dist_pct": result.selected_reference_max_lap_dist_pct,
+        "selected_reference_point_count": result.selected_reference_point_count,
+        "selected_reference_closure_gap_m": result.selected_reference_closure_gap_m,
+        "selected_reference_is_valid": result.selected_reference_is_valid,
     }
 
 
@@ -642,6 +671,12 @@ def _build_latlon_centerline_pipeline(
             debug_valid_geo_samples_head=[],
             debug_valid_geo_samples_tail=[],
             center_line=[],
+            selected_reference_lap=None,
+            selected_reference_min_lap_dist_pct=None,
+            selected_reference_max_lap_dist_pct=None,
+            selected_reference_point_count=0,
+            selected_reference_closure_gap_m=None,
+            selected_reference_is_valid=False,
         )
 
     arrays = {name: _align_float_array(raw_series.get(name), sample_count) for name in (*_IBT_GEO_REQUIRED_CHANNELS, *_IBT_GEO_OPTIONAL_CHANNELS)}
@@ -673,6 +708,12 @@ def _build_latlon_centerline_pipeline(
             debug_valid_geo_samples_head=[],
             debug_valid_geo_samples_tail=[],
             center_line=[],
+            selected_reference_lap=None,
+            selected_reference_min_lap_dist_pct=None,
+            selected_reference_max_lap_dist_pct=None,
+            selected_reference_point_count=0,
+            selected_reference_closure_gap_m=None,
+            selected_reference_is_valid=False,
         )
 
     nonzero_geo_mask = ~(np.isclose(lat, 0.0, atol=0.0, rtol=0.0) & np.isclose(lon, 0.0, atol=0.0, rtol=0.0))
@@ -698,6 +739,7 @@ def _build_latlon_centerline_pipeline(
 
     status = "ok"
     reason = "Lat/Lon + LapDistPct appear populated and varying enough for later geometry work"
+    selected_reference: _GeoLapSelection | None = None
     if joint_valid_count == 0:
         status = "insufficient"
         reason = "no samples contain valid Lat + Lon + LapDistPct together"
@@ -716,13 +758,23 @@ def _build_latlon_centerline_pipeline(
         joint_samples = _collect_joint_valid_geo_samples(arrays, valid_mask)
         unwrapped_samples = _unwrap_joint_valid_geo_samples(joint_samples)
         pipeline_counts["after_unwrap_count"] = len(unwrapped_samples)
-        sorted_samples = _sort_and_select_best_geo_lap(unwrapped_samples)
+        selected_reference = _select_best_geo_lap(
+            unwrapped_samples,
+            min_point_count=min_unique_lap_dist,
+        )
+        sorted_samples = [] if selected_reference is None else selected_reference.sorted_samples
         pipeline_counts["after_sort_count"] = len(sorted_samples)
-        deduped_samples = _dedupe_sorted_geo_samples(sorted_samples)
+        deduped_samples = [] if selected_reference is None else selected_reference.deduped_samples
         pipeline_counts["after_dedupe_count"] = len(deduped_samples)
-        resampled_samples = _resample_geo_samples(deduped_samples)
+        resampled_samples = _resample_geo_samples(
+            deduped_samples,
+            full_lap=bool(selected_reference and selected_reference.is_valid_reference_lap),
+        )
         pipeline_counts["after_resample_count"] = len(resampled_samples)
-        center_line = _build_centerline_from_geo_samples(resampled_samples)
+        center_line = _build_centerline_from_geo_samples(
+            resampled_samples,
+            close_loop=bool(selected_reference and selected_reference.is_valid_reference_lap),
+        )
         pipeline_counts["before_json_write_count"] = len(center_line)
         if len(center_line) < 2:
             status = "insufficient"
@@ -752,6 +804,12 @@ def _build_latlon_centerline_pipeline(
         debug_valid_geo_samples_head=debug_head,
         debug_valid_geo_samples_tail=debug_tail,
         center_line=center_line,
+        selected_reference_lap=None if selected_reference is None else selected_reference.lap_index,
+        selected_reference_min_lap_dist_pct=None if selected_reference is None else selected_reference.min_lap_dist_pct,
+        selected_reference_max_lap_dist_pct=None if selected_reference is None else selected_reference.max_lap_dist_pct,
+        selected_reference_point_count=0 if selected_reference is None else selected_reference.point_count,
+        selected_reference_closure_gap_m=None if selected_reference is None else selected_reference.closure_gap_m,
+        selected_reference_is_valid=False if selected_reference is None else selected_reference.is_valid_reference_lap,
     )
 
 
@@ -1056,9 +1114,13 @@ def _unwrap_lap_dist_pct(values: np.ndarray) -> np.ndarray:
     return out
 
 
-def _sort_and_select_best_geo_lap(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
+def _select_best_geo_lap(
+    samples: list[dict[str, float | None]],
+    *,
+    min_point_count: int,
+) -> _GeoLapSelection | None:
     if not samples:
-        return []
+        return None
     buckets: dict[int, list[dict[str, float | None]]] = {}
     for sample in samples:
         lap_dist_unwrapped = _finite_float_or_none(sample.get("lap_dist_unwrapped"))
@@ -1074,22 +1136,61 @@ def _sort_and_select_best_geo_lap(samples: list[dict[str, float | None]]) -> lis
         row["lap_dist_pct"] = float(lap_dist_pct)
         buckets.setdefault(lap_index, []).append(row)
     if not buckets:
-        return []
+        return None
 
-    def _bucket_score(bucket: list[dict[str, float | None]]) -> tuple[int, int, float, int]:
-        lap_dist = np.asarray([float(item["lap_dist_pct"]) for item in bucket], dtype=np.float64)
-        coverage = _finite_range(lap_dist) or 0.0
-        unique_count = _count_unique_finite(lap_dist, decimals=6)
-        return (1 if coverage >= 0.95 else 0, unique_count, coverage, len(bucket))
+    selections: list[_GeoLapSelection] = []
+    for lap_index, bucket in buckets.items():
+        sorted_bucket = sorted(
+            bucket,
+            key=lambda item: (
+                float(item["lap_dist_pct"]),
+                _finite_float_or_none(item.get("session_time")) if item.get("session_time") is not None else -1.0,
+            ),
+        )
+        deduped_bucket = _dedupe_sorted_geo_samples(sorted_bucket)
+        if len(deduped_bucket) < 2:
+            continue
+        lap_dist = np.asarray([float(item["lap_dist_pct"]) for item in deduped_bucket], dtype=np.float64)
+        min_lap_dist_pct = float(lap_dist[0])
+        max_lap_dist_pct = float(lap_dist[-1])
+        coverage = max_lap_dist_pct - min_lap_dist_pct
+        closure_gap_m = _geo_sample_closure_gap_m(deduped_bucket)
+        selections.append(
+            _GeoLapSelection(
+                lap_index=lap_index,
+                sorted_samples=sorted_bucket,
+                deduped_samples=deduped_bucket,
+                min_lap_dist_pct=min_lap_dist_pct,
+                max_lap_dist_pct=max_lap_dist_pct,
+                point_count=len(deduped_bucket),
+                closure_gap_m=closure_gap_m,
+                coverage=coverage,
+                is_valid_reference_lap=_is_valid_reference_lap(
+                    min_lap_dist_pct=min_lap_dist_pct,
+                    max_lap_dist_pct=max_lap_dist_pct,
+                    point_count=len(deduped_bucket),
+                    min_point_count=min_point_count,
+                    closure_gap_m=closure_gap_m,
+                    samples=deduped_bucket,
+                ),
+            )
+        )
+    if not selections:
+        return None
 
-    best_bucket = max(buckets.values(), key=_bucket_score)
-    return sorted(
-        best_bucket,
-        key=lambda item: (
-            float(item["lap_dist_pct"]),
-            _finite_float_or_none(item.get("session_time")) if item.get("session_time") is not None else -1.0,
-        ),
-    )
+    def _selection_score(selection: _GeoLapSelection) -> tuple[int, int, int, int, float, int, float, int]:
+        return (
+            1 if selection.is_valid_reference_lap else 0,
+            1 if selection.min_lap_dist_pct <= _REFERENCE_LAP_START_MAX_PCT else 0,
+            1 if selection.max_lap_dist_pct >= _REFERENCE_LAP_END_MIN_PCT else 0,
+            1 if selection.closure_gap_m is not None else 0,
+            selection.coverage,
+            selection.point_count,
+            -selection.closure_gap_m if selection.closure_gap_m is not None else float("-inf"),
+            selection.lap_index,
+        )
+
+    return max(selections, key=_selection_score)
 
 
 def _dedupe_sorted_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
@@ -1107,18 +1208,35 @@ def _dedupe_sorted_geo_samples(samples: list[dict[str, float | None]]) -> list[d
     return deduped
 
 
-def _resample_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float | None]]:
+def _resample_geo_samples(
+    samples: list[dict[str, float | None]],
+    *,
+    full_lap: bool = False,
+) -> list[dict[str, float | None]]:
     if len(samples) < 2:
         return []
     lap_dist = np.asarray([float(sample["lap_dist_pct"]) for sample in samples], dtype=np.float64)
     if len(np.unique(np.round(lap_dist, 6))) < 2:
         return []
     target_count = len(samples)
-    grid = np.linspace(float(lap_dist[0]), float(lap_dist[-1]), num=target_count, endpoint=True, dtype=np.float64)
-    lat = np.interp(grid, lap_dist, np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64))
-    lon = np.interp(grid, lap_dist, np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64))
-    session_time = _interp_optional_sample_field(samples, lap_dist, grid, "session_time")
-    alt = _interp_optional_sample_field(samples, lap_dist, grid, "alt")
+    if full_lap:
+        grid = np.linspace(0.0, 1.0, num=target_count, endpoint=True, dtype=np.float64)
+        lat = _interp_cyclic_geo_field(
+            lap_dist,
+            np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64),
+            grid,
+        )
+        lon = _interp_cyclic_geo_field(
+            lap_dist,
+            np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64),
+            grid,
+        )
+    else:
+        grid = np.linspace(float(lap_dist[0]), float(lap_dist[-1]), num=target_count, endpoint=True, dtype=np.float64)
+        lat = np.interp(grid, lap_dist, np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64))
+        lon = np.interp(grid, lap_dist, np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64))
+    session_time = _interp_optional_sample_field(samples, lap_dist, grid, "session_time", full_lap=full_lap)
+    alt = _interp_optional_sample_field(samples, lap_dist, grid, "alt", full_lap=full_lap)
     resampled: list[dict[str, float | None]] = []
     for idx, lap_dist_pct in enumerate(grid.tolist()):
         resampled.append(
@@ -1138,16 +1256,76 @@ def _interp_optional_sample_field(
     lap_dist: np.ndarray,
     grid: np.ndarray,
     field_name: str,
+    *,
+    full_lap: bool = False,
 ) -> list[float | None]:
     values = np.asarray([np.nan if sample.get(field_name) is None else float(sample[field_name]) for sample in samples], dtype=np.float64)
     finite_mask = np.isfinite(values)
     if int(finite_mask.sum()) >= 2:
-        interpolated = np.interp(grid, lap_dist[finite_mask], values[finite_mask])
+        x = lap_dist[finite_mask]
+        y = values[finite_mask]
+        interpolated = _interp_cyclic_geo_field(x, y, grid) if full_lap else np.interp(grid, x, y)
         return [float(value) for value in interpolated.tolist()]
     if int(finite_mask.sum()) == 1:
         only_value = float(values[finite_mask][0])
         return [only_value] * len(grid)
     return [None] * len(grid)
+
+
+def _interp_cyclic_geo_field(lap_dist: np.ndarray, values: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    if len(lap_dist) < 2 or len(values) < 2 or len(lap_dist) != len(values):
+        return np.empty(0, dtype=np.float64)
+    extended_lap_dist = np.concatenate(([lap_dist[-1] - 1.0], lap_dist, [lap_dist[0] + 1.0]))
+    extended_values = np.concatenate(([values[-1]], values, [values[0]]))
+    return np.interp(grid, extended_lap_dist, extended_values)
+
+
+def _geo_sample_closure_gap_m(samples: list[dict[str, float | None]]) -> float | None:
+    if len(samples) < 2:
+        return None
+    lat = np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64)
+    lon = np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64)
+    xy = _project_latlon_to_xy(lat, lon)
+    if xy is None or len(xy) < 2:
+        return None
+    return float(np.linalg.norm(xy[-1] - xy[0]))
+
+
+def _is_valid_reference_lap(
+    *,
+    min_lap_dist_pct: float,
+    max_lap_dist_pct: float,
+    point_count: int,
+    min_point_count: int,
+    closure_gap_m: float | None,
+    samples: list[dict[str, float | None]],
+) -> bool:
+    if point_count < max(2, int(min_point_count)):
+        return False
+    if min_lap_dist_pct > _REFERENCE_LAP_START_MAX_PCT:
+        return False
+    if max_lap_dist_pct < _REFERENCE_LAP_END_MIN_PCT:
+        return False
+    if closure_gap_m is None:
+        return False
+    return closure_gap_m <= _reference_lap_closure_gap_limit(samples)
+
+
+def _reference_lap_closure_gap_limit(samples: list[dict[str, float | None]]) -> float:
+    if len(samples) < 2:
+        return _REFERENCE_LAP_MIN_CLOSURE_GAP_M
+    lat = np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64)
+    lon = np.asarray([float(sample["lon"]) for sample in samples], dtype=np.float64)
+    xy = _project_latlon_to_xy(lat, lon)
+    if xy is None or len(xy) < 2:
+        return _REFERENCE_LAP_MIN_CLOSURE_GAP_M
+    segment_lengths = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    finite_lengths = segment_lengths[np.isfinite(segment_lengths) & (segment_lengths > 0.0)]
+    median_step_m = float(np.median(finite_lengths)) if len(finite_lengths) > 0 else 0.0
+    return max(
+        _REFERENCE_LAP_MIN_CLOSURE_GAP_M,
+        median_step_m * _REFERENCE_LAP_CLOSURE_MEDIAN_STEP_FACTOR,
+    )
 
 
 def _finite_range(values: np.ndarray) -> float | None:
@@ -1331,7 +1509,7 @@ def _log_latlon_centerline_pipeline(
 ) -> None:
     counts = result.pipeline_counts
     _LOG.info(
-        "[ibt_track_extract] track_key=%s ibt=%s status=%s reason=%s raw_sample_count=%d joint_valid_geo_sample_count=%d after_unwrap_count=%d after_sort_count=%d after_dedupe_count=%d after_resample_count=%d before_json_write_count=%d source_channels=%s",
+        "[ibt_track_extract] track_key=%s ibt=%s status=%s reason=%s raw_sample_count=%d joint_valid_geo_sample_count=%d after_unwrap_count=%d after_sort_count=%d after_dedupe_count=%d after_resample_count=%d before_json_write_count=%d selected_reference_lap=%s min_lap_dist_pct=%s max_lap_dist_pct=%s point_count=%d closure_gap_m=%s reference_lap_valid=%s source_channels=%s",
         track_key,
         ibt_path,
         result.status,
@@ -1343,6 +1521,12 @@ def _log_latlon_centerline_pipeline(
         counts.get("after_dedupe_count", 0),
         counts.get("after_resample_count", 0),
         counts.get("before_json_write_count", 0),
+        result.selected_reference_lap,
+        "nan" if result.selected_reference_min_lap_dist_pct is None else f"{result.selected_reference_min_lap_dist_pct:.6f}",
+        "nan" if result.selected_reference_max_lap_dist_pct is None else f"{result.selected_reference_max_lap_dist_pct:.6f}",
+        result.selected_reference_point_count,
+        "nan" if result.selected_reference_closure_gap_m is None else f"{result.selected_reference_closure_gap_m:.3f}",
+        result.selected_reference_is_valid,
         result.source_channels,
     )
     if result.debug_valid_geo_samples_head:
@@ -1360,7 +1544,11 @@ def _log_latlon_centerline_pipeline(
         )
 
 
-def _build_centerline_from_geo_samples(samples: list[dict[str, float | None]]) -> list[dict[str, float]]:
+def _build_centerline_from_geo_samples(
+    samples: list[dict[str, float | None]],
+    *,
+    close_loop: bool = False,
+) -> list[dict[str, float]]:
     if len(samples) < 2:
         return []
     lat = np.asarray([float(sample["lat"]) for sample in samples], dtype=np.float64)
@@ -1387,6 +1575,15 @@ def _build_centerline_from_geo_samples(samples: list[dict[str, float | None]]) -
                 "y_m": y_m,
             }
         )
+    if close_loop and len(center_line) >= 2:
+        center_line[-1] = {
+            **center_line[-1],
+            "lap_dist_pct": 1.0,
+            "lat": float(center_line[0]["lat"]),
+            "lon": float(center_line[0]["lon"]),
+            "x_m": float(center_line[0]["x_m"]),
+            "y_m": float(center_line[0]["y_m"]),
+        }
     return center_line if len(center_line) >= 2 else []
 
 
@@ -1406,16 +1603,24 @@ def _project_latlon_to_xy(lat: np.ndarray, lon: np.ndarray) -> np.ndarray | None
         cos_lat0 = 1e-6 if cos_lat0 >= 0.0 else -1e-6
 
     r = 6_371_000.0
-    x = np.full(len(lat), np.nan, dtype=np.float64)
-    y = np.full(len(lat), np.nan, dtype=np.float64)
+    east_m = np.full(len(lat), np.nan, dtype=np.float64)
+    north_m = np.full(len(lat), np.nan, dtype=np.float64)
     lat_rad = np.radians(lat[finite_mask])
     lon_rad = np.radians(lon[finite_mask])
-    x[finite_mask] = (lon_rad - lon0_rad) * cos_lat0 * r
-    y[finite_mask] = (lat_rad - lat0_rad) * r
+    east_m[finite_mask] = (lon_rad - lon0_rad) * cos_lat0 * r
+    north_m[finite_mask] = (lat_rad - lat0_rad) * r
 
-    if not np.all(np.isfinite(x[finite_mask])) or not np.all(np.isfinite(y[finite_mask])):
+    if not np.all(np.isfinite(east_m[finite_mask])) or not np.all(np.isfinite(north_m[finite_mask])):
         return None
-    return np.column_stack([x, y])
+    return _normalise_trackmap_orientation(np.column_stack([east_m, north_m]))
+
+
+def _normalise_trackmap_orientation(xy: np.ndarray) -> np.ndarray:
+    if xy is None or len(xy) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    east = np.asarray(xy[:, 0], dtype=np.float64)
+    north = np.asarray(xy[:, 1], dtype=np.float64)
+    return np.column_stack([north, -east])
 
 
 def _integrate_velocity(ir: Any) -> np.ndarray:
