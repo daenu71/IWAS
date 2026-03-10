@@ -22,12 +22,15 @@ Channel conventions
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pyarrow.parquet as pq
+
+_log = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_PATH = (
     Path(__file__).parent.parent.parent.parent
@@ -388,12 +391,25 @@ def _events_peak_brake(
     thr = float(cfg["threshold_brake_start"])
     above = ch > thr
     above[~np.isfinite(ch)] = False
+    runs = _find_runs(above)
+    _log.debug("[event_engine] peak_brake: %d brake run(s) detected (thr=%.3f)", len(runs), thr)
     events: list[dict] = []
-    for s, e in _find_runs(above):
+    for run_idx, (s, e) in enumerate(runs):
         sl = ch[s : e + 1]
         peak_local = int(np.nanargmax(sl))
         peak_g = s + peak_local
-        events.append(_make_event("peak_brake", peak_g, ldp, st, round(float(ch[peak_g]), 6)))
+        peak_val = round(float(ch[peak_g]), 6)
+        sample_count = e - s + 1
+        _log.debug(
+            "[event_engine] peak_brake run %d: lapdist_pct_start=%.6f "
+            "lapdist_pct_peak=%.6f peak_value=%.6f sample_count=%d",
+            run_idx,
+            float(ldp[s]),
+            float(ldp[peak_g]),
+            peak_val,
+            sample_count,
+        )
+        events.append(_make_event("peak_brake", peak_g, ldp, st, peak_val))
     return events, None
 
 
@@ -833,22 +849,42 @@ def _extract_corner_window_events(
     # --- Brake channels ---
     brake_ch = _get_channel(data, "Brake", n)
     if brake_ch is not None:
-        # brake_start: first sample in window above threshold
-        for i in range(w_start, w_end + 1):
-            if math.isfinite(brake_ch[i]) and brake_ch[i] > thr_brake:
-                events.append(_make_event("brake_start", i, ldp, st, None))
-                break
-
-        # peak_brake: global max in window
-        w_brake = np.where(mask, brake_ch, np.nan)
-        if np.any(np.isfinite(w_brake)):
-            peak_val = float(np.nanmax(w_brake))
-            if peak_val > thr_brake:
-                peak_idx = int(np.nanargmax(w_brake))
-                corner_brake_peak_idx = peak_idx
-                events.append(
-                    _make_event("peak_brake", peak_idx, ldp, st, round(peak_val, 6))
-                )
+        # Use _find_runs so that each distinct brake phase in the window gets its
+        # own brake_start and peak_brake (fixes single-peak issue for multi-curve
+        # corners where the driver brakes twice).
+        w_brake_slice = brake_ch[w_start : w_end + 1].copy()
+        brake_above_w = w_brake_slice > thr_brake
+        brake_above_w[~np.isfinite(w_brake_slice)] = False
+        brake_runs = _find_runs(brake_above_w)
+        _log.debug(
+            "[event_engine] corner window [%.4f, %.4f]: %d brake run(s)",
+            float(ldp[w_start]), float(ldp[w_end]), len(brake_runs),
+        )
+        for run_idx, (s_l, e_l) in enumerate(brake_runs):
+            s_g = w_start + s_l
+            e_g = w_start + e_l
+            # brake_start: first sample of this run
+            events.append(_make_event("brake_start", s_g, ldp, st, None))
+            # peak_brake: maximum within this run
+            run_slice = brake_ch[s_g : e_g + 1]
+            peak_local = int(np.nanargmax(run_slice))
+            peak_g = s_g + peak_local
+            peak_val = round(float(brake_ch[peak_g]), 6)
+            sample_count = e_g - s_g + 1
+            _log.debug(
+                "[event_engine] corner brake run %d: lapdist_pct_start=%.6f "
+                "lapdist_pct_peak=%.6f peak_value=%.6f sample_count=%d",
+                run_idx,
+                float(ldp[s_g]),
+                float(ldp[peak_g]),
+                peak_val,
+                sample_count,
+            )
+            events.append(_make_event("peak_brake", peak_g, ldp, st, peak_val))
+            # corner_brake_peak_idx is used for the turn-in search window;
+            # anchor it to the FIRST run's peak so turn-in is correct.
+            if corner_brake_peak_idx is None:
+                corner_brake_peak_idx = peak_g
 
     # --- Min speed (computed before turn-in so the window [brake_peak→min_speed] is known) ---
     speed_ch = _get_channel(data, "Speed", n)
