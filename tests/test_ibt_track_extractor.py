@@ -269,6 +269,16 @@ def test_extract_produces_valid_json(tmp_path: Path) -> None:
     assert first["x_m"] == pytest.approx(0.0)
     assert first["y_m"] == pytest.approx(0.0)
 
+    second = payload["center_line"][1]
+    third = payload["center_line"][2]
+    fourth = payload["center_line"][3]
+    assert second["x_m"] == pytest.approx(0.0, abs=1e-6)
+    assert second["y_m"] > 0.0
+    assert third["x_m"] > 0.0
+    assert third["y_m"] == pytest.approx(second["y_m"], rel=1e-6)
+    assert fourth["x_m"] == pytest.approx(third["x_m"], rel=1e-6)
+    assert fourth["y_m"] == pytest.approx(0.0, abs=1e-6)
+
 
 def test_extract_sorts_centerline_by_lap_dist_pct(tmp_path: Path) -> None:
     fake_ibt = _FakeIBT(
@@ -406,8 +416,17 @@ def test_extract_logs_geo_pipeline_counts_and_debug_samples(tmp_path: Path, capl
         and "closure_gap_m=" in message
         for message in info_messages
     )
+    assert any(
+        "track_key=Misano World Circuit Marco Simoncelli__Grand Prix" in message
+        and "point_count=5" in message
+        and "orientation_rule=local_tangent_plane_east_north" in message
+        and "orientation_transform=identity(x=east_m,y=north_m)" in message
+        and "normalisation_applied=no" in message
+        for message in info_messages
+    )
     assert any("valid_geo_samples_head=" in message for message in debug_messages)
     assert any("valid_geo_samples_tail=" in message for message in debug_messages)
+    assert any("before_first=" in message and "after_first=" in message for message in debug_messages)
 
 
 def test_extract_skips_with_reason_when_geo_samples_are_not_joint_valid(tmp_path: Path) -> None:
@@ -581,9 +600,9 @@ def test_normalise_trackmap_orientation_is_stable_and_deterministic() -> None:
         oriented_once,
         np.array(
             [
-                [0.0, -0.0],
-                [0.0, -12.0],
-                [5.0, -12.0],
+                [0.0, 0.0],
+                [12.0, 0.0],
+                [12.0, 5.0],
             ],
             dtype=np.float64,
         ),

@@ -658,8 +658,9 @@ def render_trackmap(
         return
 
     # Compute road arrays first so they can be included in the shared fit_context.
-    # Both lap line and road geometry are in raw world coordinates (meters),
-    # so combining them gives a correct common bounding box.
+    # Both lap line and saved road geometry are already in the same raw world
+    # coordinate system (meters). Consumers render the saved geometry as-is and
+    # must not apply any IBT-specific rotation here.
     road_arrays = _road_geometry_arrays(road_geometry)
     road_geometry_mode = _road_geometry_mode(road_arrays)
     if road_arrays is not None:
@@ -1645,7 +1646,7 @@ def _log_trackmap_geometry_state(
     lap_bbox = _bbox_stats(lap_xy)
     road_bbox = _bbox_stats(road_center_line)
     _LOG.debug(
-        "[trackmap_render_state] road_geometry_mode=%s lap_points=%d road_center_line_points=%d road_left_edge_points=%d road_right_edge_points=%d lap_min_x=%s lap_max_x=%s lap_min_y=%s lap_max_y=%s lap_bbox_width=%s lap_bbox_height=%s road_center_line_min_x=%s road_center_line_max_x=%s road_center_line_min_y=%s road_center_line_max_y=%s road_center_line_bbox_width=%s road_center_line_bbox_height=%s canvas_target_rect=x=%.3f,y=%.3f,w=%.3f,h=%.3f canvas_size=%dx%d",
+        "[trackmap_render_state] road_geometry_mode=%s road_geometry_transform=as_saved consumer_rotation=none lap_points=%d road_center_line_points=%d road_left_edge_points=%d road_right_edge_points=%d lap_min_x=%s lap_max_x=%s lap_min_y=%s lap_max_y=%s lap_bbox_width=%s lap_bbox_height=%s road_center_line_min_x=%s road_center_line_max_x=%s road_center_line_min_y=%s road_center_line_max_y=%s road_center_line_bbox_width=%s road_center_line_bbox_height=%s canvas_target_rect=x=%.3f,y=%.3f,w=%.3f,h=%.3f canvas_size=%dx%d",
         road_geometry_mode,
         0 if lap_xy is None else len(lap_xy),
         0 if road_center_line is None else len(road_center_line),

@@ -273,6 +273,8 @@ def test_render_trackmap_accepts_center_line_only_road_geometry_and_logs_bbox(
     )
     assert "[trackmap_render]" in caplog.text
     assert "road_geometry_mode=center_line_only" in caplog.text
+    assert "road_geometry_transform=as_saved" in caplog.text
+    assert "consumer_rotation=none" in caplog.text
     assert "lap_points=5" in caplog.text
     assert "road_center_line_points=5" in caplog.text
     assert "road_center_line_min_x=" in caplog.text

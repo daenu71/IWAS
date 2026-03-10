@@ -38,6 +38,8 @@ _REFERENCE_LAP_START_MAX_PCT: float = 0.02
 _REFERENCE_LAP_END_MIN_PCT: float = 0.98
 _REFERENCE_LAP_MIN_CLOSURE_GAP_M: float = 20.0
 _REFERENCE_LAP_CLOSURE_MEDIAN_STEP_FACTOR: float = 3.0
+_EXPORT_ORIENTATION_RULE: str = "local_tangent_plane_east_north"
+_EXPORT_ORIENTATION_TRANSFORM: str = "identity(x=east_m,y=north_m)"
 _IBT_INVENTORY_CANDIDATES: tuple[str, ...] = (
     "Lat",
     "Lon",
@@ -113,6 +115,18 @@ class _GeoLapSelection:
     is_valid_reference_lap: bool
 
 
+@dataclass(frozen=True)
+class _OrientationNormalisationResult:
+    center_line: list[dict[str, float]]
+    rule: str
+    transform: str
+    applied: bool
+    before_first: tuple[float, float] | None
+    before_last: tuple[float, float] | None
+    after_first: tuple[float, float] | None
+    after_last: tuple[float, float] | None
+
+
 def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Path:
     """Extract track geometry from *ibt_path* and persist it below *storage_root*."""
     ibt_path = Path(ibt_path)
@@ -134,9 +148,12 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
         _LOG.warning("[ibt_track_extract] %s", message)
         raise RuntimeError(message)
 
+    orientation_result = _normalise_exported_center_line_orientation(center_line)
+    _log_export_orientation_normalisation(metadata.track_key, orientation_result)
+
     payload = _build_track_geometry_payload(
         track_key=metadata.track_key,
-        center_line=center_line,
+        center_line=orientation_result.center_line,
         left_edge=[],
         right_edge=[],
         source_type="ibt",
@@ -1587,6 +1604,69 @@ def _build_centerline_from_geo_samples(
     return center_line if len(center_line) >= 2 else []
 
 
+def _normalise_exported_center_line_orientation(
+    center_line: list[dict[str, float]],
+) -> _OrientationNormalisationResult:
+    if len(center_line) < 2:
+        return _OrientationNormalisationResult(
+            center_line=list(center_line),
+            rule=_EXPORT_ORIENTATION_RULE,
+            transform=_EXPORT_ORIENTATION_TRANSFORM,
+            applied=False,
+            before_first=None,
+            before_last=None,
+            after_first=None,
+            after_last=None,
+        )
+
+    xy_before = np.asarray(
+        [[float(point["x_m"]), float(point["y_m"])] for point in center_line],
+        dtype=np.float64,
+    )
+    xy_after = _normalise_trackmap_orientation(xy_before)
+    applied = not np.allclose(xy_before, xy_after, rtol=0.0, atol=1e-9)
+
+    normalised_center_line: list[dict[str, float]] = []
+    for point, xy in zip(center_line, xy_after):
+        row = dict(point)
+        row["x_m"] = float(xy[0])
+        row["y_m"] = float(xy[1])
+        normalised_center_line.append(row)
+
+    return _OrientationNormalisationResult(
+        center_line=normalised_center_line,
+        rule=_EXPORT_ORIENTATION_RULE,
+        transform=_EXPORT_ORIENTATION_TRANSFORM,
+        applied=applied,
+        before_first=(float(xy_before[0, 0]), float(xy_before[0, 1])),
+        before_last=(float(xy_before[-1, 0]), float(xy_before[-1, 1])),
+        after_first=(float(xy_after[0, 0]), float(xy_after[0, 1])),
+        after_last=(float(xy_after[-1, 0]), float(xy_after[-1, 1])),
+    )
+
+
+def _log_export_orientation_normalisation(
+    track_key: str,
+    result: _OrientationNormalisationResult,
+) -> None:
+    _LOG.info(
+        "[ibt_track_export_orientation] track_key=%s point_count=%d orientation_rule=%s orientation_transform=%s normalisation_applied=%s",
+        track_key,
+        len(result.center_line),
+        result.rule,
+        result.transform,
+        "yes" if result.applied else "no",
+    )
+    _LOG.debug(
+        "[ibt_track_export_orientation_debug] track_key=%s before_first=%s before_last=%s after_first=%s after_last=%s",
+        track_key,
+        result.before_first,
+        result.before_last,
+        result.after_first,
+        result.after_last,
+    )
+
+
 def _project_latlon_to_xy(lat: np.ndarray, lon: np.ndarray) -> np.ndarray | None:
     if len(lat) < 2 or len(lon) < 2 or len(lat) != len(lon):
         return None
@@ -1612,7 +1692,7 @@ def _project_latlon_to_xy(lat: np.ndarray, lon: np.ndarray) -> np.ndarray | None
 
     if not np.all(np.isfinite(east_m[finite_mask])) or not np.all(np.isfinite(north_m[finite_mask])):
         return None
-    return _normalise_trackmap_orientation(np.column_stack([east_m, north_m]))
+    return np.column_stack([east_m, north_m])
 
 
 def _normalise_trackmap_orientation(xy: np.ndarray) -> np.ndarray:
@@ -1620,7 +1700,7 @@ def _normalise_trackmap_orientation(xy: np.ndarray) -> np.ndarray:
         return np.empty((0, 2), dtype=np.float64)
     east = np.asarray(xy[:, 0], dtype=np.float64)
     north = np.asarray(xy[:, 1], dtype=np.float64)
-    return np.column_stack([north, -east])
+    return np.column_stack([east, north])
 
 
 def _integrate_velocity(ir: Any) -> np.ndarray:
