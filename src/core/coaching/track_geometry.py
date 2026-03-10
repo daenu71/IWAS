@@ -55,6 +55,7 @@ _ZOOM_LEGEND_FONT = ("Arial", 11)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
 EVENT_SYMBOL_SIZE = 20   # px; event symbol size used for collision detection
 LEGEND_SYMBOL_SIZE = EVENT_SYMBOL_SIZE  # px; legend symbol size
+_TRACKMAP_EVENT_SYMBOL_SIZE = 14  # px; smaller symbols for the full TrackMap view
 
 _FIT_LEGEND_WIDTH = 160
 _FIT_PADDING_LEFT = 10
@@ -537,6 +538,8 @@ def render_trackmap(
     zoom: float = 1.0,
     offset: tuple = (0.0, 0.0),
     is_closed: bool = True,
+    events: Optional[list] = None,
+    visible_event_types: Optional[set] = None,
 ) -> None:
     """Render a complete TrackMap onto *canvas*.
 
@@ -571,6 +574,7 @@ def render_trackmap(
     """
     canvas.delete("all")
     canvas._fit_context = None
+    canvas._sprite_refs = []
 
     if xy is None or len(xy) < 2:
         return
@@ -646,6 +650,10 @@ def render_trackmap(
     # 4 – Lap line (primary colour, on top)
     canvas.create_line(line_flat, fill=lap_color, width=_LAP_WIDTH,
                        smooth=False, tags=("lapline",))
+
+    # 5 – Event markers (above lap line)
+    if events and visible_event_types:
+        _render_trackmap_events(canvas, events, visible_event_types, coords, lap_dist_pct)
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +840,64 @@ def render_corner_zoom(
     # Single motion handler instead of per-item tag_bind (avoids tooltip-loop freeze)
     canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
     canvas.bind("<Leave>", lambda _e: _zoom_hide_tooltip(canvas))
+
+# ---------------------------------------------------------------------------
+# TrackMap event-marker helpers
+# ---------------------------------------------------------------------------
+
+
+def _trackmap_project_event(
+    lapdist_pct: float,
+    full_ldp: Optional[np.ndarray],
+    coords: np.ndarray,
+) -> tuple:
+    """Return (canvas_x, canvas_y) for an event at *lapdist_pct* on the full track."""
+    n = len(coords)
+    if full_ldp is not None and len(full_ldp) == n:
+        idx = int(np.argmin(np.abs(full_ldp - lapdist_pct)))
+    else:
+        idx = int(np.clip(lapdist_pct * n, 0, n - 1))
+    return float(coords[idx, 0]), float(coords[idx, 1])
+
+
+def _render_trackmap_events(
+    canvas: tk.Canvas,
+    events: list,
+    visible_event_types: set,
+    coords: np.ndarray,
+    lap_dist_pct: Optional[np.ndarray],
+) -> None:
+    """Draw event sprites on the full TrackMap canvas."""
+    bg = _contrast_color(canvas)
+    for ev in events:
+        try:
+            event_type = str(getattr(ev, "event_type", "") or "")
+        except Exception:
+            continue
+        if event_type not in visible_event_types:
+            continue
+        style = _EVENT_STYLE.get(event_type)
+        if style is None:
+            continue
+        _, color = style
+        try:
+            ldp = float(getattr(ev, "lapdist_pct", None))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 <= ldp <= 1.0):
+            continue
+        try:
+            ex, ey = _trackmap_project_event(ldp, lap_dist_pct, coords)
+        except Exception:
+            continue
+        needs_bg = event_type in _BG_SYMBOL_TYPES
+        sprite = EventSpriteCache.get(
+            event_type, _TRACKMAP_EVENT_SYMBOL_SIZE,
+            color, bg if needs_bg else None, canvas,
+        )
+        canvas._sprite_refs.append(sprite)
+        canvas.create_image(ex, ey, image=sprite, anchor=tk.CENTER, tags=("tm_event",))
+
 
 # ---------------------------------------------------------------------------
 # Corner-Zoom private helpers

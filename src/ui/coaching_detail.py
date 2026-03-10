@@ -36,6 +36,7 @@ from core.coaching.track_geometry import (
     _BG_SYMBOL_TYPES,
     EventSpriteCache,
     EVENT_SYMBOL_SIZE,
+    _TRACKMAP_EVENT_SYMBOL_SIZE,
     render_corner_zoom,
     render_trackmap,
 )
@@ -43,21 +44,33 @@ from core.coaching.track_geometry import (
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _CORNER_ZOOM_LEGEND_ITEMS = (
     ("brake_start", "\u25bc", "#CC2222"),
-    ("peak_brake", "\u25cf", "#770000"),
+    ("peak_brake", "\u25cf", "#770000", "brake_peak"),
     ("turn_in", "\u25c0", "#FF8800"),
     ("min_speed", "\u2605", "#FFDD00"),
     ("throttle_on", "\u25b2", "#88FF44"),
     ("throttle_off", "\u25b2", "#88FF88"),
     ("throttle_full", "\u25b2", "#00CC00"),
     ("gear_change", "\u2b21", "#4488FF"),
-    ("oversteer_event", "\u26a0", "#FF44FF"),
-    ("understeer_event", "\u26a0", "#FF8000"),
+    ("oversteer_event", "\u26a0", "#FF44FF", "oversteer"),
+    ("understeer_event", "\u26a0", "#FF8000", "understeer"),
     ("crest", "\u2312", "#00DDFF"),
     # Incident events
-    ("offtrack_incident", "\u2717", "#CC0000"),
+    ("offtrack_incident", "\u2717", "#CC0000", "offtrack"),
     ("loose_control", "\u21bb", "#CC0000"),
     ("crash", "\u26a1", "#CC0000"),
 )
+_TRACKMAP_LEGEND_ITEMS = (
+    # (event_name, display_label, color)
+    ("brake_start",       "brake_start",   "#CC2222"),
+    ("turn_in",           "turn_in",       "#FF8800"),
+    ("min_speed",         "min_speed",     "#FFDD00"),
+    ("throttle_full",     "throttle_full", "#00CC00"),
+    ("offtrack_incident", "offtrack",      "#CC0000"),
+    ("loose_control",     "loose_control", "#CC0000"),
+    ("crash",             "crash",         "#CC0000"),
+)
+_TRACKMAP_EVENT_TYPE_NAMES = frozenset(name for name, *_ in _TRACKMAP_LEGEND_ITEMS)
+
 _ENVIRONMENT_FIELDS = (
     ("Track", "track_temp_c"),
     ("Air", "air_temp_c"),
@@ -299,7 +312,7 @@ class CoachingDetailView(ttk.Frame):
         self._selected_corner_id: Optional[int] = None
         self._event_visibility: dict[str, tk.BooleanVar] = {
             name: tk.BooleanVar(master=self, value=True)
-            for name, _, _ in _CORNER_ZOOM_LEGEND_ITEMS
+            for name, *_ in _CORNER_ZOOM_LEGEND_ITEMS
         }
         self._current_events: list = []
         self._map_zoom: float = 1.0
@@ -467,6 +480,13 @@ class CoachingDetailView(ttk.Frame):
 
         self._trackmap_canvas = tk.Canvas(trackmap_lf, bg="#1e1e1e", highlightthickness=0)
         self._trackmap_canvas.grid(row=0, column=0, sticky="nsew")
+        # TrackMap event legend — placed over the canvas at the lower-left
+        self._tm_legend_frame = self._build_trackmap_legend(trackmap_lf)
+        self._tm_legend_frame.place(
+            in_=self._trackmap_canvas, anchor="sw", relx=0.0, rely=1.0, x=8, y=-8,
+        )
+        self._tm_legend_frame.lift()
+
         self._trackmap_canvas.bind("<Configure>", self._on_trackmap_resize)
         self._trackmap_canvas.bind("<MouseWheel>", self._on_map_wheel)
         self._trackmap_canvas.bind("<Button-4>", self._on_map_wheel)
@@ -511,7 +531,9 @@ class CoachingDetailView(ttk.Frame):
     def _build_corner_zoom_legend(self, master: tk.Widget) -> tk.Frame:
         frame = tk.Frame(master, bg="#1e1e1e", bd=0, highlightthickness=0)
         self._legend_sprite_refs: list = []  # GC protection for PhotoImage objects
-        for row_index, (event_name, _, color) in enumerate(_CORNER_ZOOM_LEGEND_ITEMS):
+        for row_index, item in enumerate(_CORNER_ZOOM_LEGEND_ITEMS):
+            event_name, _, color, *_rest = (*item, None)
+            display_label = _rest[0] if _rest[0] is not None else event_name
             row = tk.Frame(frame, bg="#1e1e1e", bd=0, highlightthickness=0)
             row.grid(row=row_index, column=0, sticky="w")
 
@@ -541,13 +563,53 @@ class CoachingDetailView(ttk.Frame):
                 bg="#1e1e1e",
             ).grid(row=0, column=1, sticky="w", padx=(2, 6))
 
-            tk.Label(row, text=event_name, fg="#f0f0f0", bg="#1e1e1e").grid(
+            tk.Label(row, text=display_label, fg="#f0f0f0", bg="#1e1e1e").grid(
                 row=0, column=2, sticky="w"
             )
 
             self._event_visibility[event_name].trace_add(
                 "write",
                 lambda *_args: self._redraw_corner_zoom(),
+            )
+        return frame
+
+    def _build_trackmap_legend(self, master: tk.Widget) -> tk.Frame:
+        frame = tk.Frame(master, bg="#1e1e1e", bd=0, highlightthickness=0)
+        self._tm_legend_sprite_refs: list = []  # GC protection
+        for row_index, (event_name, display_label, color) in enumerate(_TRACKMAP_LEGEND_ITEMS):
+            row = tk.Frame(frame, bg="#1e1e1e", bd=0, highlightthickness=0)
+            row.grid(row=row_index, column=0, sticky="w")
+
+            tk.Checkbutton(
+                row,
+                variable=self._event_visibility[event_name],
+                bg="#1e1e1e",
+                activebackground="#2e2e2e",
+                fg="white",
+                selectcolor="#444444",
+                relief="flat",
+                highlightthickness=0,
+                bd=0,
+            ).grid(row=0, column=0, sticky="w")
+
+            needs_bg = event_name in _BG_SYMBOL_TYPES
+            sprite = EventSpriteCache.get(
+                event_name, _TRACKMAP_EVENT_SYMBOL_SIZE,
+                color, "#FFFFFF" if needs_bg else None, self._trackmap_canvas,
+            )
+            self._tm_legend_sprite_refs.append(sprite)
+            tk.Label(
+                row,
+                image=sprite,
+                bg="#1e1e1e",
+            ).grid(row=0, column=1, sticky="w", padx=(2, 4))
+
+            tk.Label(row, text=display_label, fg="#f0f0f0", bg="#1e1e1e",
+                     font=("Arial", 9)).grid(row=0, column=2, sticky="w")
+
+            self._event_visibility[event_name].trace_add(
+                "write",
+                lambda *_args: self._redraw_trackmap(),
             )
         return frame
 
@@ -679,6 +741,28 @@ class CoachingDetailView(ttk.Frame):
             self._trackmap_canvas.after(50, self._redraw_trackmap)
             return
         is_offtrack = vm.meta is not None and not vm.meta.valid
+
+        # Collect all events across all corners for full-track display
+        all_events: list = []
+        seen_ids: set = set()
+        for ev_list in (vm.corner_events or {}).values():
+            for ev in ev_list:
+                eid = id(ev)
+                if eid not in seen_ids:
+                    seen_ids.add(eid)
+                    all_events.append(ev)
+        for ev_list in (vm.events or {}).values():
+            for ev in ev_list:
+                eid = id(ev)
+                if eid not in seen_ids:
+                    seen_ids.add(eid)
+                    all_events.append(ev)
+
+        visible_types = {
+            name for name in _TRACKMAP_EVENT_TYPE_NAMES
+            if self._event_visibility.get(name, tk.BooleanVar(value=True)).get()
+        }
+
         render_trackmap(
             canvas=self._trackmap_canvas,
             xy=vm.track_xy,
@@ -693,6 +777,8 @@ class CoachingDetailView(ttk.Frame):
             zoom=self._map_zoom,
             offset=self._map_offset,
             is_closed=vm.track_xy_is_closed,
+            events=all_events,
+            visible_event_types=visible_types,
         )
 
     def _on_trackmap_resize(self, _event=None) -> None:
