@@ -75,15 +75,25 @@ _EVENT_STYLE: dict = {
     "oversteer_event":  ("⚠", "#FF44FF"),
     "understeer_event": ("⚠", "#FF8000"),
     "crest":            ("⌒", "#00DDFF"),
+    # Incident events (PlayerCarMyIncidentCount jumps)
+    "offtrack_incident": ("✕", "#CC0000"),
+    "loose_control":     ("↻", "#CC0000"),
+    "crash":             ("⚡", "#CC0000"),
 }
 
 # Symbol types that need a contrast background (hollow / low-contrast glyphs only)
-_BG_SYMBOL_TYPES = {"gear_change", "oversteer_event", "understeer_event", "crest", "peak_brake"}
+_BG_SYMBOL_TYPES = {
+    "gear_change", "oversteer_event", "understeer_event", "crest", "peak_brake",
+    "offtrack_incident", "loose_control", "crash",
+}
 
 # Short display labels for legend and tooltip (override default replace("_"," "))
 _EVENT_LABELS: dict = {
-    "oversteer_event":  "oversteer",
-    "understeer_event": "understeer",
+    "oversteer_event":   "oversteer",
+    "understeer_event":  "understeer",
+    "offtrack_incident": "off-track",
+    "loose_control":     "loose ctrl",
+    "crash":             "crash",
 }
 
 _TOOLTIP_TITLES: dict[str, str] = {
@@ -376,6 +386,55 @@ class EventSpriteCache:
             # Symbol: upper half-circle arc
             draw.arc([cx - r, cy - r, cx + r, cy + r],
                      start=180, end=0, fill=fg, width=2)
+
+        elif event_type == "offtrack_incident":
+            # Background: white square
+            draw.rectangle([0, 0, size - 1, size - 1], fill=(255, 255, 255, 255))
+            # Symbol: red X (two diagonal lines)
+            margin = size // 4
+            draw.line([margin, margin, size - 1 - margin, size - 1 - margin],
+                      fill=fg, width=3)
+            draw.line([size - 1 - margin, margin, margin, size - 1 - margin],
+                      fill=fg, width=3)
+
+        elif event_type == "loose_control":
+            # Background: white square
+            draw.rectangle([0, 0, size - 1, size - 1], fill=(255, 255, 255, 255))
+            # Symbol: red circular arrow (arc + arrowhead)
+            pad = size // 5
+            bbox = [pad, pad, size - 1 - pad, size - 1 - pad]
+            draw.arc(bbox, start=40, end=320, fill=fg, width=3)
+            # Arrowhead at the end of the arc (at 320°)
+            end_rad = math.radians(320)
+            arc_cx = (bbox[0] + bbox[2]) / 2.0
+            arc_cy = (bbox[1] + bbox[3]) / 2.0
+            arc_r2 = (bbox[2] - bbox[0]) / 2.0
+            tip_x = arc_cx + arc_r2 * math.cos(end_rad)
+            tip_y = arc_cy + arc_r2 * math.sin(end_rad)
+            tan_rad = end_rad + math.pi / 2
+            ah = size // 5
+            ah_pts = [
+                (tip_x, tip_y),
+                (tip_x - ah * math.cos(tan_rad - 0.5),
+                 tip_y - ah * math.sin(tan_rad - 0.5)),
+                (tip_x - ah * math.cos(tan_rad + 0.5),
+                 tip_y - ah * math.sin(tan_rad + 0.5)),
+            ]
+            draw.polygon(ah_pts, fill=fg)
+
+        elif event_type == "crash":
+            # Background: white square
+            draw.rectangle([0, 0, size - 1, size - 1], fill=(255, 255, 255, 255))
+            # Symbol: red lightning bolt polygon
+            pts = [
+                (cx + r // 2, cy - r),
+                (cx - r // 5, cy - 1),
+                (cx + r // 4, cy - 1),
+                (cx - r // 2, cy + r),
+                (cx + r // 5, cy + 1),
+                (cx - r // 4, cy + 1),
+            ]
+            draw.polygon(pts, fill=fg)
 
         return PILPhotoImage(img)
 

@@ -34,7 +34,7 @@ _DEFAULT_CONFIG_PATH = (
     / "config" / "coaching" / "event_config_v1.json"
 )
 
-_CORNER_EVENTS_ENGINE_VERSION = 4
+_CORNER_EVENTS_ENGINE_VERSION = 5
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +768,24 @@ def _extract_corner_window_events(
                     },
                 )
             )
+
+    # --- Incident events (PlayerCarMyIncidentCount jumps) ---
+    # Delta == 1 → offtrack_incident, Delta == 2 → loose_control, Delta >= 4 → crash.
+    # Defensively skipped when the channel is absent or contains no valid data.
+    incident_ch = _get_channel(data, "PlayerCarMyIncidentCount", n)
+    if incident_ch is not None:
+        for i in range(w_start + 1, w_end + 1):
+            if not math.isfinite(incident_ch[i]) or not math.isfinite(incident_ch[i - 1]):
+                continue
+            delta = int(round(incident_ch[i] - incident_ch[i - 1]))
+            if delta <= 0:
+                continue
+            if delta == 1:
+                events.append(_make_event("offtrack_incident", i, ldp, st, {"delta": delta}))
+            elif delta == 2:
+                events.append(_make_event("loose_control", i, ldp, st, {"delta": delta}))
+            elif delta >= 4:
+                events.append(_make_event("crash", i, ldp, st, {"delta": delta}))
 
     events.sort(key=lambda e: e["lapdist_pct"])
     return events

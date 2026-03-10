@@ -47,6 +47,10 @@ _CORNER_ZOOM_LEGEND_ITEMS = (
     ("oversteer_event", "\u26a0", "#FF44FF"),
     ("understeer_event", "\u26a0", "#FF8000"),
     ("crest", "\u2312", "#00DDFF"),
+    # Incident events
+    ("offtrack_incident", "\u2717", "#CC0000"),
+    ("loose_control", "\u21bb", "#CC0000"),
+    ("crash", "\u26a1", "#CC0000"),
 )
 _ENVIRONMENT_FIELDS = (
     ("Track", "track_temp_c"),
