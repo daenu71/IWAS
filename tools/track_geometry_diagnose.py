@@ -51,6 +51,16 @@ class Stage:
     metadata: dict[str, Any]
 
 
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
 def _unwrap_lapdist(values: np.ndarray) -> np.ndarray:
     out = np.array(values, dtype=np.float64, copy=True)
     offset = 0.0
@@ -295,8 +305,16 @@ def _lane_like_mask(
 
 
 def _stage_report(stage: Stage) -> dict[str, Any]:
+    base = {
+        "name": stage.name,
+        "source": stage.source,
+        "status": stage.metadata.get("status", "ok"),
+        "required_channels": list(stage.metadata.get("required_channels", [])),
+        "missing_channels": list(stage.metadata.get("missing_channels", [])),
+        "channel_presence": dict(stage.metadata.get("channel_presence", {})),
+    }
     if len(stage.xy) == 0:
-        return {"name": stage.name, "source": stage.source, "sample_count": 0, "metadata": stage.metadata}
+        return {**base, "sample_count": 0, "metadata": stage.metadata}
     lap_dist_pct = stage.lap_dist_pct
     wrap_mask = (lap_dist_pct >= 0.95) | (lap_dist_pct <= 0.05)
     start_mask = (lap_dist_pct >= 0.0) & (lap_dist_pct <= 0.06)
@@ -306,8 +324,7 @@ def _stage_report(stage: Stage) -> dict[str, Any]:
     turning = _turning_metrics(stage.xy)
     ratio = polyline_length / max(start_end_distance, 1e-6)
     return {
-        "name": stage.name,
-        "source": stage.source,
+        **base,
         "sample_count": int(len(stage.xy)),
         "bbox_m": _bbox(stage.xy),
         "polyline_length_m": polyline_length,
@@ -327,6 +344,31 @@ def _stage_report(stage: Stage) -> dict[str, Any]:
     }
 
 
+def _stage_issue_report(
+    *,
+    name: str,
+    source: str,
+    status: str,
+    required_channels: tuple[str, ...] | list[str],
+    available_channels: set[str],
+    missing_channels: list[str],
+    metadata: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    report = {
+        "name": name,
+        "source": source,
+        "status": status,
+        "required_channels": list(required_channels),
+        "missing_channels": list(missing_channels),
+        "channel_presence": {channel: (channel in available_channels) for channel in required_channels},
+        "metadata": metadata or {},
+    }
+    if error is not None:
+        report["error"] = error
+    return report
+
+
 def _safe_quantile(values: np.ndarray, q: float) -> float:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
@@ -340,11 +382,17 @@ def _pointwise_delta(a: Stage, b: Stage) -> dict[str, Any] | None:
     delta = np.hypot(a.xy[:, 0] - b.xy[:, 0], a.xy[:, 1] - b.xy[:, 1])
     lane_like_indices = np.array(a.metadata.get("lane_like_indices", []), dtype=np.int64)
     lane_values = delta[lane_like_indices] if lane_like_indices.size else np.empty(0, dtype=np.float64)
+    wrap_mask = (a.lap_dist_pct >= 0.95) | (a.lap_dist_pct <= 0.05)
+    non_wrap_values = delta[~wrap_mask]
     return {
         "sample_count": int(len(delta)),
         "median_m": _safe_quantile(delta, 0.50),
         "p95_m": _safe_quantile(delta, 0.95),
         "max_m": _safe_quantile(delta, 1.00),
+        "non_wrap_sample_count": int(non_wrap_values.size),
+        "non_wrap_median_m": _safe_quantile(non_wrap_values, 0.50) if non_wrap_values.size else 0.0,
+        "non_wrap_p95_m": _safe_quantile(non_wrap_values, 0.95) if non_wrap_values.size else 0.0,
+        "non_wrap_max_m": _safe_quantile(non_wrap_values, 1.00) if non_wrap_values.size else 0.0,
         "lane_like_sample_count": int(lane_values.size),
         "lane_like_median_m": _safe_quantile(lane_values, 0.50) if lane_values.size else 0.0,
         "lane_like_max_m": _safe_quantile(lane_values, 1.00) if lane_values.size else 0.0,
@@ -353,8 +401,13 @@ def _pointwise_delta(a: Stage, b: Stage) -> dict[str, Any] | None:
 
 def _axis_semantics(columns: dict[str, np.ndarray]) -> dict[str, Any]:
     required = {"Speed", "VelocityX", "VelocityY", "VelocityZ"}
-    if not required <= set(columns):
-        return {"status": "insufficient_data"}
+    missing = sorted(required - set(columns))
+    if missing:
+        return {
+            "status": "skipped_missing_channels",
+            "required_channels": sorted(required),
+            "missing_channels": missing,
+        }
     speed = np.asarray(columns["Speed"], dtype=np.float64)
     vx = np.asarray(columns["VelocityX"], dtype=np.float64)
     vy = np.asarray(columns["VelocityY"], dtype=np.float64)
@@ -384,25 +437,107 @@ def _axis_semantics(columns: dict[str, np.ndarray]) -> dict[str, Any]:
     }
 
 
-def _choose_best_rotated_variant(stage_reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    candidates = []
+def _comparison_report(stage_map: dict[str, Stage], left_name: str, right_name: str) -> dict[str, Any]:
+    missing_stages = [name for name in (left_name, right_name) if name not in stage_map]
+    if missing_stages:
+        return {"status": "skipped_missing_stage", "missing_stages": missing_stages}
+    delta = _pointwise_delta(stage_map[left_name], stage_map[right_name])
+    if delta is None:
+        return {"status": "failed", "reason": "sample_count_mismatch_or_empty"}
+    return {"status": "ok", **delta}
+
+
+def _time_axis_quality_report(columns: dict[str, np.ndarray], source: str) -> dict[str, Any]:
+    if "SessionTime" not in columns:
+        return {
+            "status": "skipped_missing_channels",
+            "source": source,
+            "missing_channels": ["SessionTime"],
+        }
+    return {"status": "ok", "source": source, **_time_axis_quality(np.asarray(columns["SessionTime"], dtype=np.float64))}
+
+
+def _choose_best_rotated_variant(stage_reports: dict[str, dict[str, Any]], comparisons: dict[str, Any]) -> dict[str, Any]:
+    assessed_candidates: list[dict[str, Any]] = []
     for name in ROTATION_VARIANTS:
         report = stage_reports.get(name)
         if not isinstance(report, dict):
             continue
+        if report.get("status") != "ok":
+            assessed_candidates.append(
+                {
+                    "name": name,
+                    "status": report.get("status", "missing"),
+                    "missing_channels": list(report.get("missing_channels", [])),
+                }
+            )
+            continue
         wrap = dict(report.get("wrap_zone_straightness") or {})
-        candidates.append(
-            {
-                "name": name,
-                "wrap_mean_cross_track_m": float(wrap.get("mean_cross_track_m") or float("inf")),
-                "wrap_max_cross_track_m": float(wrap.get("max_cross_track_m") or float("inf")),
-                "length_over_start_end_ratio": float(report.get("length_over_start_end_ratio") or 0.0),
-            }
+        ui_cmp = dict(comparisons.get(f"ui_current_path_vs_{name}") or {})
+        wrap_mean = _optional_float(wrap.get("mean_cross_track_m"))
+        wrap_max = _optional_float(wrap.get("max_cross_track_m"))
+        start_end_distance = _optional_float(report.get("start_end_distance_m"))
+        length_ratio = _optional_float(report.get("length_over_start_end_ratio")) or 0.0
+        ui_non_wrap_p95 = _optional_float(ui_cmp.get("non_wrap_p95_m")) if ui_cmp.get("status") == "ok" else None
+        ui_global_p95 = _optional_float(ui_cmp.get("p95_m")) if ui_cmp.get("status") == "ok" else None
+        global_metric_name = "ui_non_wrap_p95_delta_m" if ui_non_wrap_p95 is not None else "start_end_distance_m"
+        global_metric_value = ui_non_wrap_p95 if ui_non_wrap_p95 is not None else start_end_distance
+        candidate = {
+            "name": name,
+            "status": "ok",
+            "wrap_mean_cross_track_m": wrap_mean,
+            "wrap_max_cross_track_m": wrap_max,
+            "start_end_distance_m": start_end_distance,
+            "length_over_start_end_ratio": length_ratio,
+            "ui_non_wrap_p95_delta_m": ui_non_wrap_p95,
+            "ui_global_p95_delta_m": ui_global_p95,
+            "global_shape_metric": global_metric_name,
+            "global_shape_score_m": global_metric_value,
+            "score_components": {
+                "global_shape_metric": global_metric_name,
+                "global_shape_score_m": global_metric_value,
+                "start_end_distance_m": start_end_distance,
+                "wrap_mean_cross_track_m": wrap_mean,
+                "wrap_max_cross_track_m": wrap_max,
+                "length_over_start_end_ratio": length_ratio,
+            },
+        }
+        candidate["_sort_key"] = (
+            global_metric_value if global_metric_value is not None else float("inf"),
+            start_end_distance if start_end_distance is not None else float("inf"),
+            wrap_mean if wrap_mean is not None else float("inf"),
+            wrap_max if wrap_max is not None else float("inf"),
+            -length_ratio,
         )
-    if not candidates:
-        return {"status": "insufficient_data"}
-    candidates.sort(key=lambda item: (item["wrap_mean_cross_track_m"], item["wrap_max_cross_track_m"], -item["length_over_start_end_ratio"]))
-    return {"status": "ok", "best_candidate": candidates[0], "all_candidates": candidates}
+        assessed_candidates.append(candidate)
+    ok_candidates = [item for item in assessed_candidates if item.get("status") == "ok"]
+    if not ok_candidates:
+        for item in assessed_candidates:
+            item.pop("_sort_key", None)
+        return {
+            "status": "insufficient_data",
+            "selection_rule": [
+                "prefer smaller ui_non_wrap_p95_delta_m when ui_current_path is available",
+                "otherwise prefer smaller start_end_distance_m as a simple global closure metric",
+                "then prefer smaller wrap_mean_cross_track_m and wrap_max_cross_track_m",
+                "finally prefer larger length_over_start_end_ratio",
+            ],
+            "all_candidates": assessed_candidates,
+        }
+    ok_candidates.sort(key=lambda item: item["_sort_key"])
+    best_candidate = {key: value for key, value in ok_candidates[0].items() if key != "_sort_key"}
+    all_candidates = [{key: value for key, value in item.items() if key != "_sort_key"} for item in assessed_candidates]
+    return {
+        "status": "ok",
+        "selection_rule": [
+            "prefer smaller ui_non_wrap_p95_delta_m when ui_current_path is available",
+            "otherwise prefer smaller start_end_distance_m as a simple global closure metric",
+            "then prefer smaller wrap_mean_cross_track_m and wrap_max_cross_track_m",
+            "finally prefer larger length_over_start_end_ratio",
+        ],
+        "best_candidate": best_candidate,
+        "all_candidates": all_candidates,
+    }
 
 
 def _load_table_columns(table: pq.Table) -> dict[str, np.ndarray]:
@@ -412,21 +547,45 @@ def _load_table_columns(table: pq.Table) -> dict[str, np.ndarray]:
     }
 
 
-def _load_raw_lap(session_dir: Path, lap_no: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+def _load_raw_lap(session_dir: Path, lap_no: int) -> tuple[dict[str, np.ndarray], dict[str, Any], dict[str, Any]]:
     meta_path = session_dir / f"run_0001_lap_{lap_no:04d}_meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     run_path = session_dir / "run_0001.parquet"
-    table = pq.read_table(run_path, columns=list(RAW_CHANNELS)).slice(
+    available_channels = list(pq.ParquetFile(run_path).schema_arrow.names)
+    available_set = set(available_channels)
+    loaded_channels = [name for name in RAW_CHANNELS if name in available_set]
+    missing_channels = [name for name in RAW_CHANNELS if name not in available_set]
+    table = pq.read_table(run_path, columns=loaded_channels).slice(
         meta["lap_start_sample"],
         meta["lap_end_sample"] - meta["lap_start_sample"] + 1,
     )
-    return _load_table_columns(table), meta
+    load_report = {
+        "path": str(run_path),
+        "requested_channels": list(RAW_CHANNELS),
+        "available_channels": available_channels,
+        "loaded_channels": loaded_channels,
+        "missing_channels": missing_channels,
+        "channel_presence": {name: (name in available_set) for name in RAW_CHANNELS},
+        "sample_count": int(table.num_rows),
+    }
+    return _load_table_columns(table), meta, load_report
 
 
-def _load_resampled_lap(session_dir: Path, lap_no: int) -> tuple[dict[str, np.ndarray], Path]:
+def _load_resampled_lap(session_dir: Path, lap_no: int) -> tuple[dict[str, np.ndarray], Path, dict[str, Any]]:
     path = session_dir / "laps" / f"lap_{lap_no:04d}" / "analysis" / "lap_resampled.parquet"
     table = pq.read_table(path)
-    return _load_table_columns(table), path
+    available_channels = list(table.schema.names)
+    available_set = set(available_channels)
+    load_report = {
+        "path": str(path),
+        "requested_channels": list(RAW_CHANNELS),
+        "available_channels": available_channels,
+        "loaded_channels": [name for name in RAW_CHANNELS if name in available_set],
+        "missing_channels": [name for name in RAW_CHANNELS if name not in available_set],
+        "channel_presence": {name: (name in available_set) for name in RAW_CHANNELS},
+        "sample_count": int(table.num_rows),
+    }
+    return _load_table_columns(table), path, load_report
 
 
 def _ui_stage(resampled_path: Path, lap_dist_pct: np.ndarray, lane_like_indices: list[int]) -> Stage:
@@ -450,96 +609,292 @@ def _make_stages(
     resampled: dict[str, np.ndarray],
     *,
     resampled_path: Path,
-) -> list[Stage]:
+) -> tuple[list[Stage], dict[str, dict[str, Any]], dict[str, Any]]:
     stages: list[Stage] = []
-    lap_dist_pct = np.asarray(resampled["LapDistPct"], dtype=np.float64)
-    session_time = np.asarray(resampled["SessionTime"], dtype=np.float64)
-    speed = np.asarray(resampled["Speed"], dtype=np.float64)
-    yaw = np.asarray(resampled["Yaw"], dtype=np.float64)
-    velocity_x = np.asarray(resampled["VelocityX"], dtype=np.float64)
-    velocity_y = np.asarray(resampled["VelocityY"], dtype=np.float64)
-    velocity_z = np.asarray(resampled.get("VelocityZ", np.full_like(velocity_x, np.nan)), dtype=np.float64)
-    lane_like_indices = np.flatnonzero(_lane_like_mask(lap_dist_pct, session_time, yaw, velocity_y)).tolist()
-    channel_presence = sorted(key for key in ("Speed", "Yaw", "VelocityX", "VelocityY", "VelocityZ") if key in resampled)
+    stage_reports: dict[str, dict[str, Any]] = {}
+    available_channels = set(resampled)
+    lap_dist_pct = np.asarray(resampled["LapDistPct"], dtype=np.float64) if "LapDistPct" in resampled else None
 
-    current_ui = _ui_stage(resampled_path, lap_dist_pct, lane_like_indices)
-    stages.append(current_ui)
+    lane_like_required = ("LapDistPct", "SessionTime", "Yaw", "VelocityY")
+    lane_like_missing = [name for name in lane_like_required if name not in available_channels]
+    if lane_like_missing:
+        lane_like_indices: list[int] = []
+        lane_like_report = {
+            "status": "skipped_missing_channels",
+            "required_channels": list(lane_like_required),
+            "missing_channels": lane_like_missing,
+            "sample_count": 0,
+        }
+    else:
+        lane_like_indices = np.flatnonzero(
+            _lane_like_mask(
+                np.asarray(resampled["LapDistPct"], dtype=np.float64),
+                np.asarray(resampled["SessionTime"], dtype=np.float64),
+                np.asarray(resampled["Yaw"], dtype=np.float64),
+                np.asarray(resampled["VelocityY"], dtype=np.float64),
+            )
+        ).tolist()
+        lane_like_report = {
+            "status": "ok",
+            "required_channels": list(lane_like_required),
+            "missing_channels": [],
+            "sample_count": int(len(lane_like_indices)),
+        }
 
-    speed_xy, time_source = _integrate_speed_yaw(session_time, speed, yaw)
-    stages.append(
-        Stage(
-            name="speed_yaw",
-            source="resampled",
-            lap_dist_pct=lap_dist_pct,
-            xy=speed_xy,
-            metadata={
-                "time_source": time_source,
-                "channel_presence": channel_presence,
-                "formula": "world_v=(Speed*cos(Yaw), Speed*sin(Yaw))",
-                "lane_like_indices": lane_like_indices,
-            },
+    def build_stage_metadata(required_channels: tuple[str, ...], **extra: Any) -> dict[str, Any]:
+        metadata = {
+            "status": "ok",
+            "required_channels": list(required_channels),
+            "missing_channels": [],
+            "channel_presence": {channel: (channel in available_channels) for channel in required_channels},
+            "lane_like_indices": lane_like_indices,
+            "lane_like_status": lane_like_report["status"],
+        }
+        metadata.update(extra)
+        return metadata
+
+    def skip_stage(name: str, source: str, required_channels: tuple[str, ...], missing_channels: list[str], **metadata: Any) -> None:
+        stage_reports[name] = _stage_issue_report(
+            name=name,
+            source=source,
+            status="skipped_missing_channels",
+            required_channels=required_channels,
+            available_channels=available_channels,
+            missing_channels=missing_channels,
+            metadata=metadata,
         )
-    )
 
-    velocity_direct_xy, time_source = _integrate_velocity_direct(session_time, velocity_x, velocity_y)
-    stages.append(
-        Stage(
-            name="velocity_xy_direct",
-            source="resampled",
-            lap_dist_pct=lap_dist_pct,
-            xy=velocity_direct_xy,
-            metadata={
-                "time_source": time_source,
-                "channel_presence": channel_presence,
-                "formula": "world_v=(VelocityX, VelocityY)",
-                "lane_like_indices": lane_like_indices,
-                "expected_semantics": "negative_control_if_vehicle_local",
-            },
+    def fail_stage(name: str, source: str, required_channels: tuple[str, ...], error: Exception, **metadata: Any) -> None:
+        stage_reports[name] = _stage_issue_report(
+            name=name,
+            source=source,
+            status="failed",
+            required_channels=required_channels,
+            available_channels=available_channels,
+            missing_channels=[],
+            metadata=metadata,
+            error=f"{type(error).__name__}: {error}",
         )
-    )
 
+    ui_required = ("LapDistPct",)
+    ui_missing = [name for name in ui_required if name not in available_channels]
+    if ui_missing:
+        skip_stage("ui_current_path", "core.coaching.lap_view_model._load_resampled_geometry", ui_required, ui_missing, lane_like_status=lane_like_report["status"])
+    else:
+        try:
+            current_ui = _ui_stage(resampled_path, lap_dist_pct, lane_like_indices)
+            current_ui = Stage(
+                name=current_ui.name,
+                source=current_ui.source,
+                lap_dist_pct=current_ui.lap_dist_pct,
+                xy=current_ui.xy,
+                metadata={
+                    **current_ui.metadata,
+                    **build_stage_metadata(
+                        ui_required,
+                        time_source=current_ui.metadata.get("time_source"),
+                        source_name=current_ui.metadata.get("source_name"),
+                        is_closed=current_ui.metadata.get("is_closed"),
+                    ),
+                },
+            )
+            stages.append(current_ui)
+            stage_reports[current_ui.name] = _stage_report(current_ui)
+        except Exception as exc:
+            fail_stage("ui_current_path", "core.coaching.lap_view_model._load_resampled_geometry", ui_required, exc, lane_like_status=lane_like_report["status"])
+
+    speed_required = ("LapDistPct", "SessionTime", "Speed", "Yaw")
+    speed_missing = [name for name in speed_required if name not in available_channels]
+    if speed_missing:
+        skip_stage(
+            "speed_yaw",
+            "resampled",
+            speed_required,
+            speed_missing,
+            formula="world_v=(Speed*cos(Yaw), Speed*sin(Yaw))",
+            lane_like_status=lane_like_report["status"],
+        )
+    else:
+        try:
+            speed_xy, time_source = _integrate_speed_yaw(
+                np.asarray(resampled["SessionTime"], dtype=np.float64),
+                np.asarray(resampled["Speed"], dtype=np.float64),
+                np.asarray(resampled["Yaw"], dtype=np.float64),
+            )
+            stage = Stage(
+                name="speed_yaw",
+                source="resampled",
+                lap_dist_pct=lap_dist_pct,
+                xy=speed_xy,
+                metadata=build_stage_metadata(
+                    speed_required,
+                    time_source=time_source,
+                    formula="world_v=(Speed*cos(Yaw), Speed*sin(Yaw))",
+                ),
+            )
+            stages.append(stage)
+            stage_reports[stage.name] = _stage_report(stage)
+        except Exception as exc:
+            fail_stage(
+                "speed_yaw",
+                "resampled",
+                speed_required,
+                exc,
+                formula="world_v=(Speed*cos(Yaw), Speed*sin(Yaw))",
+                lane_like_status=lane_like_report["status"],
+            )
+
+    direct_required = ("LapDistPct", "SessionTime", "VelocityX", "VelocityY")
+    direct_missing = [name for name in direct_required if name not in available_channels]
+    if direct_missing:
+        skip_stage(
+            "velocity_xy_direct",
+            "resampled",
+            direct_required,
+            direct_missing,
+            formula="world_v=(VelocityX, VelocityY)",
+            expected_semantics="negative_control_if_vehicle_local",
+            lane_like_status=lane_like_report["status"],
+        )
+    else:
+        try:
+            velocity_direct_xy, time_source = _integrate_velocity_direct(
+                np.asarray(resampled["SessionTime"], dtype=np.float64),
+                np.asarray(resampled["VelocityX"], dtype=np.float64),
+                np.asarray(resampled["VelocityY"], dtype=np.float64),
+            )
+            stage = Stage(
+                name="velocity_xy_direct",
+                source="resampled",
+                lap_dist_pct=lap_dist_pct,
+                xy=velocity_direct_xy,
+                metadata=build_stage_metadata(
+                    direct_required,
+                    time_source=time_source,
+                    formula="world_v=(VelocityX, VelocityY)",
+                    expected_semantics="negative_control_if_vehicle_local",
+                ),
+            )
+            stages.append(stage)
+            stage_reports[stage.name] = _stage_report(stage)
+        except Exception as exc:
+            fail_stage(
+                "velocity_xy_direct",
+                "resampled",
+                direct_required,
+                exc,
+                formula="world_v=(VelocityX, VelocityY)",
+                expected_semantics="negative_control_if_vehicle_local",
+                lane_like_status=lane_like_report["status"],
+            )
+
+    rotated_required = ("LapDistPct", "SessionTime", "VelocityX", "VelocityY", "Yaw")
     for variant in ROTATION_VARIANTS:
-        rotated_xy, time_source = _integrate_local_velocity_rotated(
-            session_time,
-            velocity_x,
-            velocity_y,
-            yaw,
-            variant=variant,
-        )
-        stages.append(
-            Stage(
+        rotated_missing = [name for name in rotated_required if name not in available_channels]
+        if rotated_missing:
+            skip_stage(
+                variant,
+                "resampled",
+                rotated_required,
+                rotated_missing,
+                formula="world_v=rotate(local VelocityX/VelocityY by Yaw)",
+                rotation_variant=variant,
+                lane_like_status=lane_like_report["status"],
+            )
+            continue
+        try:
+            rotated_xy, time_source = _integrate_local_velocity_rotated(
+                np.asarray(resampled["SessionTime"], dtype=np.float64),
+                np.asarray(resampled["VelocityX"], dtype=np.float64),
+                np.asarray(resampled["VelocityY"], dtype=np.float64),
+                np.asarray(resampled["Yaw"], dtype=np.float64),
+                variant=variant,
+            )
+            stage = Stage(
                 name=variant,
                 source="resampled",
                 lap_dist_pct=lap_dist_pct,
                 xy=rotated_xy,
-                metadata={
-                    "time_source": time_source,
-                    "channel_presence": channel_presence,
-                    "formula": "world_v=rotate(local VelocityX/VelocityY by Yaw)",
-                    "rotation_variant": variant,
-                    "lane_like_indices": lane_like_indices,
-                },
+                metadata=build_stage_metadata(
+                    rotated_required,
+                    time_source=time_source,
+                    formula="world_v=rotate(local VelocityX/VelocityY by Yaw)",
+                    rotation_variant=variant,
+                ),
             )
-        )
+            stages.append(stage)
+            stage_reports[stage.name] = _stage_report(stage)
+        except Exception as exc:
+            fail_stage(
+                variant,
+                "resampled",
+                rotated_required,
+                exc,
+                formula="world_v=rotate(local VelocityX/VelocityY by Yaw)",
+                rotation_variant=variant,
+                lane_like_status=lane_like_report["status"],
+            )
 
+    xz_required = ("LapDistPct", "SessionTime", "VelocityX", "VelocityZ")
     raw_semantics = _axis_semantics(raw)
-    if raw_semantics.get("status") == "ok":
-        stages.append(
-            Stage(
-                name="velocity_xz_direct",
-                source="resampled",
-                lap_dist_pct=lap_dist_pct,
-                xy=_integrate_velocity_direct(session_time, velocity_x, velocity_z)[0],
-                metadata={
-                    "time_source": "SessionTime",
-                    "channel_presence": channel_presence,
-                    "formula": "world_v=(VelocityX, VelocityZ)",
-                    "lane_like_indices": lane_like_indices,
-                    "diagnostic_only": True,
-                },
-            )
+    if raw_semantics.get("status") != "ok":
+        skip_stage(
+            "velocity_xz_direct",
+            "resampled",
+            xz_required,
+            list(raw_semantics.get("missing_channels", [])),
+            formula="world_v=(VelocityX, VelocityZ)",
+            diagnostic_only=True,
+            gating_status=raw_semantics.get("status"),
+            gating_missing_channels=list(raw_semantics.get("missing_channels", [])),
+            reason="raw_axis_semantics_missing_channels",
+            lane_like_status=lane_like_report["status"],
         )
-    return stages
+    else:
+        xz_missing = [name for name in xz_required if name not in available_channels]
+        if xz_missing:
+            skip_stage(
+                "velocity_xz_direct",
+                "resampled",
+                xz_required,
+                xz_missing,
+                formula="world_v=(VelocityX, VelocityZ)",
+                diagnostic_only=True,
+                lane_like_status=lane_like_report["status"],
+            )
+        else:
+            try:
+                velocity_xz_xy, time_source = _integrate_velocity_direct(
+                    np.asarray(resampled["SessionTime"], dtype=np.float64),
+                    np.asarray(resampled["VelocityX"], dtype=np.float64),
+                    np.asarray(resampled["VelocityZ"], dtype=np.float64),
+                )
+                stage = Stage(
+                    name="velocity_xz_direct",
+                    source="resampled",
+                    lap_dist_pct=lap_dist_pct,
+                    xy=velocity_xz_xy,
+                    metadata=build_stage_metadata(
+                        xz_required,
+                        time_source=time_source,
+                        formula="world_v=(VelocityX, VelocityZ)",
+                        diagnostic_only=True,
+                    ),
+                )
+                stages.append(stage)
+                stage_reports[stage.name] = _stage_report(stage)
+            except Exception as exc:
+                fail_stage(
+                    "velocity_xz_direct",
+                    "resampled",
+                    xz_required,
+                    exc,
+                    formula="world_v=(VelocityX, VelocityZ)",
+                    diagnostic_only=True,
+                    lane_like_status=lane_like_report["status"],
+                )
+
+    return stages, stage_reports, {"lane_like_mask": lane_like_report}
 
 
 def _transform_points(points: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
@@ -644,6 +999,17 @@ def _primary_hypothesis(
     rotated = dict(stage_reports.get("local_xy_rot_b") or {})
     speed = dict(stage_reports.get("speed_yaw") or {})
     cmp_rotated = dict(comparisons.get("speed_yaw_vs_local_xy_rot_b") or {})
+    missing_stages = [name for name, report in (("velocity_xy_direct", direct), ("local_xy_rot_b", rotated), ("speed_yaw", speed)) if report.get("status") != "ok"]
+    if axis_semantics.get("status") != "ok":
+        return {
+            "status": "unklar",
+            "reason": "Die Kanal-Semantik konnte wegen fehlender Rohkanaele nicht belastbar bestimmt werden.",
+        }
+    if missing_stages:
+        return {
+            "status": "unklar",
+            "reason": "Mindestens ein benoetigter Rekonstruktionspfad wurde uebersprungen oder ist fehlgeschlagen.",
+        }
     direct_ratio = float(direct.get("length_over_start_end_ratio") or 0.0)
     speed_wrap = float(((speed.get("wrap_zone_straightness") or {}).get("mean_cross_track_m")) or float("inf"))
     rotated_wrap = float(((rotated.get("wrap_zone_straightness") or {}).get("mean_cross_track_m")) or float("inf"))
@@ -673,54 +1039,78 @@ def _primary_hypothesis(
 
 
 def analyze_lap(session_dir: Path, lap_no: int, output_root: Path) -> dict[str, Any]:
-    raw, lap_meta = _load_raw_lap(session_dir, lap_no)
-    resampled, resampled_path = _load_resampled_lap(session_dir, lap_no)
-    stages = _make_stages(raw, resampled, resampled_path=resampled_path)
-    stage_reports = {stage.name: _stage_report(stage) for stage in stages}
+    raw, lap_meta, raw_load = _load_raw_lap(session_dir, lap_no)
+    resampled, resampled_path, resampled_load = _load_resampled_lap(session_dir, lap_no)
+    stages, stage_reports, diagnostic_features = _make_stages(raw, resampled, resampled_path=resampled_path)
     axis_semantics = _axis_semantics(raw)
-    rotated_choice = _choose_best_rotated_variant(stage_reports)
+    stage_map = {stage.name: stage for stage in stages}
+    comparisons = {
+        "speed_yaw_vs_velocity_xy_direct": _comparison_report(stage_map, "speed_yaw", "velocity_xy_direct"),
+        "speed_yaw_vs_local_xy_rot_a": _comparison_report(stage_map, "speed_yaw", "local_xy_rot_a"),
+        "speed_yaw_vs_local_xy_rot_b": _comparison_report(stage_map, "speed_yaw", "local_xy_rot_b"),
+        "ui_current_vs_speed_yaw": _comparison_report(stage_map, "ui_current_path", "speed_yaw"),
+        "ui_current_path_vs_local_xy_rot_a": _comparison_report(stage_map, "ui_current_path", "local_xy_rot_a"),
+        "ui_current_path_vs_local_xy_rot_b": _comparison_report(stage_map, "ui_current_path", "local_xy_rot_b"),
+        "raw_time_axis_quality": _time_axis_quality_report(raw, "raw"),
+        "resampled_time_axis_quality": _time_axis_quality_report(resampled, "resampled"),
+    }
+    rotated_choice = _choose_best_rotated_variant(stage_reports, comparisons)
 
-    all_points = np.vstack([stage.xy for stage in stages if len(stage.xy) > 0])
-    bbox = (
-        float(np.min(all_points[:, 0])),
-        float(np.min(all_points[:, 1])),
-        float(np.max(all_points[:, 0])),
-        float(np.max(all_points[:, 1])),
-    )
+    all_stage_points = [stage.xy for stage in stages if len(stage.xy) > 0]
+    bbox: tuple[float, float, float, float] | None = None
+    if all_stage_points:
+        all_points = np.vstack(all_stage_points)
+        bbox = (
+            float(np.min(all_points[:, 0])),
+            float(np.min(all_points[:, 1])),
+            float(np.max(all_points[:, 0])),
+            float(np.max(all_points[:, 1])),
+        )
 
     lap_out = output_root / f"lap_{lap_no:04d}"
     lap_out.mkdir(parents=True, exist_ok=True)
-    for stage in stages:
-        _save_stage_plot(stage, bbox, lap_out / f"{stage.name}.png")
-    _save_overlay_plot(stages, bbox, lap_out / "comparison_overlay.png")
+    if bbox is not None:
+        for stage in stages:
+            _save_stage_plot(stage, bbox, lap_out / f"{stage.name}.png")
+        _save_overlay_plot(stages, bbox, lap_out / "comparison_overlay.png")
+        plot_status = {"status": "ok", "rendered_stage_count": int(len(stages))}
+    else:
+        plot_status = {"status": "skipped_no_stage_geometry", "rendered_stage_count": 0}
 
-    stage_map = {stage.name: stage for stage in stages}
-    comparisons = {
-        "speed_yaw_vs_velocity_xy_direct": _pointwise_delta(stage_map["speed_yaw"], stage_map["velocity_xy_direct"]),
-        "speed_yaw_vs_local_xy_rot_a": _pointwise_delta(stage_map["speed_yaw"], stage_map["local_xy_rot_a"]),
-        "speed_yaw_vs_local_xy_rot_b": _pointwise_delta(stage_map["speed_yaw"], stage_map["local_xy_rot_b"]),
-        "ui_current_vs_speed_yaw": _pointwise_delta(stage_map["ui_current_path"], stage_map["speed_yaw"]),
-        "raw_time_axis_quality": _time_axis_quality(np.asarray(raw["SessionTime"], dtype=np.float64)),
-        "resampled_time_axis_quality": _time_axis_quality(np.asarray(resampled["SessionTime"], dtype=np.float64)),
-    }
+    analysis_status = "ok"
+    if any(report.get("status") == "failed" for report in stage_reports.values()):
+        analysis_status = "partial_failed"
+    elif any(report.get("status") != "ok" for report in stage_reports.values()):
+        analysis_status = "partial"
 
     report = {
         "lap_no": lap_no,
         "lap_meta": lap_meta,
+        "analysis_status": analysis_status,
         "input_columns": {
             "raw": sorted(raw.keys()),
             "resampled": sorted(resampled.keys()),
+        },
+        "channel_presence": {
+            "raw": raw_load["channel_presence"],
+            "resampled": resampled_load["channel_presence"],
+        },
+        "input_loading": {
+            "raw": raw_load,
+            "resampled": resampled_load,
         },
         "channel_stats": {
             "raw": _channel_stats(raw),
             "resampled": _channel_stats({name: resampled[name] for name in RAW_CHANNELS if name in resampled}),
         },
+        "diagnostic_features": diagnostic_features,
         "axis_semantics": axis_semantics,
         "rotation_variant_assessment": rotated_choice,
-        "raw_sample_count": int(len(raw["LapDistPct"])),
-        "resampled_sample_count": int(len(resampled["LapDistPct"])),
+        "raw_sample_count": int(raw_load["sample_count"]),
+        "resampled_sample_count": int(resampled_load["sample_count"]),
         "stages": stage_reports,
         "comparisons": comparisons,
+        "plot_generation": plot_status,
         "primary_hypothesis": _primary_hypothesis(stage_reports, comparisons, axis_semantics),
         "next_step_proposal": {
             "status": "candidate_fix",
