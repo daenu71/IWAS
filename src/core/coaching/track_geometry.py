@@ -55,7 +55,6 @@ _ZOOM_LEGEND_FONT = ("Arial", 11)
 _ZOOM_TOOLTIP_FONT = ("Arial", 8)
 EVENT_SYMBOL_SIZE = 20   # px; event symbol size used for collision detection
 LEGEND_SYMBOL_SIZE = EVENT_SYMBOL_SIZE  # px; legend symbol size
-_TRACKMAP_EVENT_SYMBOL_SIZE = 14  # px; smaller symbols for the full TrackMap view
 
 _FIT_LEGEND_WIDTH = 160
 _FIT_PADDING_LEFT = 10
@@ -867,19 +866,18 @@ def _render_trackmap_events(
     coords: np.ndarray,
     lap_dist_pct: Optional[np.ndarray],
 ) -> None:
-    """Draw event sprites on the full TrackMap canvas."""
-    bg = _contrast_color(canvas)
-    for ev in events:
+    """Draw event sprites on the full TrackMap canvas with collision resolution."""
+    # Project all visible events into canvas coordinates first
+    valid: list = []
+    for ev in (events or []):
         try:
             event_type = str(getattr(ev, "event_type", "") or "")
         except Exception:
             continue
         if event_type not in visible_event_types:
             continue
-        style = _EVENT_STYLE.get(event_type)
-        if style is None:
+        if _EVENT_STYLE.get(event_type) is None:
             continue
-        _, color = style
         try:
             ldp = float(getattr(ev, "lapdist_pct", None))
         except (TypeError, ValueError):
@@ -890,13 +888,43 @@ def _render_trackmap_events(
             ex, ey = _trackmap_project_event(ldp, lap_dist_pct, coords)
         except Exception:
             continue
-        needs_bg = event_type in _BG_SYMBOL_TYPES
+        valid.append((ev, ex, ey))
+
+    if not valid:
+        return
+
+    # Sort by lapdist_pct and resolve collisions using the shared helper
+    valid.sort(key=lambda t: t[0].lapdist_pct)
+    resolved = _apply_collision_offsets(valid, coords)
+
+    bg = _contrast_color(canvas)
+
+    # Connector lines drawn first so they appear behind symbols
+    for rev in resolved:
+        if rev.connector_start_x != rev.canvas_x or rev.connector_start_y != rev.canvas_y:
+            style = _EVENT_STYLE.get(rev.event.event_type)
+            if style is not None:
+                _, color = style
+                canvas.create_line(
+                    rev.connector_start_x, rev.connector_start_y,
+                    rev.canvas_x, rev.canvas_y,
+                    fill=color, width=1,
+                    tags=("tm_connector",),
+                )
+
+    for rev in resolved:
+        style = _EVENT_STYLE.get(rev.event.event_type)
+        if style is None:
+            continue
+        _, color = style
+        needs_bg = rev.event.event_type in _BG_SYMBOL_TYPES
         sprite = EventSpriteCache.get(
-            event_type, _TRACKMAP_EVENT_SYMBOL_SIZE,
+            rev.event.event_type, EVENT_SYMBOL_SIZE,
             color, bg if needs_bg else None, canvas,
         )
         canvas._sprite_refs.append(sprite)
-        canvas.create_image(ex, ey, image=sprite, anchor=tk.CENTER, tags=("tm_event",))
+        canvas.create_image(rev.canvas_x, rev.canvas_y, image=sprite,
+                            anchor=tk.CENTER, tags=("tm_event",))
 
 
 # ---------------------------------------------------------------------------
@@ -914,38 +942,21 @@ def _gear_label(event: dict) -> str:
     return str(relevant)
 
 
-def _resolve_event_collisions(
-    events,
-    seg_ldp: Optional[np.ndarray],
-    seg_canvas: np.ndarray,
-    lo_eff: float,
-    hi_eff: float,
-) -> list:
-    """Return a list of ``ResolvedEvent`` with collision-resolved canvas positions.
+def _apply_collision_offsets(valid: list, seg_canvas: np.ndarray) -> list:
+    """Given pre-projected events, return ``ResolvedEvent`` list with collision offsets.
 
-    Events whose projected positions are within ``EVENT_SYMBOL_SIZE`` pixels of
-    each other are grouped.  Within each group index-0 stays on the lap line;
-    subsequent events are offset orthogonally (alternating right/left, growing
-    magnitude) with a connector line anchor stored in ``connector_start_*``.
+    *valid* is a list of ``(event, canvas_x, canvas_y)`` tuples, already
+    sorted by lapdist_pct.  *seg_canvas* is the track segment coordinate array
+    used to compute tangent vectors for orthogonal offsets.
+
+    Events whose canvas positions are within ``EVENT_SYMBOL_SIZE`` pixels of
+    the first event in a group are placed in that group.  Within each group
+    index-0 stays on the track line; subsequent events are offset orthogonally
+    (alternating right/left, growing magnitude) with a connector anchor stored
+    in ``connector_start_*``.
     """
-    # Collect valid events with their projected canvas positions
-    valid: list = []
-    for ev in (events or []):
-        if _EVENT_STYLE.get(ev.event_type) is None:
-            continue
-        if not (lo_eff <= ev.lapdist_pct <= hi_eff):
-            continue
-        try:
-            ex, ey = _zoom_project_event(ev.lapdist_pct, seg_ldp, seg_canvas)
-        except Exception:
-            continue
-        valid.append((ev, ex, ey))
-
     if not valid:
         return []
-
-    # Sort by lapdist_pct so nearby positions cluster together
-    valid.sort(key=lambda t: t[0].lapdist_pct)
 
     # Greedy grouping: events within EVENT_SYMBOL_SIZE canvas distance of the
     # first event in a group belong to that collision group.
@@ -994,6 +1005,42 @@ def _resolve_event_collisions(
             resolved.append(ResolvedEvent(ev, new_x, new_y, ex, ey))
 
     return resolved
+
+
+def _resolve_event_collisions(
+    events,
+    seg_ldp: Optional[np.ndarray],
+    seg_canvas: np.ndarray,
+    lo_eff: float,
+    hi_eff: float,
+) -> list:
+    """Return a list of ``ResolvedEvent`` with collision-resolved canvas positions.
+
+    Events whose projected positions are within ``EVENT_SYMBOL_SIZE`` pixels of
+    each other are grouped.  Within each group index-0 stays on the lap line;
+    subsequent events are offset orthogonally (alternating right/left, growing
+    magnitude) with a connector line anchor stored in ``connector_start_*``.
+    """
+    # Collect valid events with their projected canvas positions
+    valid: list = []
+    for ev in (events or []):
+        if _EVENT_STYLE.get(ev.event_type) is None:
+            continue
+        if not (lo_eff <= ev.lapdist_pct <= hi_eff):
+            continue
+        try:
+            ex, ey = _zoom_project_event(ev.lapdist_pct, seg_ldp, seg_canvas)
+        except Exception:
+            continue
+        valid.append((ev, ex, ey))
+
+    if not valid:
+        return []
+
+    # Sort by lapdist_pct so nearby positions cluster together
+    valid.sort(key=lambda t: t[0].lapdist_pct)
+
+    return _apply_collision_offsets(valid, seg_canvas)
 
 
 def _zoom_project_event(
