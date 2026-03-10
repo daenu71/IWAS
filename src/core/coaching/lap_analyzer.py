@@ -154,6 +154,12 @@ def _try_ensure_track_geometry(session_dir: Path) -> None:
                 import_result.existing_source_type,
             )
             return
+        if import_result.status == "invalid_ibt_geometry":
+            log.info(
+                "[track_geometry] Skipping invalid IBT geometry track_key=%s: %s",
+                track_key,
+                import_result.message,
+            )
         if out_path.exists():
             log.debug("[track_geometry] Geometry already present after IBT import attempt: %s", out_path)
             return

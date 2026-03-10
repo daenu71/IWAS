@@ -122,7 +122,25 @@ def import_track_geometry_from_telemetry(
             selected.ibt_path,
         )
 
-    written = extract_track_geometry(selected.ibt_path, storage_path)
+    try:
+        written = extract_track_geometry(selected.ibt_path, storage_path)
+    except Exception as exc:
+        message = f"skipped invalid ibt geometry: {exc}"
+        _LOG.warning(
+            "[track_geometry_import] invalid ibt geometry track_key=%s ibt=%s (%s)",
+            selected.metadata.track_key,
+            selected.ibt_path,
+            exc,
+        )
+        return TrackGeometryImportResult(
+            status="invalid_ibt_geometry",
+            track_key=selected.metadata.track_key,
+            geometry_path=geometry_path,
+            telemetry_dir=telemetry_path,
+            matched_ibt_path=selected.ibt_path,
+            existing_source_type=existing_source_type,
+            message=message,
+        )
     message = f"imported from {selected.ibt_path.name}"
     _LOG.info(
         "[track_geometry_import] imported track_key=%s ibt=%s out=%s",

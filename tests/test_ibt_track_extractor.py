@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -92,17 +93,16 @@ def _make_straight_frames(n: int = 600, vx: float = 50.0) -> list[dict]:
     return frames
 
 
-def _make_oval_frames(n: int = 600) -> list[dict]:
+def _make_geo_frames(samples: list[tuple[float, float, float]]) -> list[dict]:
     dt = 1.0 / 60.0
     frames: list[dict] = []
-    for idx in range(n):
-        angle = 2 * np.pi * idx / n
+    for idx, (lap_dist_pct, lat, lon) in enumerate(samples):
         frames.append(
             {
                 "SessionTime": idx * dt,
-                "VelocityX": float(50.0 * np.cos(angle)),
-                "VelocityY": float(50.0 * np.sin(angle)),
-                "LapDistPct": idx / n,
+                "LapDistPct": lap_dist_pct,
+                "Lat": lat,
+                "Lon": lon,
             }
         )
     return frames
@@ -115,8 +115,16 @@ def _fake_irsdk_module(fake_ir: _FakeIRSDK) -> types.ModuleType:
 
 
 def test_extract_produces_valid_json(tmp_path: Path) -> None:
+    frames = _make_geo_frames(
+        [
+            (0.00, 47.000000, 8.000000),
+            (0.25, 47.000250, 8.000000),
+            (0.50, 47.000250, 8.000350),
+            (0.75, 47.000000, 8.000350),
+        ]
+    )
     fake_ir = _FakeIRSDK(
-        frames=_make_straight_frames(),
+        frames=frames,
         session_yaml=_make_session_yaml("Sebring", "Full Course", build_version="2026.03"),
     )
     ibt_file = tmp_path / "fake.ibt"
@@ -131,16 +139,33 @@ def test_extract_produces_valid_json(tmp_path: Path) -> None:
     assert payload["source"] == "ibt_telemetry"
     assert payload["source_path"] == str(ibt_file)
     assert payload["iracing_build"] == "2026.03"
-    assert isinstance(payload["center_line"], list) and len(payload["center_line"]) >= 2
-    assert isinstance(payload["left_edge"], list) and len(payload["left_edge"]) >= 2
-    assert isinstance(payload["right_edge"], list) and len(payload["right_edge"]) >= 2
+    assert payload["geometry_kind"] == "centerline_only"
+    assert payload["position_source"] == "latlon"
+    assert payload["distance_source"] == "LapDistPct"
+    assert isinstance(payload["center_line"], list) and len(payload["center_line"]) == 4
+    assert payload["left_edge"] == []
+    assert payload["right_edge"] == []
+
+    first = payload["center_line"][0]
+    assert set(first) >= {"lap_dist_pct", "lat", "lon", "x_m", "y_m"}
+    assert first["lap_dist_pct"] == pytest.approx(0.0)
+    assert first["lat"] == pytest.approx(47.0)
+    assert first["lon"] == pytest.approx(8.0)
+    assert first["x_m"] == pytest.approx(0.0)
+    assert first["y_m"] == pytest.approx(0.0)
 
 
-def test_velocity_fallback_when_no_header_geometry(tmp_path: Path) -> None:
+def test_extract_sorts_centerline_by_lap_dist_pct(tmp_path: Path) -> None:
     fake_ir = _FakeIRSDK(
-        frames=_make_oval_frames(),
-        session_yaml=_make_session_yaml("Daytona", "Oval"),
-        weekend_info={"TrackDisplayName": "Daytona", "TrackConfigName": "Oval"},
+        frames=_make_geo_frames(
+            [
+                (0.60, 47.000600, 8.000000),
+                (0.20, 47.000200, 8.000000),
+                (0.80, 47.000800, 8.000000),
+                (0.40, 47.000400, 8.000000),
+            ]
+        ),
+        session_yaml=_make_session_yaml("Daytona", "Road"),
     )
     ibt_file = tmp_path / "fake.ibt"
     ibt_file.touch()
@@ -149,27 +174,11 @@ def test_velocity_fallback_when_no_header_geometry(tmp_path: Path) -> None:
         out = extract_track_geometry(ibt_file, tmp_path)
 
     payload = json.loads(out.read_text(encoding="utf-8"))
-    center = payload["center_line"]
-    xs = [pt[0] for pt in center]
-    assert len(center) >= 2
-    assert max(xs) - min(xs) > 0.01
+    lap_dist_pct = [point["lap_dist_pct"] for point in payload["center_line"]]
+    latitudes = [point["lat"] for point in payload["center_line"]]
 
-
-def test_edge_offset_fallback_when_no_track_width(tmp_path: Path) -> None:
-    fake_ir = _FakeIRSDK(
-        frames=_make_straight_frames(),
-        session_yaml=_make_session_yaml("Spa", "GP"),
-        weekend_info={},
-    )
-    ibt_file = tmp_path / "fake.ibt"
-    ibt_file.touch()
-
-    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ir)}):
-        out = extract_track_geometry(ibt_file, tmp_path)
-
-    payload = json.loads(out.read_text(encoding="utf-8"))
-    assert len(payload["left_edge"]) >= 2
-    assert len(payload["right_edge"]) >= 2
+    assert lap_dist_pct == pytest.approx(sorted(lap_dist_pct))
+    assert latitudes == pytest.approx([47.000200, 47.000400, 47.000600, 47.000800])
 
 
 def test_read_ibt_session_metadata_exposes_track_identifiers(tmp_path: Path) -> None:
@@ -220,18 +229,16 @@ def test_normals_orthogonal_to_tangents() -> None:
     np.testing.assert_allclose(normals[:, 1], 1.0, atol=1e-10)
 
 
-def test_empty_frames_produce_empty_geometry(tmp_path: Path) -> None:
+def test_missing_latlon_skips_geometry_export(tmp_path: Path) -> None:
     fake_ir = _FakeIRSDK(
-        frames=[],
+        frames=_make_straight_frames(),
         session_yaml=_make_session_yaml("Unknown", ""),
     )
     ibt_file = tmp_path / "fake.ibt"
     ibt_file.touch()
 
     with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ir)}):
-        out = extract_track_geometry(ibt_file, tmp_path)
+        with pytest.raises(RuntimeError, match="Lat/Lon \\+ LapDistPct"):
+            extract_track_geometry(ibt_file, tmp_path)
 
-    payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["center_line"] == []
-    assert payload["left_edge"] == []
-    assert payload["right_edge"] == []
+    assert list(tmp_path.rglob("track_road_geometry.json")) == []

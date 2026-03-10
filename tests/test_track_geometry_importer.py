@@ -129,9 +129,15 @@ def test_import_replaces_legacy_fallback_geometry(tmp_path: Path, monkeypatch) -
                 "source_type": "ibt",
                 "source": "ibt_telemetry",
                 "source_path": str(found_ibt),
-                "center_line": [[0.0, 0.0], [2.0, 2.0]],
-                "left_edge": [[0.0, 0.1], [2.0, 2.1]],
-                "right_edge": [[0.0, -0.1], [2.0, 1.9]],
+                "geometry_kind": "centerline_only",
+                "position_source": "latlon",
+                "distance_source": "LapDistPct",
+                "center_line": [
+                    {"lap_dist_pct": 0.0, "lat": 47.0, "lon": 8.0, "x_m": 0.0, "y_m": 0.0},
+                    {"lap_dist_pct": 0.5, "lat": 47.0002, "lon": 8.0002, "x_m": 15.0, "y_m": 22.0},
+                ],
+                "left_edge": [],
+                "right_edge": [],
             },
         )
         return out_path
@@ -150,6 +156,9 @@ def test_import_replaces_legacy_fallback_geometry(tmp_path: Path, monkeypatch) -
     assert result.existing_source_type == "fallback"
     assert saved["source_type"] == "ibt"
     assert saved["source_path"] == str(ibt_path)
+    assert saved["geometry_kind"] == "centerline_only"
+    assert saved["left_edge"] == []
+    assert saved["right_edge"] == []
 
 
 def test_import_returns_no_match_when_scan_finds_nothing(tmp_path: Path, monkeypatch) -> None:
@@ -164,3 +173,34 @@ def test_import_returns_no_match_when_scan_finds_nothing(tmp_path: Path, monkeyp
     )
 
     assert result.status == "no_matching_ibt"
+
+
+def test_import_skips_invalid_ibt_geometry(tmp_path: Path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    telemetry_dir = tmp_path / "telemetry"
+    telemetry_dir.mkdir()
+    ibt_path = telemetry_dir / "spa_session.ibt"
+    ibt_path.touch()
+
+    candidate = importer.IbtTrackCandidate(
+        ibt_path=ibt_path,
+        metadata=_metadata("Spa", "GP"),
+        modified_ts=ibt_path.stat().st_mtime,
+    )
+    monkeypatch.setattr(importer, "find_matching_ibt_files", lambda *args, **kwargs: [candidate])
+
+    def _invalid_extract(*args, **kwargs):
+        raise RuntimeError("missing valid Lat/Lon + LapDistPct centerline in IBT")
+
+    monkeypatch.setattr(importer, "extract_track_geometry", _invalid_extract)
+
+    result = importer.import_track_geometry_from_telemetry(
+        "Spa__GP",
+        telemetry_dir=telemetry_dir,
+        storage_root=storage_root,
+    )
+
+    assert result.status == "invalid_ibt_geometry"
+    assert result.matched_ibt_path == ibt_path
+    assert result.geometry_path == storage_root / "track_geometries" / "Spa__GP" / "track_road_geometry.json"
+    assert not result.geometry_path.exists()

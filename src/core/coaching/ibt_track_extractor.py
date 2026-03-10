@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sys
@@ -27,6 +28,8 @@ _EDGE_OFFSET_M: float = 5.0
 _IBT_SAMPLE_DT: float = 1.0 / 60.0
 _MAX_FRAMES: int = 200_000
 
+_LOG = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class TrackSessionMetadata:
@@ -46,17 +49,20 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
     ir = _open_ibt(ibt_path)
     try:
         metadata = _read_track_metadata(ir)
-        center_m = _extract_centerline_m(ir)
-        left_m, right_m = _compute_edges_m(center_m, ir)
+        center_line = _extract_centerline_from_latlon(ir)
     finally:
         _close_ibt(ir)
 
-    center_norm, left_norm, right_norm = _normalise_road_geometry(center_m, left_m, right_m)
+    if len(center_line) < 2:
+        message = f"missing valid Lat/Lon + LapDistPct centerline in IBT: {ibt_path}"
+        _LOG.warning("[ibt_track_extract] %s", message)
+        raise RuntimeError(message)
+
     payload = _build_track_geometry_payload(
         track_key=metadata.track_key,
-        center_line=center_norm,
-        left_edge=left_norm,
-        right_edge=right_norm,
+        center_line=center_line,
+        left_edge=[],
+        right_edge=[],
         source_type="ibt",
         source_name="ibt_telemetry",
         source_path=str(ibt_path),
@@ -65,6 +71,9 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
         track_config_name=metadata.track_config_name,
         track_name=metadata.track_name,
         track_id=metadata.track_id,
+        geometry_kind="centerline_only",
+        position_source="latlon",
+        distance_source="LapDistPct",
     )
 
     out_path = _output_path(storage_root, metadata.track_key)
@@ -122,9 +131,9 @@ def read_ibt_session_metadata(ibt_path: str | Path) -> TrackSessionMetadata:
 def _build_track_geometry_payload(
     *,
     track_key: str,
-    center_line: list[list[float]],
-    left_edge: list[list[float]],
-    right_edge: list[list[float]],
+    center_line: list[Any],
+    left_edge: list[Any],
+    right_edge: list[Any],
     source_type: str,
     source_name: str,
     source_path: str,
@@ -134,6 +143,9 @@ def _build_track_geometry_payload(
     track_name: str = "",
     track_id: int | None = None,
     fallback_reason: str = "",
+    geometry_kind: str = "",
+    position_source: str = "",
+    distance_source: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "track_key": track_key,
@@ -157,6 +169,12 @@ def _build_track_geometry_payload(
         payload["track_id"] = track_id
     if fallback_reason:
         payload["fallback_reason"] = fallback_reason
+    if geometry_kind:
+        payload["geometry_kind"] = geometry_kind
+    if position_source:
+        payload["position_source"] = position_source
+    if distance_source:
+        payload["distance_source"] = distance_source
     return payload
 
 
@@ -288,30 +306,94 @@ def _read_iracing_build(ir: Any) -> str:
     return _read_track_metadata(ir).iracing_build
 
 
-def _extract_centerline_m(ir: Any) -> np.ndarray:
-    pts = _try_read_header_geometry(ir)
-    if pts is not None and len(pts) >= 2:
-        return pts
-    return _integrate_velocity(ir)
+def _extract_centerline_from_latlon(ir: Any) -> list[dict[str, float]]:
+    frames = _read_first_lap_frames(ir)
+    return _build_centerline_points(
+        lap_dist_pct_values=frames.get("ldp", []),
+        lat_values=frames.get("lat", []),
+        lon_values=frames.get("lon", []),
+    )
 
 
-def _try_read_header_geometry(ir: Any) -> np.ndarray | None:
-    weekend = _read_weekend_info(ir)
-    for key in ("TrackCenterLine", "CenterLine", "Geometry", "TrackGeometry"):
-        pts = _coerce_xy_array(weekend.get(key))
-        if pts is not None and len(pts) >= 2:
-            return pts
-    return None
+def _build_centerline_points(
+    *,
+    lap_dist_pct_values: list[Any],
+    lat_values: list[Any],
+    lon_values: list[Any],
+) -> list[dict[str, float]]:
+    samples: list[tuple[int, float, float, float]] = []
+    for idx, (lap_dist_pct, lat, lon) in enumerate(zip(lap_dist_pct_values, lat_values, lon_values)):
+        lap_dist = _safe_float(lap_dist_pct)
+        lat_deg = _safe_float(lat)
+        lon_deg = _safe_float(lon)
+        if lap_dist is None or lat_deg is None or lon_deg is None:
+            continue
+        if lap_dist < 0.0 or lap_dist > 1.0:
+            continue
+        samples.append((idx, lap_dist, lat_deg, lon_deg))
+
+    if len(samples) < 2:
+        return []
+
+    samples.sort(key=lambda item: item[1])
+    lat = np.asarray([item[2] for item in samples], dtype=np.float64)
+    lon = np.asarray([item[3] for item in samples], dtype=np.float64)
+    xy_m = _project_latlon_to_xy(lat, lon)
+    if xy_m is None or len(xy_m) != len(samples):
+        return []
+
+    center_line: list[dict[str, float]] = []
+    last_key: tuple[float, float, float] | None = None
+    for sample, xy in zip(samples, xy_m):
+        lap_dist = float(sample[1])
+        lat_deg = float(sample[2])
+        lon_deg = float(sample[3])
+        x_m = _safe_float(xy[0])
+        y_m = _safe_float(xy[1])
+        if x_m is None or y_m is None:
+            continue
+        dedupe_key = (lap_dist, lat_deg, lon_deg)
+        if dedupe_key == last_key:
+            continue
+        center_line.append(
+            {
+                "lap_dist_pct": lap_dist,
+                "lat": lat_deg,
+                "lon": lon_deg,
+                "x_m": x_m,
+                "y_m": y_m,
+            }
+        )
+        last_key = dedupe_key
+    return center_line if len(center_line) >= 2 else []
 
 
-def _coerce_xy_array(raw: Any) -> np.ndarray | None:
-    try:
-        arr = np.asarray(raw, dtype=np.float64)
-    except Exception:
+def _project_latlon_to_xy(lat: np.ndarray, lon: np.ndarray) -> np.ndarray | None:
+    if len(lat) < 2 or len(lon) < 2 or len(lat) != len(lon):
         return None
-    if arr.ndim != 2 or arr.shape[1] != 2 or len(arr) < 2:
+
+    finite_mask = np.isfinite(lat) & np.isfinite(lon)
+    if int(finite_mask.sum()) < 2:
         return None
-    return arr
+
+    first_idx = int(np.flatnonzero(finite_mask)[0])
+    lat0_rad = math.radians(float(lat[first_idx]))
+    lon0_rad = math.radians(float(lon[first_idx]))
+    cos_lat0 = math.cos(lat0_rad)
+    if abs(cos_lat0) < 1e-6:
+        cos_lat0 = 1e-6 if cos_lat0 >= 0.0 else -1e-6
+
+    r = 6_371_000.0
+    x = np.full(len(lat), np.nan, dtype=np.float64)
+    y = np.full(len(lat), np.nan, dtype=np.float64)
+    lat_rad = np.radians(lat[finite_mask])
+    lon_rad = np.radians(lon[finite_mask])
+    x[finite_mask] = (lon_rad - lon0_rad) * cos_lat0 * r
+    y[finite_mask] = (lat_rad - lat0_rad) * r
+
+    if not np.all(np.isfinite(x[finite_mask])) or not np.all(np.isfinite(y[finite_mask])):
+        return None
+    return np.column_stack([x, y])
 
 
 def _integrate_velocity(ir: Any) -> np.ndarray:
@@ -362,6 +444,9 @@ def _read_first_lap_frames(ir: Any) -> dict[str, list[Any]]:
         "speed": [],
         "yaw": [],
         "t": [],
+        "ldp": [],
+        "lat": [],
+        "lon": [],
     }
     try:
         _fill_frames_via_parse_to(ir, result)
@@ -387,19 +472,24 @@ def _fill_frames_via_parse_to(ir: Any, result: dict[str, list[Any]]) -> None:
         speed = _safe_float(ir["Speed"])
         yaw = _safe_float(ir["Yaw"])
         lap_dist_pct = _safe_float(ir["LapDistPct"])
+        lat = _safe_float(ir["Lat"])
+        lon = _safe_float(ir["Lon"])
+
+        if lap_dist_pct is not None and seen_high and lap_dist_pct < 0.15 and n > 0:
+            break
 
         result["t"].append(t)
         result["vx"].append(vx if vx is not None else 0.0)
         result["vy"].append(vy if vy is not None else 0.0)
         result["speed"].append(speed if speed is not None else 0.0)
         result["yaw"].append(yaw if yaw is not None else 0.0)
+        result["ldp"].append(lap_dist_pct)
+        result["lat"].append(lat)
+        result["lon"].append(lon)
         n += 1
 
-        if lap_dist_pct is not None:
-            if lap_dist_pct > 0.85:
-                seen_high = True
-            if seen_high and lap_dist_pct < 0.15:
-                break
+        if lap_dist_pct is not None and lap_dist_pct > 0.85:
+            seen_high = True
 
         try:
             ok = parse_to(t + _IBT_SAMPLE_DT)
