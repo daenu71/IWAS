@@ -320,8 +320,18 @@ class EventSpriteCache:
                              cy + rad * math.sin(angle)))
             draw.polygon(pts, fill=fg)
 
-        elif event_type in ("throttle_on", "throttle_full", "throttle_off"):
-            # throttle_off currently shares the apex-up triangle; invert this if the style switches to ▽ later.
+        elif event_type == "throttle_on":
+            # ▷  flat side left, apex right (90° CW from ▽)
+            pts = [(cx - r, cy - r), (cx - r, cy + r), (cx + r, cy)]
+            draw.polygon(pts, fill=fg)
+
+        elif event_type == "throttle_full":
+            # △  flat side bottom, apex up (180° from ▽)
+            pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
+            draw.polygon(pts, fill=fg)
+
+        elif event_type == "throttle_off":
+            # ▽  flat side top, apex down (unchanged)
             pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
             draw.polygon(pts, fill=fg)
 
