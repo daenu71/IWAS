@@ -32,7 +32,13 @@ from tkinter import ttk
 from typing import Optional
 
 from core.coaching.lap_view_model import LapViewModel
-from core.coaching.track_geometry import render_corner_zoom, render_trackmap
+from core.coaching.track_geometry import (
+    _BG_SYMBOL_TYPES,
+    EventSpriteCache,
+    EVENT_SYMBOL_SIZE,
+    render_corner_zoom,
+    render_trackmap,
+)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _CORNER_ZOOM_LEGEND_ITEMS = (
@@ -482,12 +488,14 @@ class CoachingDetailView(ttk.Frame):
             command=self._hide_corner_zoom_overlay,
         )
 
-        self._zoom_legend_frame = self._build_corner_zoom_legend(self._zoom_overlay)
-
+        # Canvas must exist before the legend so EventSpriteCache can be called
         self._zoom_canvas = tk.Canvas(
             self._zoom_overlay, bg="#1e1e1e", highlightthickness=0,
         )
         self._zoom_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self._zoom_legend_frame = self._build_corner_zoom_legend(self._zoom_overlay)
+
         self._zoom_canvas.bind("<Configure>", self._on_zoom_canvas_resize)
         self._zoom_canvas.bind("<MouseWheel>", self._on_corner_wheel)
         self._zoom_canvas.bind("<Button-4>", self._on_corner_wheel)
@@ -502,7 +510,8 @@ class CoachingDetailView(ttk.Frame):
 
     def _build_corner_zoom_legend(self, master: tk.Widget) -> tk.Frame:
         frame = tk.Frame(master, bg="#1e1e1e", bd=0, highlightthickness=0)
-        for row_index, (event_name, symbol, color) in enumerate(_CORNER_ZOOM_LEGEND_ITEMS):
+        self._legend_sprite_refs: list = []  # GC protection for PhotoImage objects
+        for row_index, (event_name, _, color) in enumerate(_CORNER_ZOOM_LEGEND_ITEMS):
             row = tk.Frame(frame, bg="#1e1e1e", bd=0, highlightthickness=0)
             row.grid(row=row_index, column=0, sticky="w")
 
@@ -517,13 +526,21 @@ class CoachingDetailView(ttk.Frame):
                 highlightthickness=0,
                 bd=0,
             ).grid(row=0, column=0, sticky="w")
+
+            # Use the same PIL sprite as the map marker (via EventSpriteCache).
+            # bg_color "#FFFFFF" mirrors _contrast_color() on the dark canvas.
+            needs_bg = event_name in _BG_SYMBOL_TYPES
+            sprite = EventSpriteCache.get(
+                event_name, EVENT_SYMBOL_SIZE,
+                color, "#FFFFFF" if needs_bg else None, self._zoom_canvas,
+            )
+            self._legend_sprite_refs.append(sprite)
             tk.Label(
                 row,
-                text=symbol,
-                fg=color,
+                image=sprite,
                 bg="#1e1e1e",
-                width=2,
             ).grid(row=0, column=1, sticky="w", padx=(2, 6))
+
             tk.Label(row, text=event_name, fg="#f0f0f0", bg="#1e1e1e").grid(
                 row=0, column=2, sticky="w"
             )
