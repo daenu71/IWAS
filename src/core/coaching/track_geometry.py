@@ -65,7 +65,8 @@ _FIT_PADDING_BOTTOM = 10
 _EVENT_STYLE: dict = {
     "brake_start":     ("▼", "#CC2222"),
     "peak_brake":      ("●", "#770000"),
-    "turn_in":         ("◀", "#FF8800"),
+    "turn_in_rate_based":  ("◀", "#FF8800"),
+    "turn_in_angle_based": ("◂", "#FFAA44"),
     "min_speed":       ("★", "#FFDD00"),
     "throttle_on":     ("▲", "#88FF44"),
     # Default ▲ to match the current requirement; switch to ▽ if a distinct lift marker is preferred.
@@ -232,7 +233,7 @@ def _tooltip_lines(event, track_length_m: float | None, speed_units: str) -> lis
             return []
         return [f"{from_gear} -> {to_gear}"]
     scalar = _coerce_float(value)
-    if event_type == "turn_in":
+    if event_type in ("turn_in_rate_based", "turn_in_angle_based"):
         return [f"Steering: {_fmt_steering(scalar)}"] if scalar is not None else []
     if event_type == "peak_brake":
         return [f"Brake: {_fmt_pct(scalar)}"] if scalar is not None else []
@@ -348,7 +349,7 @@ class EventSpriteCache:
             pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
             draw.polygon(pts, fill=fg)
 
-        elif event_type == "turn_in":
+        elif event_type in ("turn_in_rate_based", "turn_in_angle_based"):
             pts = [(cx + r, cy - r), (cx + r, cy + r), (cx - r, cy)]
             draw.polygon(pts, fill=fg)
 
