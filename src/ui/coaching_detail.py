@@ -58,6 +58,8 @@ _CORNER_ZOOM_LEGEND_ITEMS = (
     ("offtrack_incident", "\u2717", "#CC0000", "offtrack"),
     ("loose_control", "\u21bb", "#CC0000"),
     ("crash", "\u26a1", "#CC0000"),
+    # Chicane / compound-corner transition
+    ("steering_crossover", "\u2194", "#4FC3F7", "crossover"),
 )
 _TRACKMAP_LEGEND_ITEMS = (
     # (event_name, display_label, color)
@@ -65,9 +67,10 @@ _TRACKMAP_LEGEND_ITEMS = (
     ("turn_in_rate_based",  "turn_in",       "#FF8800"),
     ("min_speed",           "min_speed",     "#FFDD00"),
     ("throttle_full",     "throttle_full", "#00CC00"),
-    ("offtrack_incident", "offtrack",      "#CC0000"),
-    ("loose_control",     "loose_control", "#CC0000"),
-    ("crash",             "crash",         "#CC0000"),
+    ("offtrack_incident",  "offtrack",      "#CC0000"),
+    ("loose_control",      "loose_control", "#CC0000"),
+    ("crash",              "crash",         "#CC0000"),
+    ("steering_crossover", "crossover",     "#4FC3F7"),
 )
 _TRACKMAP_EVENT_TYPE_NAMES = frozenset(name for name, *_ in _TRACKMAP_LEGEND_ITEMS)
 

@@ -37,7 +37,7 @@ _DEFAULT_CONFIG_PATH = (
     / "config" / "coaching" / "event_config_v1.json"
 )
 
-_CORNER_EVENTS_ENGINE_VERSION = 6
+_CORNER_EVENTS_ENGINE_VERSION = 7
 
 
 # ---------------------------------------------------------------------------
@@ -364,20 +364,33 @@ def _event_throttle_full(
 def _events_brake_start(
     data: dict, n: int, ldp: np.ndarray | None, st: np.ndarray | None, cfg: dict
 ) -> tuple[list | None, str | None]:
-    """Detect each rising edge of the Brake channel (one per brake zone)."""
+    """Detect each rising edge of the Brake channel (one per brake zone).
+
+    Runs with peak_value < threshold_brake_peak_min_value or
+    sample_count < threshold_brake_peak_min_samples are skipped so that
+    noise / micro-brake events do not produce brake_start events.
+    """
     ch = _get_channel(data, "Brake", n)
     if ch is None or ldp is None:
         return None, "Brake"
     thr = float(cfg["threshold_brake_start"])
+    min_val_thr = float(cfg.get("threshold_brake_peak_min_value", 0.15))
+    min_samples_thr = int(cfg.get("threshold_brake_peak_min_samples", 5))
+    above = ch > thr
+    above[~np.isfinite(ch)] = False
+    runs = _find_runs(above)
     events: list[dict] = []
-    was_braking = False
-    for i in range(n):
-        if not math.isfinite(ch[i]):
+    for run_idx, (s, e) in enumerate(runs):
+        sl = ch[s : e + 1]
+        peak_val = round(float(np.nanmax(sl)), 6)
+        sample_count = e - s + 1
+        if peak_val < min_val_thr or sample_count < min_samples_thr:
+            _log.debug(
+                "[event_engine] brake_start run %d: FILTERED (peak=%.3f samples=%d)",
+                run_idx, peak_val, sample_count,
+            )
             continue
-        is_braking = ch[i] > thr
-        if not was_braking and is_braking:
-            events.append(_make_event("brake_start", i, ldp, st, None))
-        was_braking = is_braking
+        events.append(_make_event("brake_start", s, ldp, st, None))
     return events, None
 
 
@@ -393,6 +406,8 @@ def _events_peak_brake(
     above[~np.isfinite(ch)] = False
     runs = _find_runs(above)
     _log.debug("[event_engine] peak_brake: %d brake run(s) detected (thr=%.3f)", len(runs), thr)
+    min_val_thr = float(cfg.get("threshold_brake_peak_min_value", 0.15))
+    min_samples_thr = int(cfg.get("threshold_brake_peak_min_samples", 5))
     events: list[dict] = []
     for run_idx, (s, e) in enumerate(runs):
         sl = ch[s : e + 1]
@@ -409,6 +424,12 @@ def _events_peak_brake(
             peak_val,
             sample_count,
         )
+        if peak_val < min_val_thr or sample_count < min_samples_thr:
+            _log.debug(
+                "[event_engine] peak_brake run %d: FILTERED (peak=%.3f samples=%d)",
+                run_idx, peak_val, sample_count,
+            )
+            continue
         events.append(_make_event("peak_brake", peak_g, ldp, st, peak_val))
     return events, None
 
@@ -845,6 +866,7 @@ def _extract_corner_window_events(
     thr_brake = float(cfg["threshold_brake_start"])
     min_speed_idx: int | None = None
     corner_brake_peak_idx: int | None = None
+    brake_peak_indices: list[int] = []
 
     # --- Brake channels ---
     brake_ch = _get_channel(data, "Brake", n)
@@ -860,12 +882,12 @@ def _extract_corner_window_events(
             "[event_engine] corner window [%.4f, %.4f]: %d brake run(s)",
             float(ldp[w_start]), float(ldp[w_end]), len(brake_runs),
         )
+        min_val_thr = float(cfg.get("threshold_brake_peak_min_value", 0.15))
+        min_samples_thr = int(cfg.get("threshold_brake_peak_min_samples", 5))
         for run_idx, (s_l, e_l) in enumerate(brake_runs):
             s_g = w_start + s_l
             e_g = w_start + e_l
-            # brake_start: first sample of this run
-            events.append(_make_event("brake_start", s_g, ldp, st, None))
-            # peak_brake: maximum within this run
+            # Compute peak and sample count first so we can filter noise runs.
             run_slice = brake_ch[s_g : e_g + 1]
             peak_local = int(np.nanargmax(run_slice))
             peak_g = s_g + peak_local
@@ -880,9 +902,18 @@ def _extract_corner_window_events(
                 peak_val,
                 sample_count,
             )
+            if peak_val < min_val_thr or sample_count < min_samples_thr:
+                _log.debug(
+                    "[event_engine] corner brake run %d: FILTERED (peak=%.3f samples=%d)",
+                    run_idx, peak_val, sample_count,
+                )
+                continue
+            # brake_start: first sample of this run
+            events.append(_make_event("brake_start", s_g, ldp, st, None))
+            # peak_brake: maximum within this run
             events.append(_make_event("peak_brake", peak_g, ldp, st, peak_val))
-            # corner_brake_peak_idx is used for the turn-in search window;
-            # anchor it to the FIRST run's peak so turn-in is correct.
+            brake_peak_indices.append(peak_g)
+            # corner_brake_peak_idx kept for backward compat; set to first valid peak.
             if corner_brake_peak_idx is None:
                 corner_brake_peak_idx = peak_g
 
@@ -900,70 +931,136 @@ def _extract_corner_window_events(
     # Pre-load throttle channel here so it's available for the angle-based corner-end detection
     throttle_ch = _get_channel(data, "Throttle", n)
 
-    # --- Turn-in (rate-based and angle-based) ---
+    # --- Turn-in (rate-based and angle-based) – one event per brake peak ---
     steer_ch = _get_channel(data, "SteeringWheelAngle", n)
     if steer_ch is not None:
         thr_angle_fraction = float(cfg.get("threshold_turn_in_angle_fraction", 0.10))
         thr_rate_min = float(cfg.get("threshold_turn_in_rate_min_rads", 0.05))
         thr_confidence = float(cfg.get("threshold_turn_in_confidence_dist", 0.005))
         thr_throttle_full_w = float(cfg.get("threshold_throttle_full", 0.95))
+        thr_crossover_confirm = float(cfg.get("threshold_crossover_confirm_window", 0.02))
+        thr_crossover_min_angle = float(cfg.get("threshold_crossover_min_angle_rad", 0.05))
 
-        ti_start = corner_brake_peak_idx if corner_brake_peak_idx is not None else w_start
-        ti_end = min_speed_idx if min_speed_idx is not None else w_end
-
-        # Rate-based: argmax(|SteeringRate|) in [ti_start, ti_end]
         ref_arr = st if st is not None else ldp
-        rate_ev: dict | None = None
-        if ti_end > ti_start:
-            seg_len = ti_end - ti_start + 1
+
+        # SteeringPeak for angle-based: max(|steer|) over [w_start, throttle_full or w_end]
+        corner_end_w = w_end
+        if throttle_ch is not None:
+            for i in range(w_start, w_end + 1):
+                if math.isfinite(throttle_ch[i]) and throttle_ch[i] >= thr_throttle_full_w:
+                    corner_end_w = i
+                    break
+        steer_window_abs = np.abs(steer_ch[w_start : corner_end_w + 1])
+        steer_peak_global = (
+            float(np.nanmax(steer_window_abs))
+            if len(steer_window_abs) > 0 and np.any(np.isfinite(steer_window_abs))
+            else 0.0
+        )
+
+        turn_in_indices: list[int] = []  # rate-based indices for crossover detection
+
+        for bp_i, bp_idx in enumerate(brake_peak_indices):
+            # Window end: next brake peak (exclusive) or corner end
+            next_boundary = (
+                brake_peak_indices[bp_i + 1]
+                if bp_i + 1 < len(brake_peak_indices)
+                else w_end
+            )
+
+            # Find local min_speed in [bp_idx, next_boundary] for this brake phase
+            ti_end_i: int = next_boundary
+            if speed_ch is not None:
+                sl_sp = speed_ch[bp_idx : next_boundary + 1].copy()
+                sl_sp[~np.isfinite(sl_sp)] = np.inf
+                if np.any(np.isfinite(speed_ch[bp_idx : next_boundary + 1])):
+                    ti_end_i = bp_idx + int(np.argmin(sl_sp))
+
+            if ti_end_i <= bp_idx:
+                continue
+
+            # Rate-based: argmax(|SteeringRate|) in [bp_idx, ti_end_i]
+            rate_ev: dict | None = None
+            seg_len = ti_end_i - bp_idx + 1
             rates = np.zeros(seg_len, dtype=np.float64)
             for j in range(1, seg_len):
-                gi = ti_start + j
+                gi = bp_idx + j
                 dr = float(ref_arr[gi]) - float(ref_arr[gi - 1])
                 if dr > 1e-9 and math.isfinite(steer_ch[gi]) and math.isfinite(steer_ch[gi - 1]):
                     rates[j] = (float(steer_ch[gi]) - float(steer_ch[gi - 1])) / dr
             rate_peak_local = int(np.argmax(np.abs(rates)))
             rate_peak_abs = float(abs(rates[rate_peak_local]))
             if rate_peak_abs >= thr_rate_min:
-                rate_peak_g = ti_start + rate_peak_local
+                rate_peak_g = bp_idx + rate_peak_local
                 rate_ev = _make_event(
                     "turn_in_rate_based", rate_peak_g, ldp, st, round(rate_peak_abs, 6)
                 )
+                turn_in_indices.append(rate_peak_g)
 
-        # Angle-based: SteeringPeak over [w_start, throttle_full or w_end]
-        angle_ev: dict | None = None
-        corner_end_w = w_end
-        if throttle_ch is not None:
-            for i in range(ti_start, w_end + 1):
-                if math.isfinite(throttle_ch[i]) and throttle_ch[i] >= thr_throttle_full_w:
-                    corner_end_w = i
-                    break
-        steer_window_abs = np.abs(steer_ch[w_start : corner_end_w + 1])
-        if len(steer_window_abs) > 0 and np.any(np.isfinite(steer_window_abs)):
-            steer_peak = float(np.nanmax(steer_window_abs))
-            if steer_peak > 0.0:
-                thr_angle = thr_angle_fraction * steer_peak
-                for i in range(ti_start, ti_end + 1):
+            # Angle-based: first sample in [bp_idx, ti_end_i] where |steer| > fraction * peak
+            angle_ev: dict | None = None
+            if steer_peak_global > 0.0:
+                thr_angle = thr_angle_fraction * steer_peak_global
+                for i in range(bp_idx, ti_end_i + 1):
                     if math.isfinite(steer_ch[i]) and abs(steer_ch[i]) > thr_angle:
                         angle_ev = _make_event(
                             "turn_in_angle_based", i, ldp, st, round(float(steer_ch[i]), 6)
                         )
                         break
 
-        # Confidence and emit
-        if rate_ev is not None and angle_ev is not None:
-            dist = abs(rate_ev["lapdist_pct"] - angle_ev["lapdist_pct"])
-            confidence = "high" if dist < thr_confidence else "low"
-            rate_ev["confidence"] = confidence
-            angle_ev["confidence"] = confidence
-            events.append(rate_ev)
-            events.append(angle_ev)
-        elif rate_ev is not None:
-            rate_ev["confidence"] = "low"
-            events.append(rate_ev)
-        elif angle_ev is not None:
-            angle_ev["confidence"] = "low"
-            events.append(angle_ev)
+            # Confidence and emit
+            if rate_ev is not None and angle_ev is not None:
+                dist = abs(rate_ev["lapdist_pct"] - angle_ev["lapdist_pct"])
+                confidence = "high" if dist < thr_confidence else "low"
+                rate_ev["confidence"] = confidence
+                angle_ev["confidence"] = confidence
+                events.append(rate_ev)
+                events.append(angle_ev)
+            elif rate_ev is not None:
+                rate_ev["confidence"] = "low"
+                events.append(rate_ev)
+            elif angle_ev is not None:
+                angle_ev["confidence"] = "low"
+                events.append(angle_ev)
+
+        # --- Steering crossover: zero-crossing between consecutive turn-in events ---
+        turn_in_indices.sort()
+        for xi in range(len(turn_in_indices) - 1):
+            ti1 = turn_in_indices[xi]
+            ti2 = turn_in_indices[xi + 1]
+            if ti2 <= ti1 + 1:
+                continue
+
+            # Require significant steering in the lead-up window
+            steer_before = np.abs(steer_ch[ti1 : ti2])
+            if not np.any(np.isfinite(steer_before)):
+                continue
+            if float(np.nanmax(steer_before)) < thr_crossover_min_angle:
+                continue
+
+            # Find local minimum of |steer| between the two turn-ins
+            cross_window = np.abs(steer_ch[ti1 : ti2 + 1]).copy()
+            cross_window[~np.isfinite(steer_ch[ti1 : ti2 + 1])] = np.inf
+            if not np.any(np.isfinite(steer_ch[ti1 : ti2 + 1])):
+                continue
+            cross_local = int(np.argmin(cross_window))
+            cross_idx = ti1 + cross_local
+            cross_val = float(abs(steer_ch[cross_idx]))
+
+            # Confirmation: |steer| must rise above fraction*peak within confirm window
+            confirm_threshold = thr_angle_fraction * steer_peak_global
+            cross_ldp = float(ldp[cross_idx])
+            confirmed = False
+            for j in range(cross_idx + 1, n):
+                if float(ldp[j]) - cross_ldp > thr_crossover_confirm:
+                    break
+                if math.isfinite(steer_ch[j]) and abs(steer_ch[j]) > confirm_threshold:
+                    confirmed = True
+                    break
+
+            if confirmed:
+                events.append(
+                    _make_event("steering_crossover", cross_idx, ldp, st, round(cross_val, 6))
+                )
 
     # --- Throttle ---
     if throttle_ch is not None:

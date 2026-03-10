@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 4,
   "threshold_brake_start": 0.05,
   "threshold_brake_off": 0.05,
   "threshold_steering_turn_in": 0.05,
@@ -20,5 +20,9 @@
   "n_min_oversteer_samples": 3,
   "threshold_turn_in_angle_fraction": 0.10,
   "threshold_turn_in_confidence_dist": 0.005,
-  "threshold_turn_in_rate_min_rads": 0.05
+  "threshold_turn_in_rate_min_rads": 0.05,
+  "threshold_brake_peak_min_value": 0.15,
+  "threshold_brake_peak_min_samples": 5,
+  "threshold_crossover_confirm_window": 0.02,
+  "threshold_crossover_min_angle_rad": 0.05
 }

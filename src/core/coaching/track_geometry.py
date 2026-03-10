@@ -77,9 +77,11 @@ _EVENT_STYLE: dict = {
     "understeer_event": ("⚠", "#FF8000"),
     "crest":            ("⌒", "#00DDFF"),
     # Incident events (PlayerCarMyIncidentCount jumps)
-    "offtrack_incident": ("✕", "#CC0000"),
-    "loose_control":     ("↻", "#CC0000"),
-    "crash":             ("⚡", "#CC0000"),
+    "offtrack_incident":  ("✕", "#CC0000"),
+    "loose_control":      ("↻", "#CC0000"),
+    "crash":              ("⚡", "#CC0000"),
+    # Chicane / compound-corner transition
+    "steering_crossover": ("↔", "#4FC3F7"),
 }
 
 # Symbol types that need a contrast background (hollow / low-contrast glyphs only)
