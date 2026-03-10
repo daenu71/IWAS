@@ -314,6 +314,7 @@ class CoachingDetailView(ttk.Frame):
             for name, *_ in _CORNER_ZOOM_LEGEND_ITEMS
         }
         self._current_events: list = []
+        self._speed_data: "tuple | None" = None  # (speed_arr, ldp_arr) for brake_start tooltip
         self._map_zoom: float = 1.0
         self._map_offset: tuple = (0.0, 0.0)
         self._map_drag_start: Optional[tuple] = None
@@ -347,6 +348,7 @@ class CoachingDetailView(ttk.Frame):
         if vm is None:
             self.clear()
             return
+        self._speed_data = self._compute_speed_data(vm)
         self._update_header(vm, is_purple=is_purple)
         self._conditions_summary.set_environment(
             vm.meta.environment if vm.meta is not None else None,
@@ -366,6 +368,7 @@ class CoachingDetailView(ttk.Frame):
         self._session_dir = None
         self._run_id = None
         self._selected_corner_id = None
+        self._speed_data = None
         self._set_header_empty()
         self._conditions_summary.set_environment(None, track_usage=None)
         self._refresh_btn.grid_remove()
@@ -646,6 +649,23 @@ class CoachingDetailView(ttk.Frame):
         return frame
 
     # ------------------------------------------------------------------
+    # Speed data helper (for brake_start tooltip)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_speed_data(vm) -> "tuple | None":
+        """Return (speed_arr, ldp_arr) for brake_start tooltip lookup, or None."""
+        try:
+            import numpy as np
+            speed = vm.get_resampled_channel("Speed")
+            ldp = vm.lap_dist_pct
+            if len(speed) == 0 or len(ldp) != len(speed):
+                return None
+            return speed, ldp
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
     # Header helpers
     # ------------------------------------------------------------------
 
@@ -778,6 +798,7 @@ class CoachingDetailView(ttk.Frame):
             is_closed=vm.track_xy_is_closed,
             events=all_events,
             visible_event_types=visible_types,
+            speed_data=self._speed_data,
         )
 
     def _on_trackmap_resize(self, _event=None) -> None:
@@ -993,6 +1014,7 @@ class CoachingDetailView(ttk.Frame):
             zoom=self._corner_zoom,
             offset=self._corner_offset,
             track_length_m=self._vm.track_length_m,
+            speed_data=self._speed_data,
         )
         self._place_corner_zoom_legend()
 
