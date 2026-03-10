@@ -17,6 +17,7 @@ render_trackmap(canvas, xy, corners, selected_corner_id, width, height, ...)
 
 from __future__ import annotations
 
+import logging
 import math
 import tkinter as tk
 from typing import TYPE_CHECKING, Callable, List, NamedTuple, Optional, TypedDict
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+_LOG = logging.getLogger(__name__)
 
 _PADDING = 0.06          # fraction of canvas dimension reserved per edge
 _TRACK_COLOR = "#555555"
@@ -284,6 +287,7 @@ class _FitContext(NamedTuple):
 
 class TrackRoadGeometry(TypedDict):
     track_key: str
+    source_type: str
     center_line: list[list[float]]
     left_edge: list[list[float]]
     right_edge: list[list[float]]
@@ -653,26 +657,39 @@ def render_trackmap(
         return
 
     # Compute road arrays first so they can be included in the shared fit_context.
-    # Both lap line and road geometry are now in raw world coordinates (meters),
+    # Both lap line and road geometry are in raw world coordinates (meters),
     # so combining them gives a correct common bounding box.
     road_arrays = _road_geometry_arrays(road_geometry)
     if road_arrays is not None:
         cl, le, re = road_arrays
-        combined_xy = np.vstack([xy, cl, le, re])
+        bbox_parts = [xy, cl]
+        if le is not None and len(le) >= 2:
+            bbox_parts.append(le)
+        if re is not None and len(re) >= 2:
+            bbox_parts.append(re)
+        combined_xy = np.vstack(bbox_parts)
     else:
         combined_xy = xy
 
     fit_context = _legend_aware_fit_context(combined_xy, width, height)
     canvas._fit_context = fit_context
+    _log_canvas_geometry_debug(
+        "trackmap_render",
+        combined_xy,
+        fit_context,
+        width=width,
+        height=height,
+    )
     coords = _transform_zoom(xy, width, height, zoom, offset, fit_context=fit_context)  # (N, 2) pixel coords
     line_flat = _line_flat(coords, is_closed=is_closed)
 
     # 1 – Optional road band
     if road_arrays is not None:
         _, left_edge, right_edge = road_arrays
-        left_canvas = _transform_zoom(left_edge, width, height, zoom, offset, fit_context=fit_context)
-        right_canvas = _transform_zoom(right_edge, width, height, zoom, offset, fit_context=fit_context)
-        _draw_road_band(canvas, left_canvas, right_canvas, smooth=False, prefix="trackmap")
+        if left_edge is not None and right_edge is not None:
+            left_canvas = _transform_zoom(left_edge, width, height, zoom, offset, fit_context=fit_context)
+            right_canvas = _transform_zoom(right_edge, width, height, zoom, offset, fit_context=fit_context)
+            _draw_road_band(canvas, left_canvas, right_canvas, smooth=False, prefix="trackmap")
 
     # 2 – Base track line (grey)
     canvas.create_line(line_flat, fill=_TRACK_COLOR, width=_TRACK_WIDTH,
@@ -840,6 +857,13 @@ def render_corner_zoom(
     # Canvas mapping with zoom/offset (Y flipped, shared transform with TrackMap)
     fit_context = _legend_aware_fit_context(seg_norm, width, height, legend_width=0)
     canvas._fit_context = fit_context
+    _log_canvas_geometry_debug(
+        "corner_zoom_render",
+        seg_xy,
+        fit_context,
+        width=width,
+        height=height,
+    )
     seg_canvas = _transform_zoom(seg_norm, width, height, zoom, offset, fit_context=fit_context)
     speed_units = _read_speed_units()
 
@@ -847,11 +871,12 @@ def render_corner_zoom(
     road_segment = _road_geometry_segment(road_geometry, lo_eff, hi_eff)
     if road_segment is not None:
         _, left_seg, right_seg = road_segment
-        left_norm = _normalise_segment_points(left_seg, x_min, y_min, seg_scale)
-        right_norm = _normalise_segment_points(right_seg, x_min, y_min, seg_scale)
-        left_canvas = _transform_zoom(left_norm, width, height, zoom, offset, fit_context=fit_context)
-        right_canvas = _transform_zoom(right_norm, width, height, zoom, offset, fit_context=fit_context)
-        _draw_road_band(canvas, left_canvas, right_canvas, smooth=True, prefix="zoom")
+        if left_seg is not None and right_seg is not None:
+            left_norm = _normalise_segment_points(left_seg, x_min, y_min, seg_scale)
+            right_norm = _normalise_segment_points(right_seg, x_min, y_min, seg_scale)
+            left_canvas = _transform_zoom(left_norm, width, height, zoom, offset, fit_context=fit_context)
+            right_canvas = _transform_zoom(right_norm, width, height, zoom, offset, fit_context=fit_context)
+            _draw_road_band(canvas, left_canvas, right_canvas, smooth=True, prefix="zoom")
 
     # -- Lap line -----------------------------------------------------------
     flat = seg_canvas.flatten().tolist()
@@ -1419,23 +1444,27 @@ def _line_flat(coords: np.ndarray, is_closed: bool = True) -> list:
 
 def _road_geometry_arrays(
     road_geometry: Optional[TrackRoadGeometry],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None] | None:
     if not isinstance(road_geometry, dict):
         return None
 
     center_line = _coerce_xy_array(road_geometry.get("center_line"))
-    left_edge = _coerce_xy_array(road_geometry.get("left_edge"))
-    right_edge = _coerce_xy_array(road_geometry.get("right_edge"))
+    left_edge = _coerce_xy_array(road_geometry.get("left_edge"), allow_empty=True)
+    right_edge = _coerce_xy_array(road_geometry.get("right_edge"), allow_empty=True)
     if center_line is None or left_edge is None or right_edge is None:
         return None
 
-    n = min(len(center_line), len(left_edge), len(right_edge))
-    if n < 2:
-        return None
-    return center_line[:n], left_edge[:n], right_edge[:n]
+    if len(left_edge) >= 2 and len(right_edge) >= 2:
+        n = min(len(center_line), len(left_edge), len(right_edge))
+        if n < 2:
+            return None
+        return center_line[:n], left_edge[:n], right_edge[:n]
+    return center_line, None, None
 
 
-def _coerce_xy_array(value: object) -> np.ndarray | None:
+def _coerce_xy_array(value: object, *, allow_empty: bool = False) -> np.ndarray | None:
+    if value == [] and allow_empty:
+        return np.empty((0, 2), dtype=np.float64)
     if not isinstance(value, list) or len(value) < 2:
         return None
     try:
@@ -1487,7 +1516,7 @@ def _road_geometry_segment(
     road_geometry: Optional[TrackRoadGeometry],
     lo_eff: float,
     hi_eff: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None] | None:
     road_arrays = _road_geometry_arrays(road_geometry)
     if road_arrays is None:
         return None
@@ -1496,7 +1525,44 @@ def _road_geometry_segment(
     indices = _pct_slice_indices(lo_eff, hi_eff, len(center_line))
     if len(indices) < 2:
         return None
-    return center_line[indices], left_edge[indices], right_edge[indices]
+    left_segment = left_edge[indices] if left_edge is not None else None
+    right_segment = right_edge[indices] if right_edge is not None else None
+    return center_line[indices], left_segment, right_segment
+
+
+def _log_canvas_geometry_debug(
+    log_name: str,
+    points: np.ndarray,
+    fit_context: _FitContext,
+    *,
+    width: int,
+    height: int,
+) -> None:
+    if points is None or len(points) < 2:
+        return
+    try:
+        x_min = float(np.nanmin(points[:, 0]))
+        x_max = float(np.nanmax(points[:, 0]))
+        y_min = float(np.nanmin(points[:, 1]))
+        y_max = float(np.nanmax(points[:, 1]))
+    except ValueError:
+        return
+    _LOG.debug(
+        "[%s] min_x=%.3f max_x=%.3f min_y=%.3f max_y=%.3f bbox_width=%.3f bbox_height=%.3f canvas_target_rect=x=%.3f,y=%.3f,w=%.3f,h=%.3f canvas_size=%dx%d",
+        log_name,
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        x_max - x_min,
+        y_max - y_min,
+        fit_context.offset_x,
+        fit_context.offset_y,
+        fit_context.draw_width,
+        fit_context.draw_height,
+        width,
+        height,
+    )
 
 
 def _pct_slice_indices(lo_eff: float, hi_eff: float, n: int) -> np.ndarray:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import logging
 import math
 from dataclasses import dataclass, field, replace as _dataclass_replace
 from pathlib import Path
@@ -33,6 +34,9 @@ from .track_key import build_track_key
 
 if TYPE_CHECKING:
     from .track_geometry import TrackRoadGeometry
+
+
+_LOG = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +83,19 @@ class Event:
     lapdist_pct: float
     value: Any = field(default=None)
     session_time: float | None = field(default=None)
+
+
+@dataclass(frozen=True)
+class TrackRoadGeometryLoadResult:
+    geometry: "TrackRoadGeometry | None"
+    requested_track_key: str
+    geometry_path: Path
+    payload_track_key: str | None
+    source_type: str
+    center_line_points: int
+    left_edge_points: int
+    right_edge_points: int
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -150,9 +167,11 @@ class LapViewModel:
         vm.track_xy_is_closed = geometry.is_closed
         vm.track_length_m = _load_track_length_m(session_dir)
         print(f"[LVM-DEBUG] track_length_m resolved: {vm.track_length_m!r}")
-        _log_track_geometry_debug(vm)
         vm.corners = _load_corners(session_dir, vm.track_length_m)
-        vm.track_road_geometry = _load_track_road_geometry(session_dir)
+        road_geometry_result = _load_track_road_geometry(session_dir)
+        vm.track_road_geometry = road_geometry_result.geometry
+        _apply_saved_trackmap_geometry(vm, road_geometry_result)
+        _log_track_geometry_debug(vm)
         vm.events = _load_events(analysis_dir / "lap_events.json", vm.corners)
         vm.corner_events = _load_corner_events(analysis_dir / "corner_events.json")
         vm.features = _load_features(analysis_dir / "corner_features.parquet")
@@ -770,16 +789,39 @@ def _load_track_length_m(session_dir: Path) -> float | None:
         return None
 
 
-def _load_track_road_geometry(session_dir: Path) -> "TrackRoadGeometry | None":
-    """Load track_road_geometry.json when present, else return None."""
+def _load_track_road_geometry(session_dir: Path) -> TrackRoadGeometryLoadResult:
+    """Load track_road_geometry.json and report the exact selection outcome."""
     storage_root = _coaching_storage_root(session_dir)
-    for track_key in _track_key_candidates(session_dir):
+    candidate_keys = _track_key_candidates(session_dir)
+    last_invalid: TrackRoadGeometryLoadResult | None = None
+
+    for track_key in candidate_keys:
         for path in _track_road_geometry_paths(storage_root, track_key):
             payload = _read_json(path)
-            geometry = _coerce_track_road_geometry(payload, fallback_track_key=track_key)
-            if geometry is not None:
-                return geometry
-    return None
+            if not payload:
+                continue
+            result = _coerce_track_road_geometry(payload, fallback_track_key=track_key, geometry_path=path)
+            _log_track_road_geometry_result(result)
+            if result.geometry is not None:
+                return result
+            last_invalid = result
+
+    primary_track_key = candidate_keys[0] if candidate_keys else "unknown_track"
+    miss = TrackRoadGeometryLoadResult(
+        geometry=None,
+        requested_track_key=primary_track_key,
+        geometry_path=_track_road_geometry_paths(storage_root, primary_track_key)[0],
+        payload_track_key=None,
+        source_type="unknown",
+        center_line_points=0,
+        left_edge_points=0,
+        right_edge_points=0,
+        reason="geometry_not_found",
+    )
+    if last_invalid is not None:
+        return last_invalid
+    _log_track_road_geometry_result(miss)
+    return miss
 
 
 def _coaching_storage_root(session_dir: Path) -> Path:
@@ -837,26 +879,80 @@ def _coerce_track_road_geometry(
     payload: dict[str, Any],
     *,
     fallback_track_key: str,
-) -> "TrackRoadGeometry | None":
+    geometry_path: Path,
+) -> TrackRoadGeometryLoadResult:
     if not payload:
-        return None
+        return TrackRoadGeometryLoadResult(
+            geometry=None,
+            requested_track_key=fallback_track_key,
+            geometry_path=geometry_path,
+            payload_track_key=None,
+            source_type="unknown",
+            center_line_points=0,
+            left_edge_points=0,
+            right_edge_points=0,
+            reason="empty_payload",
+        )
+
+    center_line_count = _count_xy_points(payload.get("center_line"))
+    left_edge_count = _count_xy_points(payload.get("left_edge"))
+    right_edge_count = _count_xy_points(payload.get("right_edge"))
+    payload_track_key = _str_or(payload.get("track_key"))
+    source_type = _track_geometry_source_type(payload)
 
     center_line = _coerce_xy_points(payload.get("center_line"))
-    left_edge = _coerce_xy_points(payload.get("left_edge"))
-    right_edge = _coerce_xy_points(payload.get("right_edge"))
+    left_edge = _coerce_xy_points(payload.get("left_edge"), allow_empty=True)
+    right_edge = _coerce_xy_points(payload.get("right_edge"), allow_empty=True)
     if center_line is None or left_edge is None or right_edge is None:
-        return None
+        return TrackRoadGeometryLoadResult(
+            geometry=None,
+            requested_track_key=fallback_track_key,
+            geometry_path=geometry_path,
+            payload_track_key=payload_track_key,
+            source_type=source_type,
+            center_line_points=center_line_count,
+            left_edge_points=left_edge_count,
+            right_edge_points=right_edge_count,
+            reason="invalid_geometry_payload",
+        )
 
-    track_key = _str_or(payload.get("track_key")) or fallback_track_key
-    return {
+    if payload_track_key and payload_track_key != fallback_track_key:
+        return TrackRoadGeometryLoadResult(
+            geometry=None,
+            requested_track_key=fallback_track_key,
+            geometry_path=geometry_path,
+            payload_track_key=payload_track_key,
+            source_type=source_type,
+            center_line_points=center_line_count,
+            left_edge_points=left_edge_count,
+            right_edge_points=right_edge_count,
+            reason="track_key_mismatch",
+        )
+
+    track_key = payload_track_key or fallback_track_key
+    geometry: TrackRoadGeometry = {
         "track_key": track_key,
+        "source_type": source_type,
         "center_line": center_line,
         "left_edge": left_edge,
         "right_edge": right_edge,
     }
+    return TrackRoadGeometryLoadResult(
+        geometry=geometry,
+        requested_track_key=fallback_track_key,
+        geometry_path=geometry_path,
+        payload_track_key=payload_track_key,
+        source_type=source_type,
+        center_line_points=len(center_line),
+        left_edge_points=len(left_edge),
+        right_edge_points=len(right_edge),
+        reason="accepted",
+    )
 
 
-def _coerce_xy_points(value: Any) -> list[list[float]] | None:
+def _coerce_xy_points(value: Any, *, allow_empty: bool = False) -> list[list[float]] | None:
+    if value == [] and allow_empty:
+        return []
     if not isinstance(value, list) or len(value) < 2:
         return None
 
@@ -870,6 +966,77 @@ def _coerce_xy_points(value: Any) -> list[list[float]] | None:
             return None
         points.append([x, y])
     return points
+
+
+def _count_xy_points(value: Any) -> int:
+    if not isinstance(value, list):
+        return 0
+    return sum(1 for item in value if isinstance(item, (list, tuple)) and len(item) == 2)
+
+
+def _track_geometry_source_type(payload: dict[str, Any]) -> str:
+    source_type = str(payload.get("source_type") or "").strip().lower()
+    if source_type in {"ibt", "fallback"}:
+        return source_type
+
+    legacy_source = str(payload.get("source") or payload.get("source_name") or "").strip().lower()
+    if legacy_source in {"ibt", "ibt_telemetry"}:
+        return "ibt"
+    if legacy_source in {"parquet_fallback", "parquet_velocity_integration", "dead_reckoning"}:
+        return "fallback"
+    if "fallback" in legacy_source:
+        return "fallback"
+    return "unknown"
+
+
+def _log_track_road_geometry_result(result: TrackRoadGeometryLoadResult) -> None:
+    _LOG.info(
+        "[track_geometry_consumer] track_key=%s geometry_path=%s payload_track_key=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=%s fallback_used=%s reason=%s",
+        result.requested_track_key,
+        result.geometry_path,
+        result.payload_track_key or "-",
+        result.center_line_points,
+        result.left_edge_points,
+        result.right_edge_points,
+        "yes" if result.geometry is not None and result.source_type == "ibt" else "no",
+        "yes" if (result.geometry is None or result.source_type == "fallback") else "no",
+        result.reason,
+    )
+
+
+def _apply_saved_trackmap_geometry(vm: LapViewModel, result: TrackRoadGeometryLoadResult) -> None:
+    if result.geometry is None:
+        _LOG.info(
+            "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=no fallback_used=yes trackmap_source=dead_reckoning_live_fallback",
+            result.requested_track_key,
+            result.geometry_path,
+            result.center_line_points,
+            result.left_edge_points,
+            result.right_edge_points,
+        )
+        return
+
+    center_line = np.asarray(result.geometry["center_line"], dtype=np.float64)
+    vm.track_xy = center_line
+    vm.track_xy_is_closed = _geometry_is_closed(center_line[:, 0], center_line[:, 1])
+    if result.source_type == "ibt":
+        vm.track_xy_source = "track_geometries_ibt"
+    elif result.source_type == "fallback":
+        vm.track_xy_source = "track_geometries_fallback"
+    else:
+        vm.track_xy_source = "track_geometries_saved"
+
+    _LOG.info(
+        "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=%s fallback_used=%s trackmap_source=%s",
+        result.requested_track_key,
+        result.geometry_path,
+        result.center_line_points,
+        result.left_edge_points,
+        result.right_edge_points,
+        "yes" if result.source_type == "ibt" else "no",
+        "yes" if result.source_type == "fallback" else "no",
+        vm.track_xy_source,
+    )
 
 
 def _parse_track_length_m_str(raw) -> float | None:

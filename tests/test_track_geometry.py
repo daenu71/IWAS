@@ -73,13 +73,14 @@ def _sample_xy() -> np.ndarray:
     )
 
 
-def _sample_road_geometry() -> dict[str, object]:
+def _sample_road_geometry(*, source_type: str = "ibt", center_line_only: bool = False) -> dict[str, object]:
     xy = _sample_xy()
     return {
         "track_key": "TestTrack__Full__unknown_class",
+        "source_type": source_type,
         "center_line": xy.tolist(),
-        "left_edge": (xy + np.array([0.0, 0.05])).tolist(),
-        "right_edge": (xy - np.array([0.0, 0.05])).tolist(),
+        "left_edge": [] if center_line_only else (xy + np.array([0.0, 0.05])).tolist(),
+        "right_edge": [] if center_line_only else (xy - np.array([0.0, 0.05])).tolist(),
     }
 
 
@@ -189,3 +190,35 @@ def test_render_corner_zoom_with_road_geometry_draws_extra_canvas_items() -> Non
         for item_type, _args, kwargs in canvas_with_road.items
     )
     assert len(canvas_with_road.items) > len(canvas_without_road.items)
+
+
+def test_render_trackmap_accepts_center_line_only_road_geometry_and_logs_bbox(
+    caplog,
+) -> None:
+    xy = _sample_xy()
+    lap_dist_pct = np.linspace(0.0, 1.0, len(xy))
+    canvas = FakeCanvas()
+
+    caplog.set_level("DEBUG", logger="core.coaching.track_geometry")
+    render_trackmap(
+        canvas=canvas,
+        xy=xy,
+        corners=[],
+        selected_corner_id=None,
+        width=320,
+        height=240,
+        road_geometry=_sample_road_geometry(center_line_only=True),
+        lap_dist_pct=lap_dist_pct,
+    )
+
+    assert any(
+        item_type == "line" and kwargs.get("tags") in (("track",), ("lapline",))
+        for item_type, _args, kwargs in canvas.items
+    )
+    assert not any(
+        item_type == "polygon" and "trackmap_road_band" in kwargs.get("tags", ())
+        for item_type, _args, kwargs in canvas.items
+    )
+    assert "[trackmap_render]" in caplog.text
+    assert "bbox_width=" in caplog.text
+    assert "canvas_target_rect=" in caplog.text
