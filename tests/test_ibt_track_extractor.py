@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from core.coaching.ibt_track_extractor import (  # noqa: E402
     _compute_normals,
     _read_track_key,
+    build_ibt_inventory_report,
     extract_track_geometry,
     read_ibt_session_metadata,
 )
@@ -78,6 +79,61 @@ class _FakeIRSDK:
         return False
 
 
+class _FakeVarHeader:
+    def __init__(
+        self,
+        name: str,
+        *,
+        type_code: int = 5,
+        count: int = 1,
+        unit: str = "",
+        desc: str = "",
+    ) -> None:
+        self.name = name
+        self.type = type_code
+        self.count = count
+        self.unit = unit
+        self.desc = desc
+
+
+class _FakeIBT:
+    def __init__(
+        self,
+        channel_values: dict[str, list[object]],
+        *,
+        session_yaml: str = "",
+        headers: list[_FakeVarHeader] | None = None,
+        session_lap_count: int = 1,
+    ) -> None:
+        self._channel_values = {name: list(values) for name, values in channel_values.items()}
+        self.session_info = session_yaml
+        self.var_headers = headers or [_FakeVarHeader(name) for name in channel_values.keys()]
+        record_count = max((len(values) for values in self._channel_values.values()), default=0)
+        self._disk_header = types.SimpleNamespace(
+            session_record_count=record_count,
+            session_lap_count=session_lap_count,
+        )
+
+    def open(self, ibt_file: str) -> None:
+        self._opened_file = ibt_file
+
+    def close(self) -> None:
+        pass
+
+    def get_all(self, key: str):
+        if key not in self._channel_values:
+            return None
+        return list(self._channel_values[key])
+
+    def clone(self) -> "_FakeIBT":
+        return _FakeIBT(
+            self._channel_values,
+            session_yaml=self.session_info,
+            headers=list(self.var_headers),
+            session_lap_count=self._disk_header.session_lap_count,
+        )
+
+
 def _make_straight_frames(n: int = 600, vx: float = 50.0) -> list[dict]:
     dt = 1.0 / 60.0
     frames: list[dict] = []
@@ -108,10 +164,43 @@ def _make_geo_frames(samples: list[tuple[float, float, float]]) -> list[dict]:
     return frames
 
 
-def _fake_irsdk_module(fake_ir: _FakeIRSDK) -> types.ModuleType:
+def _fake_irsdk_module(fake_ir: _FakeIRSDK | None = None, fake_ibt: _FakeIBT | None = None) -> types.ModuleType:
     mod = types.ModuleType("irsdk")
-    mod.IRSDK = MagicMock(return_value=fake_ir)  # type: ignore[attr-defined]
+    if fake_ir is not None:
+        mod.IRSDK = MagicMock(return_value=fake_ir)  # type: ignore[attr-defined]
+    if fake_ibt is not None:
+        mod.IBT = MagicMock(side_effect=lambda: fake_ibt.clone())  # type: ignore[attr-defined]
     return mod
+
+
+def _make_inventory_yaml(
+    track_display: str = "Misano World Circuit Marco Simoncelli",
+    track_config: str = "Grand Prix",
+) -> str:
+    return "\n".join(
+        [
+            "WeekendInfo:",
+            f" TrackDisplayName: {track_display}",
+            f" TrackConfigName: {track_config}",
+            " TrackName: misano gp",
+            " TrackID: 501",
+            " BuildVersion: 2026.02.02.02",
+            " EventType: Test",
+            "DriverInfo:",
+            " DriverCarIdx: 0",
+            " Drivers:",
+            "  - CarIdx: 0",
+            "    UserName: Test Driver",
+            "    CarPath: lamborghinievogt3",
+            "    CarScreenName: Lamborghini Huracan GT3 EVO",
+            "    CarClassShortName: GT3",
+            "SessionNum: 0",
+            "SessionInfo:",
+            " Sessions:",
+            "  - SessionNum: 0",
+            "    SessionType: Open Practice",
+        ]
+    )
 
 
 def test_extract_produces_valid_json(tmp_path: Path) -> None:
@@ -242,3 +331,70 @@ def test_missing_latlon_skips_geometry_export(tmp_path: Path) -> None:
             extract_track_geometry(ibt_file, tmp_path)
 
     assert list(tmp_path.rglob("track_road_geometry.json")) == []
+
+
+def test_build_ibt_inventory_report_marks_latlon_centerline_viable(tmp_path: Path) -> None:
+    ibt_file = tmp_path / "inventory_ok.ibt"
+    ibt_file.touch()
+    fake_ibt = _FakeIBT(
+        {
+            "SessionTime": [0.0, 1.0, 2.0, 3.0],
+            "LapDistPct": [0.0, 0.33, 0.66, 0.99],
+            "Lat": [43.9600, 43.9605, 43.9610, 43.9615],
+            "Lon": [12.6830, 12.6835, 12.6840, 12.6845],
+            "Alt": [8.9, 9.0, 9.1, 9.2],
+            "Yaw": [0.0, 0.1, 0.2, 0.3],
+            "Speed": [10.0, 20.0, 30.0, 40.0],
+            "VelocityX": [1.0, 1.1, 1.2, 1.3],
+            "VelocityY": [0.1, 0.2, 0.3, 0.4],
+            "VelocityZ": [0.0, 0.0, 0.0, 0.0],
+        },
+        session_yaml=_make_inventory_yaml(),
+        session_lap_count=2,
+    )
+
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        report = build_ibt_inventory_report(ibt_file)
+
+    assert report["file_summary"]["track_display_name"] == "Misano World Circuit Marco Simoncelli"
+    assert report["file_summary"]["track_config_name"] == "Grand Prix"
+    assert report["file_summary"]["track_id"] == 501
+    assert report["file_summary"]["car_path"] == "lamborghinievogt3"
+    assert report["file_summary"]["session_type"] == "practice"
+    assert report["file_summary"]["iracing_build"] == "2026.02.02.02"
+    assert report["file_summary"]["session_lap_count"] == 2
+    assert "Lat" in report["available_channels"]
+    assert report["candidate_channel_report"]["Lat"]["present"] is True
+    assert report["candidate_channel_report"]["Lat"]["finite_count"] == 4
+    assert report["candidate_channel_report"]["VelocityZ"]["nonzero_count"] == 0
+    assert report["lat_lon_centerline_viability"]["status"] == "ok"
+    assert report["lat_lon_centerline_viability"]["joint_valid_sample_count"] == 4
+    assert report["recommendation"]["summary"] == "Lat/Lon + LapDistPct nutzbar"
+
+
+def test_build_ibt_inventory_report_surfaces_missing_exact_channel_names(tmp_path: Path) -> None:
+    ibt_file = tmp_path / "inventory_missing_exact.ibt"
+    ibt_file.touch()
+    fake_ibt = _FakeIBT(
+        {
+            "SessionTime": [0.0, 1.0, 2.0],
+            "LapDistPct": [0.1, 0.2, 0.3],
+            "Latitude": [43.96, 43.97, 43.98],
+            "Longitude": [12.68, 12.69, 12.70],
+            "LatAccel": [0.0, 0.1, 0.2],
+            "VelocityX": [1.0, 1.0, 1.0],
+            "VelocityY": [0.0, 0.1, 0.2],
+        },
+        session_yaml=_make_inventory_yaml("Road Atlanta", "Full Course"),
+    )
+
+    with patch.dict(sys.modules, {"irsdk": _fake_irsdk_module(fake_ibt=fake_ibt)}):
+        report = build_ibt_inventory_report(ibt_file)
+
+    assert report["candidate_channel_report"]["Lat"]["present"] is False
+    assert report["candidate_channel_report"]["Lon"]["present"] is False
+    assert [item["name"] for item in report["candidate_channel_report"]["Lat"]["similar_names"]] == ["LatAccel", "Latitude"]
+    assert [item["name"] for item in report["candidate_channel_report"]["Lon"]["similar_names"]] == ["Longitude"]
+    assert report["lat_lon_centerline_viability"]["status"] == "missing"
+    assert report["lat_lon_centerline_viability"]["missing_channels"] == ["Lat", "Lon"]
+    assert report["recommendation"]["status"] == "not_usable"
