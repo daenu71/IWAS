@@ -492,6 +492,22 @@ class EventSpriteCache:
             ]
             draw.polygon(pts, fill=fg)
 
+        elif event_type == "steering_crossover":
+            # Symbol: horizontal double-headed arrow ↔
+            # Central horizontal line
+            draw.line([cx - r, cy, cx + r, cy], fill=fg, width=2)
+            # Left arrowhead ◁
+            ah = max(r // 2, 3)
+            draw.polygon(
+                [(cx - r, cy), (cx - r + ah, cy - ah // 2), (cx - r + ah, cy + ah // 2)],
+                fill=fg,
+            )
+            # Right arrowhead ▷
+            draw.polygon(
+                [(cx + r, cy), (cx + r - ah, cy - ah // 2), (cx + r - ah, cy + ah // 2)],
+                fill=fg,
+            )
+
         return PILPhotoImage(img)
 
 
