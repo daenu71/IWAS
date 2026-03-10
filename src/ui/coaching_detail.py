@@ -36,7 +36,6 @@ from core.coaching.track_geometry import (
     _BG_SYMBOL_TYPES,
     EventSpriteCache,
     EVENT_SYMBOL_SIZE,
-    _TRACKMAP_EVENT_SYMBOL_SIZE,
     render_corner_zoom,
     render_trackmap,
 )
@@ -594,7 +593,7 @@ class CoachingDetailView(ttk.Frame):
 
             needs_bg = event_name in _BG_SYMBOL_TYPES
             sprite = EventSpriteCache.get(
-                event_name, _TRACKMAP_EVENT_SYMBOL_SIZE,
+                event_name, EVENT_SYMBOL_SIZE,
                 color, "#FFFFFF" if needs_bg else None, self._trackmap_canvas,
             )
             self._tm_legend_sprite_refs.append(sprite)
