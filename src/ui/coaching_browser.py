@@ -19,6 +19,7 @@ AnalyzeLapCallback = Callable[[CoachingTreeNode], None]
 AnalyzeRunCallback = Callable[[CoachingTreeNode, list[CoachingTreeNode]], None]
 
 _PURPLE = "#BF7FFF"
+_OFFTRACK_FG = "#E07000"
 _ENVIRONMENT_LAYOUT = (
     (("Track", "track_temp_c"), ("Air", "air_temp_c")),
     (("Humidity", "humidity_pct"), ("Fog", "fog_pct")),
@@ -794,6 +795,8 @@ class CoachingBrowser(ttk.Frame):
             anchor="w",
         )
 
+        self.tree.tag_configure("offtrack", foreground=_OFFTRACK_FG)
+
         y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self._tree_yview)
         y_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=y_scroll.set)
@@ -991,7 +994,10 @@ class CoachingBrowser(ttk.Frame):
             _format_lap_col(node),
             _format_last_driven(node.summary.last_driven_ts),
         )
-        self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids))
+        tags: tuple = ()
+        if node.kind == "lap" and _lap_is_offtrack(node.summary, lap_summary=_node_lap_summary(node)):
+            tags = ("offtrack",)
+        self.tree.insert(parent_iid, "end", iid=node.id, text=node.label, values=values, open=(node.id in self._expanded_ids), tags=tags)
         children = node.children
         if node.kind == "event":
             children = sorted(

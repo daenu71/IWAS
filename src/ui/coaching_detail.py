@@ -401,6 +401,16 @@ class CoachingDetailView(ttk.Frame):
         self._lbl_time = ttk.Label(info_row, text="—:—.—")
         self._lbl_time.grid(row=0, column=3, sticky="w")
 
+        self._lbl_offtrack = ttk.Label(
+            info_row,
+            text="\u26a0 Off Track",
+            foreground="#E07000",
+            font=("", 9, "bold"),
+        )
+        # Hidden by default; shown only for off-track laps
+        self._lbl_offtrack.grid(row=0, column=4, sticky="w", padx=(8, 0))
+        self._lbl_offtrack.grid_remove()
+
         return frame
 
     def _build_maps(self) -> ttk.Frame:
@@ -570,12 +580,17 @@ class CoachingDetailView(ttk.Frame):
             self._lbl_time.configure(text=_format_laptime(meta.lap_time), foreground=time_color)
         else:
             self._lbl_time.configure(text="—:—.—", foreground=time_color)
+        if not meta.valid:
+            self._lbl_offtrack.grid()
+        else:
+            self._lbl_offtrack.grid_remove()
 
     def _set_header_empty(self) -> None:
         self._lbl_track.configure(text="—")
         self._lbl_car.configure(text="—")
         self._lbl_lap.configure(text="Lap —")
         self._lbl_time.configure(text="—:—.—")
+        self._lbl_offtrack.grid_remove()
 
     def _on_refresh_track(self) -> None:
         """Delete track_road_geometry.json and re-extract it, then reload the VM."""
@@ -642,6 +657,7 @@ class CoachingDetailView(ttk.Frame):
             # Canvas not yet laid out — retry after Tk has processed geometry
             self._trackmap_canvas.after(50, self._redraw_trackmap)
             return
+        is_offtrack = vm.meta is not None and not vm.meta.valid
         render_trackmap(
             canvas=self._trackmap_canvas,
             xy=vm.track_xy,
@@ -650,6 +666,7 @@ class CoachingDetailView(ttk.Frame):
             width=w,
             height=h,
             road_geometry=vm.track_road_geometry,
+            lap_color="#E07000" if is_offtrack else "#E53935",
             on_corner_selected=self.set_selected_corner,
             lap_dist_pct=vm.lap_dist_pct,
             zoom=self._map_zoom,
