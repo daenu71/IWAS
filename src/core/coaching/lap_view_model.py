@@ -95,6 +95,7 @@ class TrackRoadGeometryLoadResult:
     center_line_points: int
     left_edge_points: int
     right_edge_points: int
+    center_line_format: str
     reason: str
 
 
@@ -816,6 +817,7 @@ def _load_track_road_geometry(session_dir: Path) -> TrackRoadGeometryLoadResult:
         center_line_points=0,
         left_edge_points=0,
         right_edge_points=0,
+        center_line_format="none",
         reason="geometry_not_found",
     )
     if last_invalid is not None:
@@ -891,6 +893,7 @@ def _coerce_track_road_geometry(
             center_line_points=0,
             left_edge_points=0,
             right_edge_points=0,
+            center_line_format="none",
             reason="empty_payload",
         )
 
@@ -900,9 +903,9 @@ def _coerce_track_road_geometry(
     payload_track_key = _str_or(payload.get("track_key"))
     source_type = _track_geometry_source_type(payload)
 
-    center_line = _coerce_xy_points(payload.get("center_line"))
-    left_edge = _coerce_xy_points(payload.get("left_edge"), allow_empty=True)
-    right_edge = _coerce_xy_points(payload.get("right_edge"), allow_empty=True)
+    center_line, center_line_format = _coerce_xy_points(payload.get("center_line"))
+    left_edge, _ = _coerce_xy_points(payload.get("left_edge"), allow_empty=True)
+    right_edge, _ = _coerce_xy_points(payload.get("right_edge"), allow_empty=True)
     if center_line is None or left_edge is None or right_edge is None:
         return TrackRoadGeometryLoadResult(
             geometry=None,
@@ -913,6 +916,7 @@ def _coerce_track_road_geometry(
             center_line_points=center_line_count,
             left_edge_points=left_edge_count,
             right_edge_points=right_edge_count,
+            center_line_format=center_line_format,
             reason="invalid_geometry_payload",
         )
 
@@ -926,6 +930,7 @@ def _coerce_track_road_geometry(
             center_line_points=center_line_count,
             left_edge_points=left_edge_count,
             right_edge_points=right_edge_count,
+            center_line_format=center_line_format,
             reason="track_key_mismatch",
         )
 
@@ -946,32 +951,60 @@ def _coerce_track_road_geometry(
         center_line_points=len(center_line),
         left_edge_points=len(left_edge),
         right_edge_points=len(right_edge),
+        center_line_format=center_line_format,
         reason="accepted",
     )
 
 
-def _coerce_xy_points(value: Any, *, allow_empty: bool = False) -> list[list[float]] | None:
+def _coerce_xy_points(
+    value: Any,
+    *,
+    allow_empty: bool = False,
+) -> tuple[list[list[float]] | None, str]:
     if value == [] and allow_empty:
-        return []
+        return [], "empty"
     if not isinstance(value, list) or len(value) < 2:
-        return None
+        return None, "none"
 
     points: list[list[float]] = []
+    point_formats: set[str] = set()
     for item in value:
-        if not isinstance(item, (list, tuple)) or len(item) != 2:
-            return None
+        point, point_format = _coerce_xy_point(item)
+        if point is None or point_format is None:
+            return None, "invalid"
+        points.append(point)
+        point_formats.add(point_format)
+    return points, _point_format_name(point_formats)
+
+
+def _coerce_xy_point(item: Any) -> tuple[list[float] | None, str | None]:
+    if isinstance(item, (list, tuple)) and len(item) == 2:
         x = _float_or(item[0])
         y = _float_or(item[1])
         if x is None or y is None:
-            return None
-        points.append([x, y])
-    return points
+            return None, None
+        return [x, y], "xy_pairs"
+    if isinstance(item, dict):
+        x = _float_or(item.get("x_m"))
+        y = _float_or(item.get("y_m"))
+        if x is None or y is None:
+            return None, None
+        return [x, y], "x_m_y_m_dicts"
+    return None, None
+
+
+def _point_format_name(point_formats: set[str]) -> str:
+    if not point_formats:
+        return "none"
+    if len(point_formats) == 1:
+        return next(iter(point_formats))
+    return "mixed"
 
 
 def _count_xy_points(value: Any) -> int:
     if not isinstance(value, list):
         return 0
-    return sum(1 for item in value if isinstance(item, (list, tuple)) and len(item) == 2)
+    return sum(1 for item in value if _coerce_xy_point(item)[0] is not None)
 
 
 def _track_geometry_source_type(payload: dict[str, Any]) -> str:
@@ -991,13 +1024,14 @@ def _track_geometry_source_type(payload: dict[str, Any]) -> str:
 
 def _log_track_road_geometry_result(result: TrackRoadGeometryLoadResult) -> None:
     _LOG.info(
-        "[track_geometry_consumer] track_key=%s geometry_path=%s payload_track_key=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=%s fallback_used=%s reason=%s",
+        "[track_geometry_consumer] track_key=%s geometry_path=%s payload_track_key=%s center_line_points=%d left_edge_points=%d right_edge_points=%d center_line_format=%s ibt_geometry_accepted=%s fallback_used=%s reason=%s",
         result.requested_track_key,
         result.geometry_path,
         result.payload_track_key or "-",
         result.center_line_points,
         result.left_edge_points,
         result.right_edge_points,
+        result.center_line_format,
         "yes" if result.geometry is not None and result.source_type == "ibt" else "no",
         "yes" if (result.geometry is None or result.source_type == "fallback") else "no",
         result.reason,
@@ -1028,12 +1062,13 @@ def _apply_saved_trackmap_geometry(vm: LapViewModel, result: TrackRoadGeometryLo
     lap_geometry_source = vm.track_xy_source
     if result.geometry is None:
         _LOG.info(
-            "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=no fallback_used=yes trackmap_source=dead_reckoning_live_fallback lap_geometry_source=%s road_geometry_mode=none",
+            "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d center_line_format=%s ibt_geometry_accepted=no fallback_used=yes trackmap_source=dead_reckoning_live_fallback lap_geometry_source=%s road_geometry_mode=none",
             result.requested_track_key,
             result.geometry_path,
             result.center_line_points,
             result.left_edge_points,
             result.right_edge_points,
+            result.center_line_format,
             lap_geometry_source,
         )
         return
@@ -1046,12 +1081,13 @@ def _apply_saved_trackmap_geometry(vm: LapViewModel, result: TrackRoadGeometryLo
     )
 
     _LOG.info(
-        "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d ibt_geometry_accepted=%s fallback_used=%s trackmap_source=%s lap_geometry_source=%s road_geometry_mode=%s",
+        "[trackmap_source] track_key=%s geometry_path=%s center_line_points=%d left_edge_points=%d right_edge_points=%d center_line_format=%s ibt_geometry_accepted=%s fallback_used=%s trackmap_source=%s lap_geometry_source=%s road_geometry_mode=%s",
         result.requested_track_key,
         result.geometry_path,
         result.center_line_points,
         result.left_edge_points,
         result.right_edge_points,
+        result.center_line_format,
         "yes" if result.source_type == "ibt" else "no",
         "yes" if result.source_type == "fallback" else "no",
         trackmap_source,

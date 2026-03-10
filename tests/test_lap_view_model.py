@@ -232,9 +232,9 @@ def _write_track_road_geometry(
     dir_track_key: str = "Spa-Francorchamps__Full__unknown_class",
     payload_track_key: str = "Spa-Francorchamps__Full__unknown_class",
     source_type: str = "ibt",
-    center_line: list[list[float]] | None = None,
-    left_edge: list[list[float]] | None = None,
-    right_edge: list[list[float]] | None = None,
+    center_line: list[object] | None = None,
+    left_edge: list[object] | None = None,
+    right_edge: list[object] | None = None,
 ) -> None:
     center_line = center_line or [
         [0.10, 0.50],
@@ -243,7 +243,7 @@ def _write_track_road_geometry(
         [0.70, 0.65],
         [0.90, 0.50],
     ]
-    center_line_arr = np.asarray(center_line, dtype=np.float64)
+    center_line_arr = np.asarray([_track_point_xy(point) for point in center_line], dtype=np.float64)
     payload = {
         "track_key": payload_track_key,
         "source_type": source_type,
@@ -256,6 +256,32 @@ def _write_track_road_geometry(
     (road_dir / "track_road_geometry.json").write_text(
         json.dumps(payload), encoding="utf-8"
     )
+
+
+def _track_point_xy(point: object) -> list[float]:
+    if isinstance(point, dict):
+        return [float(point["x_m"]), float(point["y_m"])]
+    if isinstance(point, (list, tuple)) and len(point) == 2:
+        return [float(point[0]), float(point[1])]
+    raise TypeError(f"unsupported point payload: {point!r}")
+
+
+def _ibt_center_line_points(points: list[list[float]]) -> list[dict[str, float]]:
+    count = len(points)
+    denom = max(count - 1, 1)
+    payload: list[dict[str, float]] = []
+    for idx, point in enumerate(points):
+        x_m, y_m = point
+        payload.append(
+            {
+                "lap_dist_pct": idx / denom,
+                "lat": 47.0 + idx * 1.0e-4,
+                "lon": 8.0 + idx * 1.0e-4,
+                "x_m": x_m,
+                "y_m": y_m,
+            }
+        )
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -531,13 +557,15 @@ def test_load_track_road_geometry_when_present_preserves_lap_xy(tmp_path: Path) 
     )
     _write_track_road_geometry(
         tmp_path,
-        center_line=[
+        center_line=_ibt_center_line_points([
             [0.10, 0.50],
             [0.30, 0.65],
             [0.50, 0.72],
             [0.70, 0.65],
             [0.90, 0.50],
-        ],
+        ]),
+        left_edge=[],
+        right_edge=[],
     )
 
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
@@ -546,7 +574,9 @@ def test_load_track_road_geometry_when_present_preserves_lap_xy(tmp_path: Path) 
     assert vm.track_road_geometry["track_key"] == "Spa-Francorchamps__Full__unknown_class"
     assert vm.track_road_geometry["source_type"] == "ibt"
     assert len(vm.track_road_geometry["center_line"]) == 5
-    assert vm.track_road_geometry["left_edge"][0] == pytest.approx([0.10, 0.55])
+    assert vm.track_road_geometry["center_line"][0] == pytest.approx([0.10, 0.50])
+    assert vm.track_road_geometry["left_edge"] == []
+    assert vm.track_road_geometry["right_edge"] == []
     assert vm.track_xy_source == "xy"
     assert np.allclose(vm.track_xy[:, 0], x.astype(np.float64))
     assert np.allclose(vm.track_xy[:, 1], y.astype(np.float64))
@@ -571,21 +601,38 @@ def test_load_track_road_geometry_accepts_center_line_only(tmp_path: Path, caplo
     _write_lap_meta(session_dir, run_id=1, lap_no=1)
     lap_dir = _make_lap_dir(session_dir, lap_no=1)
     _write_resampled(lap_dir)
-    _write_track_road_geometry(tmp_path, left_edge=[], right_edge=[], source_type="ibt")
+    _write_track_road_geometry(
+        tmp_path,
+        center_line=_ibt_center_line_points(
+            [
+                [10.0, 100.0],
+                [20.0, 115.0],
+                [35.0, 124.0],
+                [52.0, 118.0],
+                [70.0, 102.0],
+            ]
+        ),
+        left_edge=[],
+        right_edge=[],
+        source_type="ibt",
+    )
 
     caplog.set_level("INFO", logger="core.coaching.lap_view_model")
     vm = LapViewModel.load(session_dir, run_id=1, lap_no=1)
 
     assert vm.track_road_geometry is not None
+    assert vm.track_road_geometry["center_line"][0] == pytest.approx([10.0, 100.0])
     assert vm.track_road_geometry["left_edge"] == []
     assert vm.track_road_geometry["right_edge"] == []
     assert vm.track_xy_source == "dead_reckoning"
     assert vm.track_xy.shape == (_N, 2)
+    assert "center_line_format=x_m_y_m_dicts" in caplog.text
     assert "ibt_geometry_accepted=yes" in caplog.text
     assert "fallback_used=no" in caplog.text
     assert "trackmap_source=track_geometries_ibt" in caplog.text
     assert "lap_geometry_source=dead_reckoning" in caplog.text
     assert "road_geometry_mode=center_line_only" in caplog.text
+    assert "reason=invalid_geometry_payload" not in caplog.text
     assert "trackmap_source=dead_reckoning_live_fallback" not in caplog.text
 
 

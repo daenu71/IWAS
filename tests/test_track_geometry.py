@@ -83,15 +83,33 @@ def _sample_road_geometry(
     source_type: str = "ibt",
     center_line_only: bool = False,
     center_line: np.ndarray | None = None,
+    center_line_as_dicts: bool = False,
 ) -> dict[str, object]:
     xy = _sample_xy() if center_line is None else np.asarray(center_line, dtype=np.float64)
     return {
         "track_key": "TestTrack__Full__unknown_class",
         "source_type": source_type,
-        "center_line": xy.tolist(),
+        "center_line": _ibt_center_line_points(xy) if center_line_as_dicts else xy.tolist(),
         "left_edge": [] if center_line_only else (xy + np.array([0.0, 0.05])).tolist(),
         "right_edge": [] if center_line_only else (xy - np.array([0.0, 0.05])).tolist(),
     }
+
+
+def _ibt_center_line_points(xy: np.ndarray) -> list[dict[str, float]]:
+    count = len(xy)
+    denom = max(count - 1, 1)
+    payload: list[dict[str, float]] = []
+    for idx, (x_m, y_m) in enumerate(xy.tolist()):
+        payload.append(
+            {
+                "lap_dist_pct": idx / denom,
+                "lat": 47.0 + idx * 1.0e-4,
+                "lon": 8.0 + idx * 1.0e-4,
+                "x_m": x_m,
+                "y_m": y_m,
+            }
+        )
+    return payload
 
 
 def _line_item(canvas: FakeCanvas, tag: str) -> tuple[tuple, dict]:
@@ -225,7 +243,11 @@ def test_render_trackmap_accepts_center_line_only_road_geometry_and_logs_bbox(
         selected_corner_id=None,
         width=320,
         height=240,
-        road_geometry=_sample_road_geometry(center_line_only=True, center_line=center_line),
+        road_geometry=_sample_road_geometry(
+            center_line_only=True,
+            center_line=center_line,
+            center_line_as_dicts=True,
+        ),
         lap_dist_pct=lap_dist_pct,
     )
 

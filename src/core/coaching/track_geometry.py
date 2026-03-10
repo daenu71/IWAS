@@ -289,9 +289,9 @@ class _FitContext(NamedTuple):
 class TrackRoadGeometry(TypedDict):
     track_key: str
     source_type: str
-    center_line: list[list[float]]
-    left_edge: list[list[float]]
-    right_edge: list[list[float]]
+    center_line: list[object]
+    left_edge: list[object]
+    right_edge: list[object]
 
 
 # ---------------------------------------------------------------------------
@@ -1502,15 +1502,40 @@ def _coerce_xy_array(value: object, *, allow_empty: bool = False) -> np.ndarray 
         return np.empty((0, 2), dtype=np.float64)
     if not isinstance(value, list) or len(value) < 2:
         return None
-    try:
-        arr = np.asarray(value, dtype=np.float64)
-    except Exception:
-        return None
+    points: list[list[float]] = []
+    for item in value:
+        point = _coerce_xy_point(item)
+        if point is None:
+            return None
+        points.append(point)
+    arr = np.asarray(points, dtype=np.float64)
     if arr.ndim != 2 or arr.shape[1] != 2 or len(arr) < 2:
         return None
     if not np.all(np.isfinite(arr)):
         return None
     return arr
+
+
+def _coerce_xy_point(item: object) -> list[float] | None:
+    if isinstance(item, (list, tuple)) and len(item) == 2:
+        try:
+            x = float(item[0])
+            y = float(item[1])
+        except Exception:
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        return [x, y]
+    if isinstance(item, dict):
+        try:
+            x = float(item["x_m"])
+            y = float(item["y_m"])
+        except Exception:
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        return [x, y]
+    return None
 
 
 def _draw_road_band(
