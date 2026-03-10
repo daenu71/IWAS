@@ -42,6 +42,8 @@ Ein zentraler Setting-Wert für den iRacing-Telemetry-Ordner, den spätere Coach
 ## Erwartete Ausgabe im .dm Format
 **Titel:** Sinvoller Titel der Änderung
 **Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
+**Test** Beschreibung wie es getestet werden kann
+**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
 **Geänderte Dateien:**
 
 ---
@@ -103,6 +105,8 @@ Eine gespeicherte, wiederverwendbare Streckengeometrie pro Strecke aus `.ibt` au
 ## Erwartete Ausgabe im .dm Format
 **Titel:** Sinvoller Titel der Änderung
 **Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
+**Test** Beschreibung wie es getestet werden kann
+**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
 **Geänderte Dateien:**
 
 ---
@@ -164,6 +168,8 @@ Nach jeder Session automatisch versuchen, für die aktuelle Strecke eine echte g
 ## Erwartete Ausgabe im .dm Format
 **Titel:** Sinvoller Titel der Änderung
 **Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
+**Test** Beschreibung wie es getestet werden kann
+**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
 **Geänderte Dateien:**
 
 ---
@@ -219,6 +225,8 @@ Die sichtbare Streckenkarte soll bevorzugt aus der stabilen gespeicherten Streck
 ## Erwartete Ausgabe im .dm Format
 **Titel:** Sinvoller Titel der Änderung
 **Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
+**Test** Beschreibung wie es getestet werden kann
+**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
 **Geänderte Dateien:**
 
 ---

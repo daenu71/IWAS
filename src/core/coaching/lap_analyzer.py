@@ -123,17 +123,17 @@ def _try_ensure_track_geometry(session_dir: Path) -> None:
     """Ensure track_road_geometry.json exists and is up-to-date for the session's track.
 
     Tries (in order):
-      1. IBT file scan in ~/Documents/iRacing/telemetry/
+      1. Metadata-based IBT scan in the configured telemetry directory
       2. Parquet velocity-integration fallback using the session's run_0001.parquet
 
     Never raises – all errors are logged and silently ignored.
     """
     try:
         from .ibt_track_extractor import (
-            extract_track_geometry,
             extract_track_geometry_from_parquet,
             _output_path,
         )
+        from .track_geometry_importer import import_track_geometry_from_telemetry
 
         storage_root = session_dir.parent
         track_key, _ = _read_track_key_from_session(session_dir)
@@ -141,21 +141,22 @@ def _try_ensure_track_geometry(session_dir: Path) -> None:
             log.debug("[track_geometry] Cannot determine track key for %s", session_dir)
             return
 
-        current_build = _read_iracing_build_from_session(session_dir)
         out_path = _output_path(storage_root, track_key)
-        if not _needs_refresh(out_path, current_build):
-            log.debug("[track_geometry] Already up-to-date: %s", out_path)
-            return
 
-        # 1) Try IBT scan
-        ibt_path = _find_ibt_for_track(track_key)
-        if ibt_path is not None:
-            try:
-                written = extract_track_geometry(ibt_path, storage_root)
-                log.info("[track_geometry] Extracted from IBT: %s", written)
-                return
-            except Exception as exc:
-                log.warning("[track_geometry] IBT extraction failed: %s", exc)
+        import_result = import_track_geometry_from_telemetry(track_key, storage_root=storage_root)
+        if import_result.status == "imported":
+            log.info("[track_geometry] Extracted from IBT: %s", import_result.geometry_path)
+            return
+        if import_result.status == "skipped_existing":
+            log.debug(
+                "[track_geometry] Keeping existing geometry track_key=%s source_type=%s",
+                track_key,
+                import_result.existing_source_type,
+            )
+            return
+        if out_path.exists():
+            log.debug("[track_geometry] Geometry already present after IBT import attempt: %s", out_path)
+            return
 
         # 2) Parquet fallback
         parquet_path = _find_parquet_for_session(session_dir)
