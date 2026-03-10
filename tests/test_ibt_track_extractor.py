@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from core.coaching.ibt_track_extractor import (  # noqa: E402
     _compute_normals,
+    _normalise_exported_center_line_orientation,
     _normalise_trackmap_orientation,
     _read_track_key,
     build_ibt_inventory_report,
@@ -190,6 +191,29 @@ def _make_geo_channel_values(
     return values
 
 
+def _make_center_line_points(
+    lap_dist_pct: list[float],
+    xy: np.ndarray,
+    *,
+    lat0: float = 47.0,
+    lon0: float = 8.0,
+) -> list[dict[str, float]]:
+    xy_arr = np.asarray(xy, dtype=np.float64)
+    assert len(lap_dist_pct) == len(xy_arr)
+    center_line: list[dict[str, float]] = []
+    for idx, (lap_dist, (x_m, y_m)) in enumerate(zip(lap_dist_pct, xy_arr.tolist())):
+        center_line.append(
+            {
+                "lap_dist_pct": float(lap_dist),
+                "lat": lat0 + idx * 1.0e-4,
+                "lon": lon0 + idx * 1.0e-4,
+                "x_m": float(x_m),
+                "y_m": float(y_m),
+            }
+        )
+    return center_line
+
+
 def _fake_irsdk_module(fake_ir: _FakeIRSDK | None = None, fake_ibt: _FakeIBT | None = None) -> types.ModuleType:
     mod = types.ModuleType("irsdk")
     if fake_ir is not None:
@@ -273,8 +297,8 @@ def test_extract_produces_valid_json(tmp_path: Path) -> None:
     third = payload["center_line"][2]
     fourth = payload["center_line"][3]
     assert second["x_m"] == pytest.approx(0.0, abs=1e-6)
-    assert second["y_m"] > 0.0
-    assert third["x_m"] > 0.0
+    assert second["y_m"] < 0.0
+    assert third["x_m"] < 0.0
     assert third["y_m"] == pytest.approx(second["y_m"], rel=1e-6)
     assert fourth["x_m"] == pytest.approx(third["x_m"], rel=1e-6)
     assert fourth["y_m"] == pytest.approx(0.0, abs=1e-6)
@@ -419,9 +443,13 @@ def test_extract_logs_geo_pipeline_counts_and_debug_samples(tmp_path: Path, capl
     assert any(
         "track_key=Misano World Circuit Marco Simoncelli__Grand Prix" in message
         and "point_count=5" in message
-        and "orientation_rule=local_tangent_plane_east_north" in message
-        and "orientation_transform=identity(x=east_m,y=north_m)" in message
-        and "normalisation_applied=no" in message
+        and "normalisation_rule=start_finish_tangent" in message
+        and "start_anchor_lap_dist_pct=0.000000" in message
+        and "start_anchor_xy_before=" in message
+        and "start_tangent_before=" in message
+        and "applied_rotation_deg=" in message
+        and "applied_mirror_x=" in message
+        and "orientation_transform=translate=start_anchor_to_origin" in message
         for message in info_messages
     )
     assert any("valid_geo_samples_head=" in message for message in debug_messages)
@@ -583,17 +611,62 @@ def test_extract_full_reference_lap_closes_centerline_when_gap_is_plausible(tmp_
     assert payload["right_edge"] == []
 
 
-def test_normalise_trackmap_orientation_is_stable_and_deterministic() -> None:
+def test_normalise_exported_center_line_orientation_uses_lookahead_tangent_and_preserves_order() -> None:
+    center_line = _make_center_line_points(
+        [0.0, 0.005, 0.02, 0.50, 1.0],
+        np.array(
+            [
+                [10.0, 20.0],
+                [11.0, 20.0],
+                [10.0, 24.0],
+                [14.0, 24.0],
+                [10.0, 20.0],
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    result = _normalise_exported_center_line_orientation(center_line)
+    lap_dist_pct = [point["lap_dist_pct"] for point in result.center_line]
+
+    assert lap_dist_pct == pytest.approx([0.0, 0.005, 0.02, 0.50, 1.0])
+    assert len(result.center_line) == len(center_line)
+    assert result.rule == "start_finish_tangent"
+    assert result.start_anchor_lap_dist_pct == pytest.approx(0.0)
+    assert result.start_anchor_xy_before == pytest.approx((10.0, 20.0))
+    assert result.start_tangent_before == pytest.approx((0.0, 4.0))
+    assert result.rotation_deg == pytest.approx(-180.0)
+    assert result.mirrored is False
+
+    first = result.center_line[0]
+    second = result.center_line[1]
+    third = result.center_line[2]
+    fourth = result.center_line[3]
+    last = result.center_line[4]
+    assert first["x_m"] == pytest.approx(0.0, abs=1e-6)
+    assert first["y_m"] == pytest.approx(0.0, abs=1e-6)
+    assert second["x_m"] < 0.0
+    assert second["y_m"] == pytest.approx(0.0, abs=1e-6)
+    assert third["x_m"] == pytest.approx(0.0, abs=1e-6)
+    assert third["y_m"] < 0.0
+    assert fourth["x_m"] < 0.0
+    assert fourth["y_m"] < 0.0
+    assert last["x_m"] == pytest.approx(0.0, abs=1e-6)
+    assert last["y_m"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_normalise_trackmap_orientation_places_start_tangent_down_and_start_on_right() -> None:
     raw_xy = np.array(
         [
-            [0.0, 0.0],
-            [12.0, 0.0],
-            [12.0, 5.0],
+            [10.0, 20.0],
+            [11.0, 20.0],
+            [12.0, 21.0],
+            [10.0, 22.0],
         ],
         dtype=np.float64,
     )
     oriented_once = _normalise_trackmap_orientation(raw_xy)
-    oriented_twice = _normalise_trackmap_orientation(raw_xy)
+    oriented_twice = _normalise_trackmap_orientation(oriented_once)
 
     np.testing.assert_allclose(oriented_once, oriented_twice)
     np.testing.assert_allclose(
@@ -601,8 +674,9 @@ def test_normalise_trackmap_orientation_is_stable_and_deterministic() -> None:
         np.array(
             [
                 [0.0, 0.0],
-                [12.0, 0.0],
-                [12.0, 5.0],
+                [0.0, -1.0],
+                [-1.0, -2.0],
+                [-2.0, 0.0],
             ],
             dtype=np.float64,
         ),
