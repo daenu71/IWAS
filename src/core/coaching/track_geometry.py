@@ -251,6 +251,18 @@ def _build_event_tooltip(event, track_length_m: float | None, speed_units: str) 
     return title if not lines else "\n".join([title, *lines])
 
 
+def _build_event_marker_tooltip(
+    event,
+    speed_data: "tuple[np.ndarray, np.ndarray] | None",
+    track_length_m: float | None,
+    speed_units: str,
+) -> str:
+    """Shared tooltip builder for TrackMap and Corner-Zoom event markers."""
+    if getattr(event, "event_type", None) == "brake_start":
+        return _brake_start_speed_tooltip(event.lapdist_pct, speed_data, speed_units)
+    return _build_event_tooltip(event, track_length_m, speed_units)
+
+
 class _FitContext(NamedTuple):
     x_min: float
     y_min: float
@@ -581,6 +593,7 @@ def render_trackmap(
     events: Optional[list] = None,
     visible_event_types: Optional[set] = None,
     speed_data: "tuple[np.ndarray, np.ndarray] | None" = None,
+    track_length_m: float | None = None,
 ) -> None:
     """Render a complete TrackMap onto *canvas*.
 
@@ -697,7 +710,7 @@ def render_trackmap(
         _render_trackmap_events(
             canvas, events, visible_event_types, coords, lap_dist_pct,
             speed_data=speed_data,
-            track_length_m=None,
+            track_length_m=track_length_m,
             speed_units=_read_speed_units(),
         )
 
@@ -882,12 +895,9 @@ def render_corner_zoom(
                 tags=("zoom_event", tag),
             )
 
-        if rev.event.event_type == "brake_start":
-            event_map[tag] = _brake_start_speed_tooltip(
-                rev.event.lapdist_pct, speed_data, speed_units
-            )
-        else:
-            event_map[tag] = _build_event_tooltip(rev.event, track_length_m, speed_units)
+        event_map[tag] = _build_event_marker_tooltip(
+            rev.event, speed_data, track_length_m, speed_units
+        )
 
     # Single motion handler instead of per-item tag_bind (avoids tooltip-loop freeze)
     canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
@@ -983,12 +993,9 @@ def _render_trackmap_events(
         tag = f"tmev_{id(rev.event)}"
         canvas.create_image(rev.canvas_x, rev.canvas_y, image=sprite,
                             anchor=tk.CENTER, tags=("tm_event", tag))
-        if rev.event.event_type == "brake_start":
-            event_map[tag] = _brake_start_speed_tooltip(
-                rev.event.lapdist_pct, speed_data, speed_units
-            )
-        else:
-            event_map[tag] = _build_event_tooltip(rev.event, track_length_m, speed_units)
+        event_map[tag] = _build_event_marker_tooltip(
+            rev.event, speed_data, track_length_m, speed_units
+        )
 
     canvas.bind("<Motion>", lambda e, em=event_map: _zoom_on_motion(canvas, e, em))
     canvas.bind("<Leave>", lambda _e: _zoom_hide_tooltip(canvas))

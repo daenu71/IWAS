@@ -799,6 +799,7 @@ class CoachingDetailView(ttk.Frame):
             events=all_events,
             visible_event_types=visible_types,
             speed_data=self._speed_data,
+            track_length_m=vm.track_length_m,
         )
 
     def _on_trackmap_resize(self, _event=None) -> None:
