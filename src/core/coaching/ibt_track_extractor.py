@@ -203,11 +203,22 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
     orientation_result = _normalise_exported_center_line_orientation(center_line)
     _log_export_orientation_normalisation(metadata.track_key, orientation_result)
 
+    oriented_cl = orientation_result.center_line
+    center_m = np.asarray(
+        [[float(pt["x_m"]), float(pt["y_m"])] for pt in oriented_cl],
+        dtype=np.float64,
+    )
+    left_m, right_m = _compute_edges_m(
+        center_m, None, metadata.track_display_name or metadata.track_key
+    )
+    left_edge = left_m.tolist()
+    right_edge = right_m.tolist()
+
     payload = _build_track_geometry_payload(
         track_key=metadata.track_key,
-        center_line=orientation_result.center_line,
-        left_edge=[],
-        right_edge=[],
+        center_line=oriented_cl,
+        left_edge=left_edge,
+        right_edge=right_edge,
         source_type="ibt",
         source_name="ibt_telemetry",
         source_path=str(ibt_path),
@@ -216,7 +227,7 @@ def extract_track_geometry(ibt_path: str | Path, storage_root: str | Path) -> Pa
         track_config_name=metadata.track_config_name,
         track_name=metadata.track_name,
         track_id=metadata.track_id,
-        geometry_kind="centerline_only",
+        geometry_kind="centerline_and_edges",
         position_source="latlon",
         distance_source="LapDistPct",
     )
@@ -1897,7 +1908,7 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _compute_edges_m(
-    center_m: np.ndarray, ir: Any, track_name: str = ""
+    center_m: np.ndarray, ir: Any = None, track_name: str = ""
 ) -> tuple[np.ndarray, np.ndarray]:
     if len(center_m) < 2:
         empty = np.empty((0, 2), dtype=np.float64)
