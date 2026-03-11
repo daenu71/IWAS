@@ -36,6 +36,7 @@ from core.models import (
 from core.cfg import APP_NAME, APP_VERSION
 from core.diagnostics import detect_onedrive_risky_paths, export_diagnostics_bundle
 from core import persistence, filesvc, profile_service, render_service
+from core.coaching.ibt_import_queue import discover_and_queue_new_ibt_files
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, scan_storage
 from core.coaching.lap_analyzer import analyze_lap as _coaching_analyze_lap
 from core.coaching.storage import (
@@ -123,6 +124,16 @@ def _ensure_irsdk_recorder_service_hooks_bootstrapped() -> object | None:
         return recorder_service
     except Exception:
         return None
+
+
+def _start_ibt_import_discovery_background() -> None:
+    def _worker() -> None:
+        try:
+            discover_and_queue_new_ibt_files()
+        except Exception as exc:
+            _LOG.warning("ibt startup discovery failed (%s)", exc)
+
+    threading.Thread(target=_worker, name="ibt-startup-discovery", daemon=True).start()
 
 
 def _parse_semver_triplet(version_text: str) -> tuple[int, int, int]:
@@ -5839,6 +5850,10 @@ def main() -> None:
     try:
         _debug_settings = persistence.load_debug_settings()
         _apply_debug_env_vars(_debug_settings)
+    except Exception:
+        pass
+    try:
+        _start_ibt_import_discovery_background()
     except Exception:
         pass
     # -------------------------------------------------------------------------
