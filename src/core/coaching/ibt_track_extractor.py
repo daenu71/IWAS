@@ -40,6 +40,11 @@ except ImportError:
     from ..irsdk.channels import REQUESTED_CHANNEL_ALIASES  # type: ignore[no-redef]
     from ..irsdk.sessioninfo_parser import extract_session_meta  # type: ignore[no-redef]
 
+try:
+    from .track_width_lookup import get_track_half_width_m
+except ImportError:
+    from core.coaching.track_width_lookup import get_track_half_width_m  # type: ignore[no-redef]
+
 
 _EDGE_OFFSET_M: float = 5.0
 _IBT_SAMPLE_DT: float = 1.0 / 60.0
@@ -67,6 +72,38 @@ _IBT_GEO_REQUIRED_CHANNELS: tuple[str, ...] = ("Lat", "Lon", "LapDistPct")
 _IBT_GEO_OPTIONAL_CHANNELS: tuple[str, ...] = ("SessionTime", "Alt")
 
 _LOG = logging.getLogger(__name__)
+
+_INI_SECTION = "coaching_analysis"
+_INI_KEY_HALF_WIDTH = "road_half_width_m"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+
+def _resolve_half_width_m(track_name: str) -> float:
+    """Return track half-width in metres.
+
+    Priority:
+    1. INI override ``road_half_width_m`` in [coaching_analysis] (defaults.ini / user.ini)
+    2. JSON lookup via get_track_half_width_m()
+    """
+    try:
+        import configparser as _cp
+
+        _cfg = _cp.ConfigParser()
+        _cfg.read(
+            [
+                str(_PROJECT_ROOT / "config" / "defaults.ini"),
+                str(_PROJECT_ROOT / "config" / "user.ini"),
+            ],
+            encoding="utf-8-sig",
+        )
+        raw = _cfg.get(_INI_SECTION, _INI_KEY_HALF_WIDTH, fallback="").strip()
+        if raw:
+            val = float(raw)
+            if val > 0.0:
+                return val
+    except Exception:
+        pass
+    return get_track_half_width_m(track_name)
 
 
 @dataclass(frozen=True)
@@ -194,6 +231,7 @@ def extract_track_geometry_from_parquet(
     parquet_path: str | Path,
     track_key: str,
     storage_root: str | Path,
+    track_display_name: str = "",
 ) -> Path:
     """Extract fallback geometry from a recorded parquet file."""
     parquet_path = Path(parquet_path)
@@ -203,9 +241,10 @@ def extract_track_geometry_from_parquet(
     if len(center_m) < 2:
         raise RuntimeError(f"No usable velocity data in Parquet: {parquet_path}")
 
+    half_width = _resolve_half_width_m(track_display_name or track_key)
     normals = _compute_normals(center_m)
-    left_m = _close_edge_loop(center_m + normals * _EDGE_OFFSET_M)
-    right_m = _close_edge_loop(center_m - normals * _EDGE_OFFSET_M)
+    left_m = _close_edge_loop(center_m + normals * half_width)
+    right_m = _close_edge_loop(center_m - normals * half_width)
     center_norm, left_norm, right_norm = _normalise_road_geometry(center_m, left_m, right_m)
 
     payload = _build_track_geometry_payload(
@@ -1857,15 +1896,15 @@ def _safe_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _compute_edges_m(center_m: np.ndarray, ir: Any) -> tuple[np.ndarray, np.ndarray]:
+def _compute_edges_m(
+    center_m: np.ndarray, ir: Any, track_name: str = ""
+) -> tuple[np.ndarray, np.ndarray]:
     if len(center_m) < 2:
         empty = np.empty((0, 2), dtype=np.float64)
         return empty, empty
 
     normals = _compute_normals(center_m)
-    offset = _read_track_half_width(ir)
-    if offset is None:
-        offset = _EDGE_OFFSET_M
+    offset = _resolve_half_width_m(track_name)
 
     left_m = _close_edge_loop(center_m + normals * offset)
     right_m = _close_edge_loop(center_m - normals * offset)
