@@ -1,259 +1,174 @@
-# Story 1 — Settings: iRacing Telemetry Ordner konfigurieren
+# Coaching Sprint 4 – iRacing Telemetry Daten für Track Map
 
-**Title:**
-Settings: konfigurierbaren iRacing-Telemetry-Ordner für `.ibt`-Suche hinzufügen
+## Status
 
-**Changed files:**
+**Sprint 4 ist abgeschlossen.**
 
-* `src/ui/app.py`
-* `src/core/config/*` oder die aktuelle Settings-/Config-Datei
-* ggf. `src/ui/settings_*` falls bereits ausgelagert
-* keine Coaching-Analyse-Logik in diesem Schritt
+Dieser Sprint deckt den Track-Map-spezifischen Teil der IBT-Umstellung ab:
 
-**Short summary:**
-Erweitere die Settings um einen konfigurierbaren Standardpfad für den iRacing-Telemetry-Ordner. Default soll auf den üblichen Windows-iRacing-Telemetry-Pfad zeigen. Der Wert wird persistent gespeichert und zentral verfügbar gemacht. In diesem Schritt nur Settings + Laden/Speichern + Validierung, noch keine `.ibt`-Verarbeitung.
+- Telemetry-Ordner konfigurierbar machen
+- `.ibt` für eine Strecke finden und daraus persistente Track-Geometrie erzeugen
+- diese Geometrie im Analysepfad nachziehen
+- gespeicherte Geometrie in der TrackMap priorisieren
 
-## Ziel
+Wichtig:
 
-Ein zentraler Setting-Wert für den iRacing-Telemetry-Ordner, den spätere Coaching-/Track-Geometrie-Tasks nutzen können.
-
-## Anforderungen
-
-* Im Top-Menü `Settings` ein neues Feld für den iRacing-Telemetry-Ordner hinzufügen
-* Default-Wert:
-
-  * `%USERPROFILE%\Documents\iRacing\telemetry`
-* Wert persistent speichern
-* Beim Laden der App wiederherstellen
-* Pfad zentral über Config zugänglich machen
-* Kleine Validierung:
-
-  * leer erlaubt
-  * nicht existierender Pfad darf gespeichert werden, aber mit klarer UI-Hinweis-/Logmeldung
-* Keine automatische Scan-Logik in diesem Schritt
-
-## Akzeptanzkriterien
-
-* Settings-Seite zeigt den neuen Pfad
-* Wert bleibt nach Neustart erhalten
-* Andere Module können den Wert zentral lesen
-* Keine Änderung an Recorder, Analyzer oder Trackmap
-
-## Erwartete Ausgabe im .dm Format
-**Titel:** Sinvoller Titel der Änderung
-**Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
-**Test** Beschreibung wie es getestet werden kann
-**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
-**Geänderte Dateien:**
+- Sprint 4 bedeutet **nicht**, dass die komplette Coaching-Pipeline schon auf `.ibt` umgestellt ist
+- abgeschlossen ist der Teilpfad für **Track-Geometrie und TrackMap-Quelle**
 
 ---
 
-# Story 2 — Track-Geometrie aus `.ibt` erzeugen und speichern
+## Einordnung in die Gesamtarchitektur
 
-**Title:**
-Offline-Import: Track-Geometrie aus iRacing `.ibt` für bekannte Strecke erzeugen und unter `track_geometries` speichern
+Sprint 4 ist ein abgeschlossener Baustein innerhalb der größeren IBT-first-Umstellung.
 
-**Changed files:**
+Er liefert bereits einen zentralen Vorteil des neuen Zielbilds:
 
-* `src/core/coaching/track_geometry_*` oder bestehendes Track-Geometrie-Modul
-* neuer Import-/Scanner-Service unter `src/core/coaching/`
-* ggf. `src/core/irsdk/` nur falls dort bereits `.ibt`-Leselogik sinnvoll liegt
-* keine UI-Fallback-Logik in diesem Schritt
+- Track-Geometrie kommt aus `.ibt`
+- TrackMap muss nicht primär auf Dead-Reckoning beruhen
+- die Geometrie wird persistent gespeichert und wiederverwendet
 
-**Short summary:**
-Füge einen Offline-Pfad hinzu, der aus einer vorhandenen iRacing-`.ibt`-Datei die Streckengeometrie einer Strecke extrahiert und als persistente Track-Geometrie unter `C:\iWAS\data\coaching\track_geometries` speichert. Fokus dieses Schritts: Datenquelle `.ibt`, Streckenidentifikation, Extraktion, Persistenz. Noch keine automatische Einbindung in die UI.
-
-## Ziel
-
-Eine gespeicherte, wiederverwendbare Streckengeometrie pro Strecke aus `.ibt` aufbauen.
-
-## Anforderungen
-
-* Einen Service implementieren, der den konfigurierten iRacing-Telemetry-Ordner scannt
-* `.ibt`-Dateien einer gewünschten Strecke finden
-* Streckenidentifikation robust über Trackname / TrackKey aus den `.ibt`-Metadaten
-* Aus `.ibt` die Track-Geometrie ableiten
-* Ergebnis speichern unter:
-
-  * `C:\iWAS\data\coaching\track_geometries\<track_key>\track_road_geometry.json`
-* Falls für dieselbe Strecke bereits eine echte gespeicherte Geometrie vorhanden ist:
-
-  * nicht blind überschreiben
-  * nur sauber loggen und überspringen
-* Falls nur Fallback-Geometrie vorhanden ist:
-
-  * Status/Quelle im gespeicherten Datensatz klar kennzeichnen
-* Noch keine automatische Trigger-Logik nach Session-Ende
-
-## Wichtig
-
-* Keine Änderung an Live-Recorder-Logik
-* Keine UI-Änderung
-* Keine Vermischung von “echte aus `.ibt` erzeugte Geometrie” und “dead_reckoning fallback”
-* Quelle im JSON klar markieren, z. B.:
-
-  * `source_type = ibt`
-  * `source_type = fallback`
-
-## Akzeptanzkriterien
-
-* Für eine vorhandene `.ibt` einer Strecke kann eine Track-Geometrie erzeugt und gespeichert werden
-* Track-Key/Ordnerstruktur ist stabil
-* Quelle ist im gespeicherten Datensatz klar erkennbar
-* Bestehende echte Geometrie wird nicht still überschrieben
-
-## Erwartete Ausgabe im .dm Format
-**Titel:** Sinvoller Titel der Änderung
-**Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
-**Test** Beschreibung wie es getestet werden kann
-**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
-**Geänderte Dateien:**
+Damit ist Sprint 4 die fertige Grundlage für eine robustere Visualisierung, aber noch nicht der vollständige IBT-Import aller Coaching-Daten.
 
 ---
 
-# Story 3 — Nach jeder Session prüfen, ob neue `.ibt` für die Strecke vorliegt
+## Erledigte Stories
 
-**Title:**
-Coaching-Analyse: nach Session-Aufzeichnung neue `.ibt` für die Strecke prüfen und fehlende Track-Geometrie automatisch erzeugen
+### Story 4.1 – Settings: iRacing Telemetry Ordner konfigurieren
 
-**Changed files:**
+**Status:** abgeschlossen
 
-* `src/core/coaching/lap_analyzer.py`
-* `src/core/coaching/indexer.py`
-* neuer `.ibt`-Scan-/Import-Service aus Story 2
-* ggf. kleiner Hook im Recorder-/Run-Abschluss-Modul
+Erledigt:
 
-**Short summary:**
-Erweitere den Coaching-Analysepfad so, dass nach Abschluss einer Session-Aufzeichnung geprüft wird, ob für die betroffene Strecke bereits eine echte gespeicherte Track-Geometrie existiert. Falls nicht, soll im konfigurierten iRacing-Telemetry-Ordner nach passender `.ibt` gesucht und daraus die Track-Geometrie erzeugt werden. Noch keine größere UI-Umstellung; nur Trigger + Persistenzpfad.
+- konfigurierbarer iRacing-Telemetry-Ordner in den Settings
+- Default auf den üblichen iRacing-Telemetry-Pfad
+- persistente Speicherung
+- zentraler Zugriff aus der Runtime
 
-## Ziel
+Architektureinordnung:
 
-Nach jeder Session automatisch versuchen, für die aktuelle Strecke eine echte gespeicherte Track-Geometrie aufzubauen.
+- schafft die Basis für spätere `.ibt`-Discovery
+- ist Voraussetzung für automatische und manuelle IBT-Importpfade
 
-## Anforderungen
+### Story 4.2 – Track-Geometrie aus `.ibt` erzeugen und speichern
 
-* Trigger nach abgeschlossener Session/Run-Analyse
-* Prüfen:
+**Status:** abgeschlossen
 
-  1. gibt es für die Strecke bereits eine echte Track-Geometrie?
-  2. wenn nein: konfigurierten `.ibt`-Ordner scannen
-  3. wenn passende `.ibt` vorhanden: Geometrie erzeugen und speichern
-  4. wenn nicht vorhanden: nur loggen, kein Fehler
-* Zusätzlich:
+Erledigt:
 
-  * Wenn eine Strecke aktuell nur Fallback-Geometrie besitzt, bei jeder Analyse erneut zuerst prüfen, ob inzwischen eine passende `.ibt` verfügbar ist
-* Scan klein halten:
+- Scan nach passenden `.ibt`-Dateien im konfigurierten Telemetry-Ordner
+- robuste Track-Zuordnung über Track-Meta
+- Extraktion und Persistenz unter `C:\iWAS\data\coaching\track_geometries\<track_key>\track_road_geometry.json`
+- klare Quellenkennzeichnung über `source_type`
+- vorhandene echte IBT-Geometrie wird nicht blind überschrieben
+- vorhandene Fallback-Geometrie kann sauber ersetzt werden
 
-  * keine unnötigen Vollscans pro Frame
-  * nur pro Analyse-/Session-Ende
-* Logs klar trennen:
+Architektureinordnung:
 
-  * `track_geometry source=ibt created`
-  * `track_geometry source=fallback retained`
-  * `track_geometry ibt_not_found`
+- liefert wiederverwendbare Track-Geometrie als persistentes Artefakt
+- trennt echte IBT-Geometrie klar von Fallback-Geometrie
 
-## Nicht Teil dieses Tasks
+### Story 4.3 – Nach Analyse prüfen, ob echte `.ibt`-Geometrie nachgezogen werden kann
 
-* keine Änderung, wie die UI die Trackmap rendert
-* keine neue Button-/Dialog-Logik
-* kein Hintergrund-Daemon mit ständigem Polling
+**Status:** abgeschlossen
 
-## Akzeptanzkriterien
+Erledigt:
 
-* Nach Session-Ende wird genau einmal geprüft
-* Fehlende echte Geometrie kann aus `.ibt` nachgezogen werden
-* Vorhandene Fallback-Geometrie bleibt bestehen, bis echte Geometrie erzeugt wurde
-* Kein Crash, wenn der `.ibt`-Ordner leer oder ungültig ist
+- Hook im Analysepfad
+- bei erfolgreicher Lap-Analyse wird geprüft, ob für die Strecke bereits eine echte Geometrie vorliegt
+- wenn nicht, wird ein Importversuch aus dem Telemetry-Ordner gestartet
+- falls keine passende `.ibt` existiert, bleibt das fehlerfrei und wird nur geloggt
 
-## Erwartete Ausgabe im .dm Format
-**Titel:** Sinvoller Titel der Änderung
-**Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
-**Test** Beschreibung wie es getestet werden kann
-**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
-**Geänderte Dateien:**
+Architektureinordnung:
 
----
+- ist ein Übergangshook
+- sorgt dafür, dass Track-Geometrie bereits heute in den Analysefluss nachrückt
+- ersetzt noch nicht das spätere Zielbild "IBT-Import beim App-Start für komplette Sessions"
 
-# Story 4 — Trackmap-Priorität: gespeicherte Streckengeometrie vor Fallback verwenden
+### Story 4.4 – Trackmap-Priorität: gespeicherte Geometrie vor Fallback
 
-**Title:**
-Trackmap-Quelle priorisieren: gespeicherte Streckengeometrie aus `track_geometries` vor Dead-Reckoning-Fallback verwenden
+**Status:** abgeschlossen
 
-**Changed files:**
+Erledigt:
 
-* `src/ui/viewmodels/lap_view_model.py`
-* `src/ui/coaching_detail.py`
-* ggf. `src/ui/track_geometry.py`
-* ggf. kleines zentrales Track-Geometry-Resolver-Modul
+- gespeicherte IBT-Geometrie wird für die TrackMap priorisiert
+- gespeicherte Fallback-Geometrie ist zweite Stufe
+- Dead-Reckoning bleibt nur der letzte Fallback
+- Logs weisen die konkrete Quelle aus
 
-**Short summary:**
-Stelle die Trackmap-Quellwahl sauber um: Wenn für eine Strecke eine gespeicherte Track-Geometrie unter `track_geometries` vorhanden ist, soll diese für die Darstellung priorisiert verwendet werden. Wenn keine echte gespeicherte Geometrie vorhanden ist, bleibt die bisherige Fallback-Methode aktiv. Hat eine Strecke nur Fallback-Geometrie, soll bei Analyse weiterhin zuerst geprüft werden, ob inzwischen `.ibt`-basierte echte Geometrie verfügbar ist.
+Architektureinordnung:
 
-## Ziel
-
-Die sichtbare Streckenkarte soll bevorzugt aus der stabilen gespeicherten Streckengeometrie kommen und nur im Notfall aus der bisherigen Fallback-Methode.
-
-## Anforderungen
-
-* Trackmap-Resolver mit klarer Priorität:
-
-  1. echte gespeicherte Track-Geometrie aus `track_geometries`
-  2. gespeicherte Fallback-Geometrie, falls so ein Zustand existiert
-  3. bisherige Dead-Reckoning-Fallback-Methode
-* Quelle im Debug/Log klar ausweisen:
-
-  * `trackmap_source=track_geometries_ibt`
-  * `trackmap_source=track_geometries_fallback`
-  * `trackmap_source=dead_reckoning_live_fallback`
-* Wenn keine echte Geometrie vorhanden ist:
-
-  * keine leere UI
-  * bisherige Methode weiter verwenden
-* Wenn Strecke gar nicht in `track_geometries` existiert:
-
-  * bei vorheriger Analyse bereits `.ibt`-Check versucht
-  * UI nutzt bis dahin Fallback
-* Kein stilles Mischen verschiedener Geometriequellen in derselben Karte
-
-## Akzeptanzkriterien
-
-* Vorhandene echte Track-Geometrie wird sichtbar priorisiert
-* Fehlende Strecke fällt sauber auf bisherige Methode zurück
-* Logs zeigen eindeutig, welche Quelle verwendet wurde
-* Keine Regression in bestehender Coaching-Ansicht
-
-## Erwartete Ausgabe im .dm Format
-**Titel:** Sinvoller Titel der Änderung
-**Zusammenfassung:** Kurze Beschreibung was gefunden und/oder geändert wurde
-**Test** Beschreibung wie es getestet werden kann
-**Logs** Wenn Logs geschrieben werden, wo die Logs gefunden werden.
-**Geänderte Dateien:**
+- macht die Visualisierung fachlich IBT-first-kompatibel
+- reduziert die Abhängigkeit von fehleranfälliger Rekonstruktion
 
 ---
 
-## Empfohlene Reihenfolge
+## Was Sprint 4 konkret fertiggestellt hat
 
-Genau so umsetzen:
+Nach Sprint 4 ist für die TrackMap-Kette erledigt:
 
-1. **Story 1**
-2. **Story 2**
-3. **Story 3**
-4. **Story 4**
+1. Telemetry-Verzeichnis ist konfigurierbar
+2. passende `.ibt`-Dateien können gefunden werden
+3. Track-Geometrie kann daraus persistent erzeugt werden
+4. Analyse kann diese Geometrie nachziehen
+5. Visualisierung priorisiert die gespeicherte Geometrie sauber vor Fallbacks
 
-Das ist die kleinste saubere Kette.
-
----
-
-## Warum nicht alles in einem Prompt
-
-Weil sonst diese Risiken entstehen:
-
-* Settings fertig, aber noch kein Nutzer der Settings
-* `.ibt`-Import halb eingebaut, aber UI nutzt ihn nicht sauber
-* Fallback-/Echt-Geometrie vermischt
-* Session-Ende-Trigger feuert zu früh oder mehrfach
-* Trackmap-Quelle später nicht mehr klar debugbar
+Das ist abgeschlossen und muss in der Doku nicht mehr als offen geführt werden.
 
 ---
 
-Wenn du willst, formuliere ich dir jetzt direkt **Story 1 als final kopierbaren Codex-Prompt**.
+## Was Sprint 4 bewusst noch nicht erledigt
+
+Offen bleibt weiterhin:
+
+- vollständiger Import neuer `.ibt`-Dateien beim App-Start
+- Persistenz kompletter Coaching-Sessions aus `.ibt`
+- Session-Erkennung, Run-Split, Pit-Detection und Lap-Grenzen direkt aus den importierten IBT-Daten
+- vollständige Analysepipeline direkt auf importierten Sessions
+- Umstellung des Coaching-Browsers auf einen IBT-importierten Primärbestand
+
+Diese Punkte gehören in die nächsten Sprints der Gesamtumstellung.
+
+---
+
+## Definition of Done
+
+Sprint 4 ist abgeschlossen, weil folgende Punkte erfüllt sind:
+
+- [x] Telemetry-Ordner ist konfigurierbar
+- [x] Track-Geometrie kann offline aus `.ibt` importiert werden
+- [x] Quelle der gespeicherten Geometrie ist eindeutig markiert
+- [x] vorhandene echte Geometrie wird nicht still überschrieben
+- [x] Analysepfad kann fehlende Geometrie nachziehen
+- [x] TrackMap priorisiert gespeicherte Geometrie vor Fallback
+- [x] Dead-Reckoning ist für die TrackMap nicht mehr die bevorzugte Quelle
+
+---
+
+## Nächste sinnvolle Folge-Sprints
+
+### Sprint 5 – IBT-Discovery und Vollimport beim App-Start
+
+- neue `.ibt`-Dateien automatisch erkennen
+- Import nicht nur für Track-Geometrie, sondern für komplette Coaching-Sessions
+- Import-Historie und Deduplizierung
+
+### Sprint 6 – Kanonisches Coaching-Importformat
+
+- kompakte Persistenz pro importierter Session
+- Meta, Source-Meta, Run-/Lap-Index und Analyseeingänge aus einem einheitlichen Importmodell
+
+### Sprint 7 – Session-, Run-, Pit- und Lap-Ableitung aus IBT
+
+- Zielableitung vollständig aus importierten Daten
+- Recorder-Regeln nur noch als Referenz oder späterer Live-Pfad
+
+### Sprint 8 – Analyse vollständig auf IBT-Importpfad
+
+- Sprint-2-Pipeline direkt auf importierten Sessions betreiben
+- Browser-, Status- und Cache-Logik auf den Importpfad ausrichten
+
+### Später – Live Coaching
+
+- Live-Recorder wieder aktiv relevant
+- aber nur für Echtzeitfunktionen, nicht mehr als führende Offline-Datenquelle
