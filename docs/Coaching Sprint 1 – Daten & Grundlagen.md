@@ -104,17 +104,21 @@ Für die Import-Persistenz sollen mindestens die Daten gesichert werden, die fü
 - SessionUniqueID
 - SessionFlags
 - Weekend-/SessionInfo-Metadaten
+- Skies
 - Track-, Car-, Session- und Zeitinformationen
+- PlayerCarMyIncidentCount
+- PlayerIncidents
 
 ### Lap-, Run- und Pit-Ableitung
 
-- `Lap`
-- `LapCompleted`
-- `LapDist`
-- `LapDistPct`
-- `OnPitRoad`
-- `IsOnTrack`
-- `IsOnTrackCar`
+- Lap
+- LapCompleted
+- LapDist
+- LapDistPct
+- OnPitRoad
+- IsOnTrack
+- IsOnTrackCar
+- LapLastLapTime
 - weitere für Session-/Run-/Pit-Erkennung benötigte Statuskanäle
 
 ### Fahrdynamik und Inputs
@@ -122,15 +126,25 @@ Für die Import-Persistenz sollen mindestens die Daten gesichert werden, die fü
 - Speed
 - Yaw / `YawNorth`
 - YawRate
-- Pitch / Roll
-- Velocity / Accel-Kanäle
+- Pitch / Roll / RollRate
+- Velocity / LatAccel / LongAccel / VertAccel
 - Throttle / Brake / Clutch
 - SteeringWheelAngle
 - Gear / RPM
+- LFtempL/M/R
+- LFtempCL/CM/CR / LRtempCL/CM/CR / RFtempCL/CM/CR / RRtempCL/CM/CR
+- LFpressure / LRpressure / RFpressure / RFpressure
+- LFwearL/M/R / LRwearL/M/R / RFwearL/M/R / RRwearL/M/R
+- BrakeABSactive / BrakeABScutPct
+- LFspeed/ LRspeed / RFspeed / RRspeed / dcTractionControlToggle
+- PlayerTrackSurface
+- PlayerTrackSurfaceMaterial
+- FuelLevel
 
 ### Geometrie und Streckenbezug
 
 - Lat / Lon
+- VelocityX / VelocityY / VelocityZ
 - TrackLength
 - Track-/Config-Meta
 - aus IBT ableitbare Track-Geometrie
