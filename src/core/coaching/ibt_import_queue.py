@@ -271,6 +271,66 @@ def _coerce_text(value: Any) -> str:
         return ""
 
 
+def update_queue_entry_state(
+    fingerprint: str,
+    new_state: str,
+    *,
+    storage_root: str | Path | None = None,
+    extra_fields: dict[str, Any] | None = None,
+) -> bool:
+    """Update the state of one queue entry (and its registry record) by fingerprint.
+
+    Returns ``True`` if the entry was found and written, ``False`` otherwise.
+    """
+    storage_path = _resolve_storage_root(storage_root)
+    queue_path = storage_path / _QUEUE_FILENAME
+    registry_path = storage_path / _REGISTRY_FILENAME
+
+    queue_doc = _load_queue_doc(queue_path)
+    registry_doc = _load_registry_doc(registry_path)
+
+    now_iso = _utc_now_iso()
+    found = False
+
+    for entry in queue_doc["entries"]:
+        if _coerce_text(entry.get("fingerprint")) == fingerprint:
+            entry["state"] = new_state
+            entry["updated_at"] = now_iso
+            if extra_fields:
+                entry.update(extra_fields)
+            found = True
+            break
+
+    if fingerprint in registry_doc["sources"]:
+        registry_doc["sources"][fingerprint]["state"] = new_state
+        registry_doc["sources"][fingerprint]["updated_at"] = now_iso
+        if extra_fields:
+            registry_doc["sources"][fingerprint].update(extra_fields)
+
+    if found:
+        queue_doc["updated_at"] = now_iso
+        registry_doc["updated_at"] = now_iso
+        _write_json(queue_path, queue_doc)
+        _write_json(registry_path, registry_doc)
+
+    return found
+
+
+def get_pending_queue_entries(
+    *,
+    storage_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return all queue entries whose state is ``pending``."""
+    storage_path = _resolve_storage_root(storage_root)
+    queue_path = storage_path / _QUEUE_FILENAME
+    queue_doc = _load_queue_doc(queue_path)
+    return [
+        entry
+        for entry in queue_doc["entries"]
+        if _coerce_text(entry.get("state")) == "pending"
+    ]
+
+
 def _coerce_int(value: Any, fallback: int) -> int:
     try:
         return int(value)
