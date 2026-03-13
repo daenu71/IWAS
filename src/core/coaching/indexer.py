@@ -296,6 +296,17 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     lap_index_path = session_dir / "lap_index.json"
     lap_index_list: list[Any] = _read_json_list(lap_index_path)
 
+    # Run registry written by the recorder / ibt_session_splitter.
+    # May declare runs that have no parquet/meta file yet (e.g. second run whose
+    # data is still embedded in the single shared parquet of the first run).
+    run_index_path = session_dir / "run_index.json"
+    run_index_list: list[Any] = _read_json_list(run_index_path)
+    _run_index_map: dict[int, dict[str, Any]] = {
+        e["run_id"]: e
+        for e in run_index_list
+        if isinstance(e, dict) and isinstance(e.get("run_id"), int)
+    }
+
     run_meta_map: dict[int, Path] = {}
     run_parquet_map: dict[int, Path] = {}
     run_lap_meta_map: dict[int, dict[int, Path]] = {}
@@ -323,7 +334,12 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
                 run_lap_meta_map.setdefault(lap_run_id, {})[lap_seq] = child
             continue
 
-    known_run_ids = sorted(set(run_meta_map.keys()) | set(run_parquet_map.keys()) | set(run_lap_meta_map.keys()))
+    known_run_ids = sorted(
+        set(run_meta_map.keys())
+        | set(run_parquet_map.keys())
+        | set(run_lap_meta_map.keys())
+        | set(_run_index_map.keys())
+    )
     if shared_lap_meta_map:
         if len(known_run_ids) == 1:
             only_run_id = known_run_ids[0]
@@ -361,6 +377,15 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
         meta_path = run_meta_map.get(run_id)
         parquet_path = run_parquet_map.get(run_id)
         run_meta = _read_json_dict(meta_path) if meta_path is not None else {}
+        # Backfill start_ts / reason from run_index.json when the meta file is absent.
+        if run_id in _run_index_map:
+            idx_entry = _run_index_map[run_id]
+            if not str(run_meta.get("run_start_reason") or "").strip() and idx_entry.get("reason"):
+                run_meta = dict(run_meta)
+                run_meta["run_start_reason"] = idx_entry["reason"]
+            if _coerce_optional_float(run_meta.get("run_start_ts")) is None and idx_entry.get("start_ts") is not None:
+                run_meta = dict(run_meta)
+                run_meta["run_start_ts"] = idx_entry["start_ts"]
         if not str(run_meta.get("run_start_reason") or "").strip() or _coerce_optional_float(run_meta.get("run_start_ts")) is None:
             if debug_run_start_map is None:
                 debug_run_start_map = _read_debug_run_start_map(session_dir)
@@ -468,10 +493,11 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
 
     _augment_single_run_from_debug_samples(session_dir=session_dir, runs=runs)
 
+    # Sort chronologically oldest-first: use run_start_ts from meta, fall back to run_id.
     runs.sort(
         key=lambda r: (
-            -(r.summary.last_driven_ts or 0.0),
-            _sort_key_text(f"Run {r.run_id:04d}"),
+            _coerce_optional_float(r.meta.get("run_start_ts")) or 0.0,
+            r.run_id,
         )
     )
     session_summary = _compute_session_summary(runs, fallback_last_ts=session_last_ts)
