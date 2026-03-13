@@ -276,8 +276,11 @@ class _Splitter:
             incident_delta = 0
             if inc_min is not None and inc_max is not None:
                 incident_delta = max(0, inc_max - inc_min)
-            # Prefer PlayerTrackSurface signal; fall back to incident-step detection.
-            offtrack_surface = pts_offtrack_flag if pts_col is not None else offtrack_flag
+            # Combine both signals: PlayerTrackSurface (surface=0/−1) OR incident-step (+1/+2).
+            # Previously the incident-based fallback was discarded when PlayerTrackSurface was
+            # present but never registered OffTrack — causing laps with kerb/grass incidents
+            # (surface stays 3=OnTrack) to be reported as clean.
+            offtrack_surface = pts_offtrack_flag or offtrack_flag
             valid_lap = bool(lap_complete and not offtrack_surface and incident_delta == 0)
 
             run_id = _find_run_id(run_index, lap_start_sample)
