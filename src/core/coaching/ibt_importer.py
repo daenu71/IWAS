@@ -315,6 +315,23 @@ def _read_session_yaml(ir: Any) -> str:
             return raw
     except Exception:
         pass
+    # irsdk.IBT has no session-info properties; read the YAML blob directly
+    # from the memory-mapped file using the header offsets (same layout as
+    # the live-session shared memory used by irsdk.IRSDK).
+    try:
+        header = getattr(ir, "_header", None)
+        shared_mem = getattr(ir, "_shared_mem", None)
+        if header is not None and shared_mem is not None:
+            offset = getattr(header, "session_info_offset", None)
+            length = getattr(header, "session_info_len", None)
+            if offset and length:
+                raw_bytes = shared_mem[offset: offset + length]
+                text = raw_bytes.rstrip(b"\x00").decode("cp1252", errors="replace")
+                if text.strip():
+                    _LOG.debug("[ibt_importer] read session YAML from IBT mmap (%d bytes)", len(text))
+                    return text
+    except Exception as exc:
+        _LOG.debug("[ibt_importer] _read_session_yaml mmap fallback failed: %s", exc)
     return ""
 
 
