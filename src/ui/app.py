@@ -36,7 +36,7 @@ from core.models import (
 from core.cfg import APP_NAME, APP_VERSION
 from core.diagnostics import detect_onedrive_risky_paths, export_diagnostics_bundle
 from core import persistence, filesvc, profile_service, render_service
-from core.coaching.ibt_import_queue import discover_and_queue_new_ibt_files
+from core.coaching.ibt_queue_processor import run_discovery_and_import
 from core.coaching.indexer import CoachingIndex, CoachingTreeNode, scan_storage
 from core.coaching.lap_analyzer import analyze_lap as _coaching_analyze_lap
 from core.coaching.storage import (
@@ -127,13 +127,8 @@ def _ensure_irsdk_recorder_service_hooks_bootstrapped() -> object | None:
 
 
 def _start_ibt_import_discovery_background() -> None:
-    def _worker() -> None:
-        try:
-            discover_and_queue_new_ibt_files()
-        except Exception as exc:
-            _LOG.warning("ibt startup discovery failed (%s)", exc)
-
-    threading.Thread(target=_worker, name="ibt-startup-discovery", daemon=True).start()
+    # Discovery + import is now triggered from CoachingView after the UI is ready.
+    pass
 
 
 def _parse_semver_triplet(version_text: str) -> tuple[int, int, int]:
@@ -1947,6 +1942,7 @@ class CoachingView(ttk.Frame):
         self._browser_widget = CoachingBrowser(
             self._browser_panel,
             on_refresh=self._refresh_coaching_index,
+            on_start_import=self._start_ibt_queue_processor,
             on_open_folder=self._open_coaching_node_folder,
             on_delete_node=self._delete_coaching_node,
             on_select_node=self._handle_select_node,
@@ -1964,6 +1960,7 @@ class CoachingView(ttk.Frame):
         self.after(100, self._restore_coaching_ui_state)
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.after(300, self._poll_recorder_status)
+        self.after(500, self._start_ibt_queue_processor)
 
     def _toggle_browser_panel(self) -> None:
         self._set_browser_collapsed(not self._browser_collapsed)
@@ -2030,6 +2027,25 @@ class CoachingView(ttk.Frame):
         self._browser_widget.set_index(index)
         self._browser_widget.set_message(f"Scanned: {index.root_dir}")
         return index
+
+    def _start_ibt_queue_processor(self) -> None:
+        """Start discovery + import in a background thread (no-op if already running)."""
+        def _on_progress(current: int, total: int) -> None:
+            self.after(0, lambda c=current, t=total: self._browser_widget.set_import_status(
+                f"Importiere {c} von {t} Sessions..."
+            ))
+
+        def _on_import_done(session_dir: object) -> None:
+            self.after(0, self._refresh_coaching_index)
+
+        def _on_all_done() -> None:
+            self.after(0, self._browser_widget.clear_import_status)
+
+        run_discovery_and_import(
+            on_progress=_on_progress,
+            on_import_done=_on_import_done,
+            on_all_done=_on_all_done,
+        )
 
     def _open_coaching_node_folder(self, node: CoachingTreeNode) -> None:
         target = node.session_path if node.kind == "run" else node.path or node.session_path

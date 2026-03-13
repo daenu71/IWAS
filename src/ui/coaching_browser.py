@@ -750,6 +750,7 @@ class CoachingBrowser(ttk.Frame):
         master: tk.Widget,
         *,
         on_refresh: RefreshCallback | None = None,
+        on_start_import: Callable[[], None] | None = None,
         on_open_folder: NodeCallback | None = None,
         on_delete_node: NodeCallback | None = None,
         on_select_node: NodeCallback | None = None,
@@ -762,6 +763,7 @@ class CoachingBrowser(ttk.Frame):
         self.rowconfigure(1, weight=1)
 
         self._on_refresh = on_refresh
+        self._on_start_import = on_start_import
         self._on_open_folder = on_open_folder
         self._on_delete_node = on_delete_node
         self._on_select_node = on_select_node
@@ -911,6 +913,16 @@ class CoachingBrowser(ttk.Frame):
                 self._index = new_index
                 self._filter_index = _build_filter_index(new_index)
         self._rebuild_tree(selected_id=selected_id)
+        if callable(self._on_start_import):
+            self._on_start_import()
+
+    def set_import_status(self, text: str) -> None:
+        """Show an import progress message in the message area."""
+        self._message_var.set(str(text or ""))
+
+    def clear_import_status(self) -> None:
+        """Clear the import progress message."""
+        self._message_var.set("")
 
     def set_message(self, message: str) -> None:
         """Implement set message logic."""
