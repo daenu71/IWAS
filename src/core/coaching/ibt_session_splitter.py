@@ -389,10 +389,10 @@ class _Splitter:
 
         # Post-process: laps inside a pit_entry run may have been closed with
         # "counter_change" because the LapCompleted counter ticked in the pit lane.
-        # For every such lap, if its final LapDistPct is below _WRAP_HI the car
-        # never completed the lap on track → mark as incomplete so the browser
-        # shows "incomplete" not "OK".  Normal complete laps end with LapDistPct
-        # near 1.0 (>= _WRAP_HI), so valid laps are unaffected.
+        # Only laps that are structurally complete (counter_change / distpct_wrap)
+        # AND whose final LapDistPct is below _WRAP_HI are reclassified as pit_entry.
+        # Using AND ensures that full laps in pit_entry runs (e.g. Laps 2–8 in a
+        # Lamborghini session) keep their original reason unchanged.
         if lap_dist is not None:
             for run in run_index:
                 if run.get("reason") != "pit_entry":
@@ -404,10 +404,10 @@ class _Splitter:
                     if lap.get("reason") not in {"counter_change", "distpct_wrap"}:
                         continue
                     end_sample = lap.get("end_sample")
-                    if end_sample is None:
-                        continue
-                    end_sample = int(end_sample)
-                    last_dist = _coerce_float(lap_dist[end_sample]) if end_sample < n else None
+                    last_dist: float | None = None
+                    if end_sample is not None:
+                        end_sample = int(end_sample)
+                        last_dist = _coerce_float(lap_dist[end_sample]) if end_sample < n else None
                     if last_dist is not None and last_dist < _WRAP_HI:
                         lap["reason"] = "pit_entry"
                         lap["valid_lap"] = False
