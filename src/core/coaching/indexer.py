@@ -176,8 +176,25 @@ def scan_storage(root_dir: Path) -> CoachingIndex:
                 ),
             )
             event_nodes: list[CoachingTreeNode] = []
-            for session in session_scans:
+            # Sub-group sessions by SessionUniqueID; non-zero IDs with multiple
+            # sessions belonging to the same race weekend are merged into one node.
+            _sub_groups: dict[int, list[_SessionScan]] = {}
+            _ungrouped: list[_SessionScan] = []
+            for _s in session_scans:
+                _uid = _coerce_optional_int((_s.session_meta or {}).get("SessionUniqueID"))
+                if _uid and _uid != 0:
+                    _sub_groups.setdefault(_uid, []).append(_s)
+                else:
+                    _ungrouped.append(_s)
+            for session in _ungrouped:
                 event_node = _build_session_event_node(session)
+                event_nodes.append(event_node)
+                _register_tree_nodes(nodes_by_id, event_node)
+            for _uid, _group in _sub_groups.items():
+                if len(_group) == 1:
+                    event_node = _build_session_event_node(_group[0])
+                else:
+                    event_node = _build_merged_session_event_node(_uid, _group)
                 event_nodes.append(event_node)
                 _register_tree_nodes(nodes_by_id, event_node)
             car_summary = _aggregate_summary(event_nodes)
@@ -1080,11 +1097,97 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
     )
 
 
+def _build_merged_session_event_node(
+    sub_session_id: int,
+    sessions: list[_SessionScan],
+) -> CoachingTreeNode:
+    """Build a single merged event node from multiple sessions sharing a SubSessionID.
+
+    Sessions are sorted chronologically.  Runs within them are renumbered
+    sequentially (Run 0001, 0002, …).  The original session_dir on every run
+    node is preserved so that lap-analysis paths remain valid.
+    """
+    sorted_sessions = sorted(
+        sessions,
+        key=lambda s: (s.parsed_folder_ts or s.last_driven_ts or 0.0, _sort_key_text(s.folder_name)),
+    )
+    first = sorted_sessions[0]
+    first_environment = _clone_environment_dict((first.session_meta or {}).get("environment"))
+
+    all_run_nodes: list[CoachingTreeNode] = []
+    display_run_idx = 1
+    for session in sorted_sessions:
+        session_environment = _clone_environment_dict((session.session_meta or {}).get("environment"))
+        for run in session.runs:
+            run_node = _build_run_node(
+                session,
+                run,
+                inherited_environment=session_environment,
+                display_run_id=display_run_idx,
+            )
+            all_run_nodes.append(run_node)
+            display_run_idx += 1
+
+    earliest_ts = first.parsed_folder_ts or first.last_driven_ts
+    date_str = _format_dt_date_only(earliest_ts)
+    event_label = f"{date_str}  [{sub_session_id}]"
+
+    fastest_values = [s.summary.fastest_lap_s for s in sorted_sessions if s.summary.fastest_lap_s is not None]
+    last_values = [s.summary.last_driven_ts or s.last_driven_ts for s in sorted_sessions if (s.summary.last_driven_ts or s.last_driven_ts) is not None]
+    total_laps = sum(s.summary.laps or 0 for s in sorted_sessions)
+    total_laps_display = sum(
+        int(s.summary.laps_total_display if s.summary.laps_total_display is not None else (s.summary.laps or 0))
+        for s in sorted_sessions
+    )
+    event_summary = NodeSummary(
+        total_time_s=None,
+        laps=total_laps or None,
+        laps_total_display=total_laps_display or None,
+        fastest_lap_s=min(fastest_values) if fastest_values else None,
+        last_driven_ts=max(last_values) if last_values else None,
+        environment=first_environment,
+    )
+
+    is_active = any(s.has_active_lock and not s.has_finalized_marker for s in sorted_sessions)
+    is_finalized = all(s.has_finalized_marker for s in sorted_sessions)
+    node_id = f"session::merged::{first.track}::{first.car}::{sub_session_id}"
+    return CoachingTreeNode(
+        id=node_id,
+        kind="event",
+        label=event_label,
+        summary=event_summary,
+        path=first.session_dir,
+        session_path=first.session_dir,
+        children=all_run_nodes,
+        can_open_folder=True,
+        can_delete=False,
+        delete_paths=(),
+        is_active_session=is_active,
+        is_finalized=is_finalized,
+        meta={
+            "folder_name": first.folder_name,
+            "track": first.track,
+            "car": first.car,
+            "driver": ((first.session_meta or {}).get("DriverName") or "").strip(),
+            "session_type": "Race Weekend",
+            "session_id": str(sub_session_id),
+            "environment": "Race Weekend",
+            "session_conditions": {},
+            "run_count": len(all_run_nodes),
+            "session_source": "ibt" if first.is_ibt_import else "live",
+            "source_block": {},
+            "sub_session_id": sub_session_id,
+            "merged_session_count": len(sorted_sessions),
+        },
+    )
+
+
 def _build_run_node(
     session: _SessionScan,
     run: _RunScan,
     *,
     inherited_environment: dict[str, Any] | None = None,
+    display_run_id: int | None = None,
 ) -> CoachingTreeNode:
     """Build and return run node."""
     session_id_str = _stable_path_id(session.session_dir)
@@ -1108,14 +1211,15 @@ def _build_run_node(
         best_valid_display = "na"
     else:
         best_valid_display = "na / unknown validity"
+    _display_rid = display_run_id if display_run_id is not None else run.run_id
     return CoachingTreeNode(
         id=f"run::{session_id_str}::{run.run_id:04d}",
         kind="run",
-        label=f"Run {run.run_id:04d}",
+        label=f"Run {_display_rid:04d}",
         summary=run_summary,
         path=run.parquet_path or session.session_dir,
         session_path=session.session_dir,
-        run_id=run.run_id,
+        run_id=_display_rid,
         children=lap_nodes,
         can_open_folder=True,
         can_delete=bool(delete_paths),
@@ -1961,6 +2065,16 @@ def _format_dt_short(ts: float | None) -> str:
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return "Unknown time"
+
+
+def _format_dt_date_only(ts: float | None) -> str:
+    """Format timestamp as date-only string (YYYY-MM-DD)."""
+    if ts is None:
+        return "Unknown date"
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except Exception:
+        return "Unknown date"
 
 
 def _duration_from_run_meta(run_meta: dict[str, Any]) -> float | None:
