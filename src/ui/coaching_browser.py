@@ -1810,8 +1810,6 @@ def _type_col_value(node: CoachingTreeNode) -> str:
         event_type = str(node.meta.get("event_type") or "").strip()
         source = str(node.meta.get("session_source") or "").strip()
         base = event_type if event_type else (str(node.meta.get("environment") or "").strip() or "event")
-        if source == "ibt":
-            return f"{base} [IBT]"
         return base
     if node.kind == "run":
         session_type = str(node.meta.get("session_type") or "").strip()
