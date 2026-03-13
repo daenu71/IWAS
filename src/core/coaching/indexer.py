@@ -104,6 +104,8 @@ class _SessionScan:
     last_driven_ts: float | None
     parsed_folder_ts: float | None
     summary: NodeSummary
+    is_ibt_import: bool = False
+    source_block: dict[str, Any] | None = None
 
 
 @dataclass
@@ -237,6 +239,10 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
         except Exception:
             return None
 
+    # Only process directories that contain session_meta.json (coaching sessions).
+    if not (session_dir / "session_meta.json").exists():
+        return None
+
     parsed_name = _parse_session_folder_name(session_dir.name)
     session_meta_path = session_dir / "session_meta.json"
     session_meta = _read_json_dict(session_meta_path)
@@ -262,6 +268,16 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     session_meta["session_conditions"] = conditions if isinstance(conditions, dict) else {}
     has_active_lock = (session_dir / ACTIVE_SESSION_LOCK_FILENAME).exists()
     has_finalized_marker = (session_dir / SESSION_FINALIZED_FILENAME).exists()
+
+    # Detect IBT-imported sessions via the "source" block written by ibt_importer.
+    source_block: dict[str, Any] | None = session_meta.get("source") if isinstance(session_meta, dict) else None
+    if not isinstance(source_block, dict):
+        source_block = None
+    is_ibt_import = source_block is not None and bool(source_block.get("ibt_path"))
+
+    # Pre-computed lap index written by ibt_session_splitter (may be absent for live sessions).
+    lap_index_path = session_dir / "lap_index.json"
+    lap_index_list: list[Any] = _read_json_list(lap_index_path)
 
     run_meta_map: dict[int, Path] = {}
     run_parquet_map: dict[int, Path] = {}
@@ -332,14 +348,32 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
                 run_meta=run_meta,
                 debug_run_start_map=debug_run_start_map,
             )
-        run_metrics = compute_run_lap_metrics(
-            parquet_path=parquet_path,
-            run_meta=run_meta,
-            sample_hz=sample_hz,
-            fallback_last_ts=session_last_ts,
-            meta_path=meta_path,
-        )
-        lap_segments = [seg.to_dict() for seg in run_metrics.lap_slices]
+        # Use lap_index.json as primary source when present (IBT imports).
+        # Fall back to parquet-based analysis for live-recording sessions.
+        if lap_index_list:
+            run_lap_entries = [
+                e for e in lap_index_list
+                if isinstance(e, dict) and e.get("run_id") == run_id
+            ]
+        else:
+            run_lap_entries = []
+        if run_lap_entries:
+            lap_segments = [_lap_index_entry_to_segment(e) for e in run_lap_entries]
+            run_metrics = _run_metrics_from_lap_index(
+                run_lap_entries=run_lap_entries,
+                parquet_path=parquet_path,
+                run_meta=run_meta,
+                fallback_last_ts=session_last_ts,
+            )
+        else:
+            run_metrics = compute_run_lap_metrics(
+                parquet_path=parquet_path,
+                run_meta=run_meta,
+                sample_hz=sample_hz,
+                fallback_last_ts=session_last_ts,
+                meta_path=meta_path,
+            )
+            lap_segments = [seg.to_dict() for seg in run_metrics.lap_slices]
         lap_meta_paths = run_lap_meta_map.get(run_id, {})
         if _is_debug_coaching_enabled() and _LOG.isEnabledFor(logging.DEBUG):
             _LOG.debug(
@@ -433,6 +467,8 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
         last_driven_ts=session_summary.last_driven_ts or session_last_ts,
         parsed_folder_ts=parsed_name.folder_ts,
         summary=session_summary,
+        is_ibt_import=is_ibt_import,
+        source_block=source_block,
     )
 
 
@@ -550,6 +586,97 @@ def _read_json_dict(path: Path | None) -> dict[str, Any]:
     except Exception:
         return {}
     return {}
+
+
+def _read_json_list(path: Path | None) -> list[Any]:
+    """Read a JSON file that is expected to contain a list; return [] on any error."""
+    if path is None or not path.exists():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _lap_index_entry_to_segment(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert one lap_index.json entry (from ibt_session_splitter) to an indexer segment dict."""
+    reason = str(entry.get("reason") or "session_end")
+    is_complete = reason in {"counter_change", "distpct_wrap"}
+    lap_incomplete = not is_complete
+    valid_lap = _coerce_optional_bool(entry.get("valid_lap"))
+    incident_delta = _coerce_optional_int(entry.get("incident_delta")) or 0
+    # Offtrack when lap is invalid but has no incidents (offtrack is the implied cause).
+    lap_offtrack = bool(valid_lap is False and incident_delta == 0 and is_complete)
+    lap_time_s = _coerce_optional_float(entry.get("lap_time_s"))
+    return {
+        "lap_no": entry.get("lap_no"),
+        # Both naming conventions so all existing helpers work.
+        "start_idx": entry.get("start_sample"),
+        "end_idx": entry.get("end_sample"),
+        "start_sample": entry.get("start_sample"),
+        "end_sample": entry.get("end_sample"),
+        "start_ts": entry.get("start_ts"),
+        "end_ts": entry.get("end_ts"),
+        "duration_s": lap_time_s,
+        "sample_count": None,  # computed from start/end by _segment_sample_count
+        "reason": reason,
+        "is_complete": is_complete,
+        "is_valid": bool(valid_lap) if valid_lap is not None else None,
+        "valid_lap": valid_lap,
+        "lap_incomplete": lap_incomplete,
+        "lap_offtrack": lap_offtrack,
+        "incident_delta": incident_delta,
+    }
+
+
+def _run_metrics_from_lap_index(
+    run_lap_entries: list[dict[str, Any]],
+    *,
+    parquet_path: Path | None,
+    run_meta: dict[str, Any],
+    fallback_last_ts: float | None,
+) -> RunLapMetrics:
+    """Build a RunLapMetrics from pre-computed lap_index entries (no parquet read required)."""
+    complete_reasons = {"counter_change", "distpct_wrap"}
+    laps_completed = sum(
+        1 for e in run_lap_entries if str(e.get("reason") or "") in complete_reasons
+    )
+    laps_including_current = len(run_lap_entries)
+    valid_times = [
+        float(e["lap_time_s"])
+        for e in run_lap_entries
+        if e.get("valid_lap") and e.get("lap_time_s") is not None
+    ]
+    best_valid = min(valid_times) if valid_times else None
+    total_time = _duration_from_run_meta(run_meta)
+    if total_time is None:
+        complete_times = [
+            float(e["lap_time_s"])
+            for e in run_lap_entries
+            if str(e.get("reason") or "") in complete_reasons and e.get("lap_time_s") is not None
+        ]
+        if complete_times:
+            total_time = sum(complete_times)
+    last_ts = fallback_last_ts
+    for e in run_lap_entries:
+        end_ts = _coerce_optional_float(e.get("end_ts"))
+        if end_ts is not None:
+            last_ts = _max_optional(last_ts, end_ts)
+    last_ts = _max_optional(last_ts, _path_mtime_ts(parquet_path))
+    return RunLapMetrics(
+        laps_completed=laps_completed,
+        laps_including_current=laps_including_current,
+        best_valid_lap_s=best_valid,
+        total_time_s=total_time,
+        last_driven_ts=last_ts,
+        last_driven_source="lap_index",
+        lap_slices=[],
+        source="lap_index",
+    )
 
 
 def _read_text_file(path: Path | None) -> str | None:
@@ -942,6 +1069,8 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
             "environment": _extract_environment(session.folder_name),
             "session_conditions": session.session_meta.get("session_conditions") or {},
             "run_count": len(session.runs),
+            "session_source": "ibt" if session.is_ibt_import else "live",
+            "source_block": dict(session.source_block) if isinstance(session.source_block, dict) else {},
         },
     )
 
@@ -1000,6 +1129,7 @@ def _build_run_node(
             ),
             "best_valid_lap_s": best_valid_display,
             "lap_meta_available": has_validity_meta,
+            "session_source": "ibt" if session.is_ibt_import else "live",
         },
     )
 
@@ -1813,6 +1943,8 @@ def _session_label(session: _SessionScan) -> str:
     label = "  ".join(parts).strip()
     if session.has_active_lock and not session.has_finalized_marker:
         return f"{label}  [ACTIVE]"
+    if session.is_ibt_import:
+        return f"{label}  [IBT]"
     return label
 
 
@@ -1947,6 +2079,7 @@ def _session_cache_signature(session_dir: Path) -> tuple[tuple[Any, ...] | None,
             or _RUN_PARQUET_RE.match(name)
             or _parse_lap_meta_filename(name) is not None
             or lower == "session_meta.json"
+            or lower == "lap_index.json"
             or lower == _DEBUG_SAMPLES_FILENAME
             or lower == ACTIVE_SESSION_LOCK_FILENAME.lower()
             or lower == SESSION_FINALIZED_FILENAME.lower()

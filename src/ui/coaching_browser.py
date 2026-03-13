@@ -572,39 +572,55 @@ class FilterDialog(tk.Toplevel):
 
 
 class _EnvironmentTooltip:
-    """Compact hover tooltip for lap environment data."""
+    """Compact hover tooltip for lap environment data and optional IBT source info."""
 
     def __init__(self, owner: tk.Widget) -> None:
         self._owner = owner
         self._window: tk.Toplevel | None = None
         self._row_frames: list[tk.Frame] = []
         self._value_labels: dict[str, tk.Label] = {}
+        self._pending_source_block: dict[str, Any] | None = None
 
     @property
     def visible(self) -> bool:
         return self._window is not None
 
-    def show(self, environment: dict[str, Any] | None, *, x_root: int, y_root: int) -> None:
+    def show(
+        self,
+        environment: dict[str, Any] | None,
+        *,
+        x_root: int,
+        y_root: int,
+        source_block: dict[str, Any] | None = None,
+    ) -> None:
         normalized = _normalize_environment(environment)
-        if normalized is None:
+        has_source = isinstance(source_block, dict) and bool(source_block)
+        if normalized is None and not has_source:
             self.hide()
             return
+        self._pending_source_block = source_block if has_source else None
         self._ensure_window()
         if self._window is None:
             return
         any_row_visible = False
-        for row_frame, row_fields in zip(self._row_frames, _ENVIRONMENT_LAYOUT):
-            row_visible = False
-            for _label_text, key in row_fields:
-                text = _format_environment_field(key, normalized.get(key))
-                self._value_labels[key].configure(text=text)
-                if text:
-                    row_visible = True
-            if row_visible:
-                row_frame.grid()
-                any_row_visible = True
-            else:
+        if normalized is not None:
+            for row_frame, row_fields in zip(self._row_frames, _ENVIRONMENT_LAYOUT):
+                row_visible = False
+                for _label_text, key in row_fields:
+                    text = _format_environment_field(key, normalized.get(key))
+                    self._value_labels[key].configure(text=text)
+                    if text:
+                        row_visible = True
+                if row_visible:
+                    row_frame.grid()
+                    any_row_visible = True
+                else:
+                    row_frame.grid_remove()
+        else:
+            for row_frame in self._row_frames:
                 row_frame.grid_remove()
+        if has_source:
+            any_row_visible = True
         if not any_row_visible:
             self.hide()
             return
@@ -627,6 +643,7 @@ class _EnvironmentTooltip:
         self._window = None
         self._row_frames = []
         self._value_labels = {}
+        self._pending_source_block = None
 
     def _ensure_window(self) -> None:
         if self._window is not None:
@@ -640,6 +657,7 @@ class _EnvironmentTooltip:
         window.configure(bg="#4b5563")
         body = tk.Frame(window, bg="#111827", padx=8, pady=6)
         body.pack(fill="both", expand=True, padx=1, pady=1)
+        next_body_row = 0
         tk.Label(
             body,
             text="Session Conditions",
@@ -647,9 +665,11 @@ class _EnvironmentTooltip:
             fg="#f9fafb",
             anchor="w",
             font=("TkDefaultFont", 9, "bold"),
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ).grid(row=next_body_row, column=0, sticky="w", pady=(0, 4))
+        next_body_row += 1
         table = tk.Frame(body, bg="#111827")
-        table.grid(row=1, column=0, sticky="w")
+        table.grid(row=next_body_row, column=0, sticky="w")
+        next_body_row += 1
         for row_index, row_fields in enumerate(_ENVIRONMENT_LAYOUT):
             row_frame = tk.Frame(table, bg="#111827")
             row_frame.grid(row=row_index, column=0, sticky="w")
@@ -677,6 +697,38 @@ class _EnvironmentTooltip:
                     padx=(0, 12 if pair_index < len(row_fields) - 1 else 0),
                 )
                 self._value_labels[key] = value_label
+        # Optional IBT source section.
+        source_block = self._pending_source_block
+        if isinstance(source_block, dict) and source_block:
+            tk.Frame(body, bg="#374151", height=1).grid(
+                row=next_body_row, column=0, sticky="ew", pady=(6, 4)
+            )
+            next_body_row += 1
+            tk.Label(
+                body,
+                text="IBT Source",
+                bg="#111827",
+                fg="#f9fafb",
+                anchor="w",
+                font=("TkDefaultFont", 9, "bold"),
+            ).grid(row=next_body_row, column=0, sticky="w", pady=(0, 4))
+            next_body_row += 1
+            src_table = tk.Frame(body, bg="#111827")
+            src_table.grid(row=next_body_row, column=0, sticky="w")
+            ibt_path = str(source_block.get("ibt_path") or "")
+            ibt_filename = Path(ibt_path).name if ibt_path else ibt_path
+            fingerprint = str(source_block.get("ibt_fingerprint") or "")
+            fp_short = fingerprint[:16] + "…" if len(fingerprint) > 16 else fingerprint
+            for src_row, (lbl, val) in enumerate([
+                ("File:", ibt_filename or ibt_path),
+                ("ID:", fp_short),
+            ]):
+                tk.Label(
+                    src_table, text=lbl, bg="#111827", fg="#9ca3af", anchor="e",
+                ).grid(row=src_row, column=0, sticky="e", padx=(0, 4))
+                tk.Label(
+                    src_table, text=val, bg="#111827", fg="#f9fafb", anchor="w",
+                ).grid(row=src_row, column=1, sticky="w")
         self._window = window
 
 
@@ -1057,12 +1109,30 @@ class CoachingBrowser(ttk.Frame):
         if node.can_open_folder:
             self._handle_open_folder()
 
+    def _tooltip_source_block_for_iid(self, iid: str | None) -> dict[str, Any] | None:
+        """Return the IBT source_block dict for a node that has one, or None."""
+        if not iid:
+            return None
+        index = self._index
+        if index is None:
+            return None
+        lookup = self._filtered_nodes_by_id or index.nodes_by_id
+        node = lookup.get(iid)
+        if node is None:
+            return None
+        meta = node.meta if isinstance(node.meta, dict) else {}
+        source_block = meta.get("source_block")
+        if isinstance(source_block, dict) and source_block:
+            return source_block
+        return None
+
     def _on_tree_motion_for_environment(self, event) -> None:
         """Track lap-row hover state for the environment tooltip."""
         self._environment_pointer = (int(event.x_root), int(event.y_root))
         iid = str(self.tree.identify_row(event.y) or "")
         environment = self._tooltip_environment_for_iid(iid)
-        if environment is None:
+        source_block = self._tooltip_source_block_for_iid(iid)
+        if environment is None and source_block is None:
             self._cancel_environment_tooltip_schedule()
             self._environment_hover_iid = None
             self._hide_environment_tooltip()
@@ -1352,13 +1422,15 @@ class CoachingBrowser(ttk.Frame):
         self._environment_hover_after_id = None
         iid = self._environment_hover_iid
         environment = self._tooltip_environment_for_iid(iid)
-        if iid is None or environment is None:
+        source_block = self._tooltip_source_block_for_iid(iid)
+        if iid is None or (environment is None and source_block is None):
             self._hide_environment_tooltip()
             return
         self._environment_tooltip.show(
             environment,
             x_root=self._environment_pointer[0],
             y_root=self._environment_pointer[1],
+            source_block=source_block,
         )
         self._environment_tooltip_iid = iid
 
@@ -1767,7 +1839,11 @@ def _type_col_value(node: CoachingTreeNode) -> str:
     """Return the display value for the tree Type column."""
     if node.kind == "event":
         environment = str(node.meta.get("environment") or "").strip()
-        return environment if environment else "event"
+        source = str(node.meta.get("session_source") or "").strip()
+        base = environment if environment else "event"
+        if source == "ibt":
+            return f"{base} [IBT]"
+        return base
     if node.kind == "run":
         session_type = str(node.meta.get("session_type") or "").strip()
         return session_type.capitalize() if session_type else "run"
