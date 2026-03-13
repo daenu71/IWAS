@@ -110,6 +110,7 @@ class _Splitter:
         self._lap_dist_pct = self._col(table, "LapDistPct")
         self._is_on_track_car = self._col(table, "IsOnTrackCar")
         self._incident_count = self._col(table, "PlayerCarMyIncidentCount")
+        self._player_track_surface = self._col(table, "PlayerTrackSurface")
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -233,6 +234,7 @@ class _Splitter:
         lap_dist = self._lap_dist_pct
         is_on_track = self._is_on_track_car
         inc_col = self._incident_count
+        pts_col = self._player_track_surface
 
         laps: list[dict[str, Any]] = []
         lap_id = 1
@@ -248,12 +250,13 @@ class _Splitter:
         # -- per-lap accumulators --
         inc_min: int | None = None
         inc_max: int | None = None
-        offtrack_flag = False
+        offtrack_flag = False   # incident-step based (fallback when PlayerTrackSurface absent)
+        pts_offtrack_flag = False  # PlayerTrackSurface based (preferred)
         prev_inc: int | None = None
 
         def _close(end_sample: int, reason: str) -> None:
             nonlocal lap_id, lap_start_sample, current_lap_no
-            nonlocal inc_min, inc_max, offtrack_flag, prev_inc
+            nonlocal inc_min, inc_max, offtrack_flag, pts_offtrack_flag, prev_inc
 
             sample_count = end_sample - lap_start_sample + 1
             s_ts = self._ts_at(lap_start_sample)
@@ -273,7 +276,9 @@ class _Splitter:
             incident_delta = 0
             if inc_min is not None and inc_max is not None:
                 incident_delta = max(0, inc_max - inc_min)
-            valid_lap = bool(lap_complete and not offtrack_flag and incident_delta == 0)
+            # Prefer PlayerTrackSurface signal; fall back to incident-step detection.
+            offtrack_surface = pts_offtrack_flag if pts_col is not None else offtrack_flag
+            valid_lap = bool(lap_complete and not offtrack_surface and incident_delta == 0)
 
             run_id = _find_run_id(run_index, lap_start_sample)
 
@@ -284,7 +289,9 @@ class _Splitter:
                 "end_sample": int(end_sample),
                 "start_ts": s_ts,
                 "end_ts": e_ts,
+                "reason": reason,
                 "valid_lap": valid_lap,
+                "offtrack_surface": offtrack_surface,
                 "incident_delta": incident_delta,
             }
             if lap_time_s is not None:
@@ -301,6 +308,7 @@ class _Splitter:
             inc_min = None
             inc_max = None
             offtrack_flag = False
+            pts_offtrack_flag = False
             prev_inc = None
 
         for i in range(n):
@@ -364,6 +372,13 @@ class _Splitter:
                         if step in (1, 2):
                             offtrack_flag = True
                     prev_inc = inc
+
+            # ---- PlayerTrackSurface offtrack detection (preferred signal) ----
+            # Values: -1 = NotInWorld, 0 = OffTrack (iRacing irsdk enum irsdk_TrkLoc)
+            if pts_col is not None and not pts_offtrack_flag:
+                pts_val = _coerce_int(pts_col[i])
+                if pts_val is not None and pts_val in {-1, 0}:
+                    pts_offtrack_flag = True
 
         # Close the final open lap segment
         if lap_start_sample <= n - 1:

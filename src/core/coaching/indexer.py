@@ -301,6 +301,18 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     # Pre-computed lap index written by ibt_session_splitter (may be absent for live sessions).
     lap_index_path = session_dir / "lap_index.json"
     lap_index_list: list[Any] = _read_json_list(lap_index_path)
+    # Migrate stale lap_index.json that is missing the "reason" field (written by an older
+    # version of ibt_session_splitter).  Re-run split_session() to regenerate the file in place.
+    if lap_index_list and any(
+        isinstance(e, dict) and e.get("reason") is None for e in lap_index_list
+    ):
+        try:
+            from core.coaching.ibt_session_splitter import split_session as _split_session
+            _LOG.info("[indexer] migrating stale lap_index.json for %s", session_dir.name)
+            _split_session(session_dir)
+            lap_index_list = _read_json_list(lap_index_path)
+        except Exception as _exc:
+            _LOG.warning("[indexer] lap_index migration failed: %s", _exc)
 
     # Run registry written by the recorder / ibt_session_splitter.
     # May declare runs that have no parquet/meta file yet (e.g. second run whose
@@ -677,8 +689,13 @@ def _lap_index_entry_to_segment(entry: dict[str, Any]) -> dict[str, Any]:
     lap_incomplete = not is_complete
     valid_lap = _coerce_optional_bool(entry.get("valid_lap"))
     incident_delta = _coerce_optional_int(entry.get("incident_delta")) or 0
-    # Offtrack when lap is invalid but has no incidents (offtrack is the implied cause).
-    lap_offtrack = bool(valid_lap is False and incident_delta == 0 and is_complete)
+    offtrack_surface = _coerce_optional_bool(entry.get("offtrack_surface"))
+    if offtrack_surface is not None:
+        # Explicit offtrack_surface flag written by ibt_session_splitter.
+        lap_offtrack = bool(offtrack_surface and is_complete)
+    else:
+        # Legacy fallback: offtrack implied when lap is invalid without incidents.
+        lap_offtrack = bool(valid_lap is False and incident_delta == 0 and is_complete)
     lap_time_s = _coerce_optional_float(entry.get("lap_time_s"))
     return {
         "lap_no": entry.get("lap_no"),
