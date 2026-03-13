@@ -1807,9 +1807,9 @@ def _format_time_col(node: CoachingTreeNode) -> str:
 def _type_col_value(node: CoachingTreeNode) -> str:
     """Return the display value for the tree Type column."""
     if node.kind == "event":
-        environment = str(node.meta.get("environment") or "").strip()
+        event_type = str(node.meta.get("event_type") or "").strip()
         source = str(node.meta.get("session_source") or "").strip()
-        base = environment if environment else "event"
+        base = event_type if event_type else (str(node.meta.get("environment") or "").strip() or "event")
         if source == "ibt":
             return f"{base} [IBT]"
         return base

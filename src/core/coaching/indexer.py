@@ -106,6 +106,7 @@ class _SessionScan:
     summary: NodeSummary
     is_ibt_import: bool = False
     source_block: dict[str, Any] | None = None
+    event_type: str = ""
 
 
 @dataclass
@@ -283,6 +284,11 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
     if session_environment is not None:
         session_meta["environment"] = session_environment
     session_meta["session_conditions"] = conditions if isinstance(conditions, dict) else {}
+    event_type = (
+        _extract_event_type_from_yaml(session_info_yaml)
+        or _meta_str(session_meta, "session_type_raw")
+        or ""
+    )
     has_active_lock = (session_dir / ACTIVE_SESSION_LOCK_FILENAME).exists()
     has_finalized_marker = (session_dir / SESSION_FINALIZED_FILENAME).exists()
 
@@ -517,6 +523,7 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
         summary=session_summary,
         is_ibt_import=is_ibt_import,
         source_block=source_block,
+        event_type=event_type,
     )
 
 
@@ -562,6 +569,19 @@ def _extract_environment(folder_name: str) -> str:
     if len(parts) >= 6:
         return parts[-1] or "Unknown"
     return "Unknown"
+
+
+def _extract_event_type_from_yaml(session_info_yaml: str | None) -> str:
+    """Extract WeekendInfo.EventType from session_info.yaml text."""
+    if not session_info_yaml:
+        return ""
+    match = re.search(r"(?m)^\s*EventType\s*:\s*(.+?)\s*$", session_info_yaml)
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+        value = value[1:-1]
+    return value or ""
 
 
 def _parse_lap_meta_filename(filename: str) -> tuple[int | None, int] | None:
@@ -1115,6 +1135,7 @@ def _build_session_event_node(session: _SessionScan) -> CoachingTreeNode:
             "session_type": session.session_type,
             "session_id": session.session_id,
             "environment": _extract_environment(session.folder_name),
+            "event_type": session.event_type,
             "session_conditions": session.session_meta.get("session_conditions") or {},
             "run_count": len(session.runs),
             "session_source": "ibt" if session.is_ibt_import else "live",
@@ -1198,6 +1219,7 @@ def _build_merged_session_event_node(
             "session_type": "Race Weekend",
             "session_id": str(sub_session_id),
             "environment": "Race Weekend",
+            "event_type": first.event_type or "Race Weekend",
             "session_conditions": {},
             "run_count": len(all_run_nodes),
             "session_source": "ibt" if first.is_ibt_import else "live",
