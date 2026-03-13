@@ -729,6 +729,17 @@ class _EnvironmentTooltip:
                 tk.Label(
                     src_table, text=val, bg="#111827", fg="#f9fafb", anchor="w",
                 ).grid(row=src_row, column=1, sticky="w")
+            # Availability check – informational only, never blocks anything.
+            if ibt_path:
+                _src_exists = Path(ibt_path).exists()
+                _status_text = "Quelle vorhanden" if _src_exists else "Quelle nicht mehr vorhanden"
+                _status_fg = "#6ee7b7" if _src_exists else "#9ca3af"
+                tk.Label(
+                    src_table, text="Status:", bg="#111827", fg="#9ca3af", anchor="e",
+                ).grid(row=2, column=0, sticky="e", padx=(0, 4))
+                tk.Label(
+                    src_table, text=_status_text, bg="#111827", fg=_status_fg, anchor="w",
+                ).grid(row=2, column=1, sticky="w")
         self._window = window
 
 
