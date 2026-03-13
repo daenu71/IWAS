@@ -35,7 +35,6 @@ COACHING_TREE_COLUMN_WIDTHS: dict[str, int] = {
     "kind": 80,
     "time": 130,
     "lap": 110,
-    "last": 150,
 }
 # Width allowance for the vertical scrollbar in the current ttk dark theme.
 COACHING_TREE_SCROLLBAR_WIDTH_PX = 16
@@ -697,49 +696,6 @@ class _EnvironmentTooltip:
                     padx=(0, 12 if pair_index < len(row_fields) - 1 else 0),
                 )
                 self._value_labels[key] = value_label
-        # Optional IBT source section.
-        source_block = self._pending_source_block
-        if isinstance(source_block, dict) and source_block:
-            tk.Frame(body, bg="#374151", height=1).grid(
-                row=next_body_row, column=0, sticky="ew", pady=(6, 4)
-            )
-            next_body_row += 1
-            tk.Label(
-                body,
-                text="IBT Source",
-                bg="#111827",
-                fg="#f9fafb",
-                anchor="w",
-                font=("TkDefaultFont", 9, "bold"),
-            ).grid(row=next_body_row, column=0, sticky="w", pady=(0, 4))
-            next_body_row += 1
-            src_table = tk.Frame(body, bg="#111827")
-            src_table.grid(row=next_body_row, column=0, sticky="w")
-            ibt_path = str(source_block.get("ibt_path") or "")
-            ibt_filename = Path(ibt_path).name if ibt_path else ibt_path
-            fingerprint = str(source_block.get("ibt_fingerprint") or "")
-            fp_short = fingerprint[:16] + "…" if len(fingerprint) > 16 else fingerprint
-            for src_row, (lbl, val) in enumerate([
-                ("File:", ibt_filename or ibt_path),
-                ("ID:", fp_short),
-            ]):
-                tk.Label(
-                    src_table, text=lbl, bg="#111827", fg="#9ca3af", anchor="e",
-                ).grid(row=src_row, column=0, sticky="e", padx=(0, 4))
-                tk.Label(
-                    src_table, text=val, bg="#111827", fg="#f9fafb", anchor="w",
-                ).grid(row=src_row, column=1, sticky="w")
-            # Availability check – informational only, never blocks anything.
-            if ibt_path:
-                _src_exists = Path(ibt_path).exists()
-                _status_text = "Quelle vorhanden" if _src_exists else "Quelle nicht mehr vorhanden"
-                _status_fg = "#6ee7b7" if _src_exists else "#9ca3af"
-                tk.Label(
-                    src_table, text="Status:", bg="#111827", fg="#9ca3af", anchor="e",
-                ).grid(row=2, column=0, sticky="e", padx=(0, 4))
-                tk.Label(
-                    src_table, text=_status_text, bg="#111827", fg=_status_fg, anchor="w",
-                ).grid(row=2, column=1, sticky="w")
         self._window = window
 
 
@@ -805,7 +761,7 @@ class CoachingBrowser(ttk.Frame):
 
         self.tree = ttk.Treeview(
             tree_wrap,
-            columns=("analyze", "kind", "time", "lap", "last"),
+            columns=("analyze", "kind", "time", "lap"),
             show="tree headings",
             selectmode="browse",
         )
@@ -816,7 +772,6 @@ class CoachingBrowser(ttk.Frame):
         self.tree.heading("kind", text="Type", anchor="w")
         self.tree.heading("time", text="Time", anchor="w")
         self.tree.heading("lap", text="Laps", anchor="w")
-        self.tree.heading("last", text="Last Driven", anchor="w")
         self.tree.column(
             "#0",
             width=COACHING_TREE_COLUMN_WIDTHS["#0"],
@@ -852,14 +807,6 @@ class CoachingBrowser(ttk.Frame):
             stretch=False,
             anchor="w",
         )
-        self.tree.column(
-            "last",
-            width=COACHING_TREE_COLUMN_WIDTHS["last"],
-            minwidth=COACHING_TREE_COLUMN_WIDTHS["last"],
-            stretch=False,
-            anchor="w",
-        )
-
         self.tree.tag_configure("offtrack", foreground=_OFFTRACK_FG)
 
         y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self._tree_yview)
@@ -1067,7 +1014,6 @@ class CoachingBrowser(ttk.Frame):
             _type_col_value(node),
             _format_time_col(node),
             _format_lap_col(node),
-            _format_last_driven(node.summary.last_driven_ts),
         )
         tags: tuple = ()
         if node.kind == "lap" and _lap_is_offtrack(node.summary, lap_summary=_node_lap_summary(node)):
