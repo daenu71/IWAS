@@ -199,6 +199,15 @@ def _run_import(
     # 11. Mark session finalized (removes lock, writes .finalized marker).
     mark_session_finalized(session_dir, remove_lock=True)
 
+    # 12. Derive run / pit / lap index artefacts from the written Parquet.
+    #     This is a separate post-processing step; failures are logged but do
+    #     not roll back the already-finalized import.
+    try:
+        from core.coaching.ibt_session_splitter import split_session
+        split_session(session_dir)
+    except Exception as exc:  # pragma: no cover
+        _LOG.warning("[ibt_importer] session splitter failed (non-fatal): %s", exc)
+
     return session_dir
 
 
