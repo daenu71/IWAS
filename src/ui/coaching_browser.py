@@ -1029,6 +1029,14 @@ class CoachingBrowser(ttk.Frame):
                     child.label,
                 ),
             )
+        elif node.kind == "run":
+            def _lap_sort_key(child: CoachingTreeNode) -> tuple:
+                lap_no = child.meta.get("lap_no")
+                if lap_no is None:
+                    return (2, 0)
+                n = int(lap_no)
+                return (0, 0) if n == 0 else (1, n)
+            children = sorted(node.children, key=_lap_sort_key)
         for child in children:
             self._insert_node(node.id, child)
 
