@@ -332,7 +332,12 @@ def _scan_session_dir_uncached(session_dir: Path, *, children: list[Path] | None
 
     runs: list[_RunScan] = []
     sample_hz = _coerce_optional_float(session_meta.get("sample_hz"))
-    session_last_ts = _best_effort_last_driven_ts(session_dir, parsed_name.folder_ts)
+    session_last_ts = _best_effort_last_driven_ts(
+        session_dir,
+        parsed_name.folder_ts,
+        session_meta=session_meta,
+        session_info_yaml=session_info_yaml,
+    )
     debug_run_start_map: dict[int, dict[str, Any]] | None = None
 
     for run_id in known_run_ids:
@@ -1987,10 +1992,68 @@ def _lap_duration_seconds(segment: dict[str, Any]) -> float | None:
     return delta
 
 
-def _best_effort_last_driven_ts(session_dir: Path, parsed_folder_ts: float | None) -> float | None:
-    """Implement best effort last driven ts logic."""
+def _extract_session_date_ts_from_yaml(yaml_text: str) -> float | None:
+    """Return noon-local Unix timestamp for WeekendInfo.WeekendOptions.Date, or None."""
+    if not yaml_text:
+        return None
+    try:
+        import yaml as _yaml  # type: ignore[import]
+        parsed = _yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            wi = parsed.get("WeekendInfo")
+            wo = wi.get("WeekendOptions") if isinstance(wi, dict) else None
+            date_val = wo.get("Date") if isinstance(wo, dict) else None
+            if date_val is not None:
+                if hasattr(date_val, "year"):  # datetime.date from yaml parse
+                    return datetime(date_val.year, date_val.month, date_val.day, 12, 0, 0).timestamp()
+    except Exception:
+        pass
+    # Regex fallback
+    m = re.search(r"\bDate\s*:\s*(\d{4})[\s\-]+(\d{1,2})[\s\-]+(\d{1,2})", yaml_text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), 12, 0, 0).timestamp()
+        except Exception:
+            pass
+    return None
+
+
+def _best_effort_last_driven_ts(
+    session_dir: Path,
+    parsed_folder_ts: float | None,
+    *,
+    session_meta: dict[str, Any] | None = None,
+    session_info_yaml: str | None = None,
+) -> float | None:
+    """Return the best available Unix timestamp for when this session was last driven."""
     # Do NOT use session_dir.mtime — it updates whenever analysis creates subdirectories
     # (e.g. laps/lap_NNNN/), which would make the "last driven" date jump to today.
+
+    # 1. Explicit session_date_ts written by ibt_importer (new imports).
+    if isinstance(session_meta, dict):
+        ts = _coerce_optional_float(session_meta.get("session_date_ts"))
+        if ts is not None:
+            return ts
+
+    # 2. WeekendOptions.Date from session_info.yaml (existing imports without session_date_ts).
+    if session_info_yaml:
+        ts = _extract_session_date_ts_from_yaml(session_info_yaml)
+        if ts is not None:
+            return ts
+
+    # 3. modified_ts in source block (new imports).
+    if isinstance(session_meta, dict):
+        source = session_meta.get("source")
+        if isinstance(source, dict):
+            ts = _coerce_optional_float(source.get("modified_ts"))
+            if ts is not None:
+                return ts
+        # 4. recorder_start_ts (existing imports; equals modified_ts at queue time).
+        ts = _coerce_optional_float(session_meta.get("recorder_start_ts"))
+        if ts is not None:
+            return ts
+
+    # 5. Folder name timestamp (last resort).
     return parsed_folder_ts
 
 

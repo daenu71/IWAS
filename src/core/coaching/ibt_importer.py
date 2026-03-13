@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Any
 
@@ -86,6 +87,7 @@ def _run_import(
     # 1. Extract session metadata from IBT header / session YAML.
     yaml_text = _read_session_yaml(ibt)
     session_meta_raw = extract_session_meta(yaml_text, recorder_start_ts=modified_ts)
+    session_date_ts = _extract_session_date_ts(yaml_text)
 
     track = (
         session_meta_raw.get("TrackDisplayName")
@@ -185,7 +187,10 @@ def _run_import(
         base["source"] = {
             "ibt_path": str(ibt_path),
             "ibt_fingerprint": fingerprint,
+            "modified_ts": modified_ts,
         }
+        if session_date_ts is not None:
+            base["session_date_ts"] = session_date_ts
         _write_json_file(session_dir / "session_meta.json", meta_obj.to_dict(base))
 
         # 10. Write session_info.yaml from IBT header YAML.
@@ -209,6 +214,36 @@ def _run_import(
         _LOG.warning("[ibt_importer] session splitter failed (non-fatal): %s", exc)
 
     return session_dir
+
+
+# ---------------------------------------------------------------------------
+# Session-date helper
+# ---------------------------------------------------------------------------
+
+def _extract_session_date_ts(yaml_text: str) -> float | None:
+    """Return noon-local Unix timestamp for WeekendInfo.WeekendOptions.Date, or None."""
+    if not yaml_text:
+        return None
+    try:
+        import yaml as _yaml  # type: ignore[import]
+        parsed = _yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            wi = parsed.get("WeekendInfo")
+            wo = wi.get("WeekendOptions") if isinstance(wi, dict) else None
+            date_val = wo.get("Date") if isinstance(wo, dict) else None
+            if date_val is not None:
+                if hasattr(date_val, "year"):  # datetime.date from yaml parse
+                    return datetime(date_val.year, date_val.month, date_val.day, 12, 0, 0).timestamp()
+    except Exception:
+        pass
+    # Regex fallback for unparseable YAML
+    m = re.search(r"\bDate\s*:\s*(\d{4})[\s\-]+(\d{1,2})[\s\-]+(\d{1,2})", yaml_text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), 12, 0, 0).timestamp()
+        except Exception:
+            pass
+    return None
 
 
 # ---------------------------------------------------------------------------
